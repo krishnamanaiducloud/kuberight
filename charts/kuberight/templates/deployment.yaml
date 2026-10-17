@@ -10,7 +10,8 @@ spec:
     metadata:
       labels: {app.kubernetes.io/name: kuberight}
     spec:
-      automountServiceAccountToken: false
+      serviceAccountName: {{ .Release.Name }}
+      automountServiceAccountToken: {{ eq .Values.auth.mode "kubernetes" }}
       securityContext:
         runAsNonRoot: true
         seccompProfile: {type: RuntimeDefault}
@@ -20,9 +21,13 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports: [{name: http, containerPort: 8080}]
           env:
+            - name: KUBERIGHT_AUTH_MODE
+              value: {{ .Values.auth.mode | quote }}
+            {{- if eq .Values.auth.mode "static" }}
             - name: KUBERIGHT_API_TOKEN
               valueFrom:
-                secretKeyRef: {name: "{{ .Values.apiTokenSecretName }}", key: token}
+                secretKeyRef: {name: {{ .Values.apiTokenSecretName | quote }}, key: token}
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           securityContext:
