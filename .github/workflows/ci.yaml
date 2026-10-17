@@ -1,0 +1,51 @@
+name: CI / Release Gates
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Require reproducible dependencies
+        run: test -s go.sum
+      - run: go mod download && go mod verify
+      - run: test -z "$(gofmt -l cmd internal)"
+      - run: go vet ./...
+      - run: go test -race ./...
+      - run: go build ./cmd/kuberight
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r ml/requirements.txt pytest httpx
+      - run: python -m compileall -q ml
+      - run: python -m pytest -q ml
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4.3.0
+      - run: helm lint --strict charts/kuberight
+      - run: helm template kuberight charts/kuberight --namespace kuberight-system > /tmp/kuberight.yaml
+  image-build:
+    needs: [go, python, helm]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: kuberight:ci
