@@ -5,6 +5,8 @@ image:
   pullPolicy: IfNotPresent
 service:
   port: 8080
+auth:
+  mode: kubernetes
 apiTokenSecretName: kuberight-api-token
 resources:
   requests:
