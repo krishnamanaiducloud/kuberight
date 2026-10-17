@@ -1,0 +1,15 @@
+replicaCount: 1
+image:
+  repository: mohankrishna999/kuberight
+  tag: "dev"
+  pullPolicy: IfNotPresent
+service:
+  port: 8080
+apiTokenSecretName: kuberight-api-token
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
