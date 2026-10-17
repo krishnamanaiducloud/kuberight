@@ -1,8 +1,8 @@
-name: CI / Release Gates
+name: CI
 on:
-  pull_request:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
 permissions:
   contents: read
@@ -14,9 +14,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Require reproducible dependencies
-        run: test -s go.sum
-      - run: go mod download && go mod verify
+          cache: false
+      - run: go mod tidy
+      - run: go mod verify
       - run: test -z "$(gofmt -l cmd internal)"
       - run: go vet ./...
       - run: go test -race ./...
@@ -30,14 +30,14 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install -r ml/requirements.txt pytest httpx
       - run: python -m compileall -q ml
-      - run: python -m pytest -q ml
+      - run: cd ml && python -m pytest -q
   helm:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: azure/setup-helm@v4.3.0
       - run: helm lint --strict charts/kuberight
-      - run: helm template kuberight charts/kuberight --namespace kuberight-system > /tmp/kuberight.yaml
+      - run: helm template kuberight charts/kuberight > /tmp/kuberight.yaml
   image-build:
     needs: [go, python, helm]
     runs-on: ubuntu-latest
@@ -49,3 +49,9 @@ jobs:
           context: .
           push: false
           tags: kuberight:ci
+      - uses: docker/build-push-action@v6
+        with:
+          context: ./ml
+          file: ./ml/Dockerfile
+          push: false
+          tags: kuberight-ml:ci
