@@ -5,8 +5,6 @@ import (
  "github.com/kuberight/kuberight/internal/optimizer"
  "log/slog"
  "net/http"
- "os"
- "strings"
  "time"
 )
 func Handler() http.Handler {
@@ -22,15 +20,17 @@ func Handler() http.Handler {
   out,err:=optimizer.Recommend(in);if err!=nil{respond(w,422,map[string]string{"error":err.Error()});return}
   respond(w,200,out)
  })
+ auth,authErr:=configuredAuth()
  return http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
   w.Header().Set("X-Content-Type-Options","nosniff");w.Header().Set("Cache-Control","no-store")
   if r.URL.Path=="/healthz"||r.URL.Path=="/readyz"{mux.ServeHTTP(w,r);return}
-  token:=os.Getenv("KUBERIGHT_API_TOKEN")
-  if token==""{respond(w,503,map[string]string{"error":"authentication not configured"});return}
-  auth:=strings.Fields(r.Header.Get("Authorization"))
-  if len(auth)!=2||!strings.EqualFold(auth[0],"Bearer")||auth[1]!=token{
-   w.Header().Set("WWW-Authenticate",`Bearer realm="kuberight"`);respond(w,401,map[string]string{"error":"unauthorized"});return
-  }
+  if authErr!=nil{respond(w,503,map[string]string{"error":"authentication unavailable"});return}
+  bearer,ok:=extractBearer(r.Header.Get("Authorization"))
+  if !ok{w.Header().Set("WWW-Authenticate",`Bearer realm="kuberight"`);respond(w,401,map[string]string{"error":"unauthorized"});return}
+  verb:="get"
+  if r.Method!="GET"&&r.Method!="HEAD"{verb="create"}
+  status,err:=auth.Authenticate(r.Context(),bearer,verb)
+  if err!=nil{respond(w,status,map[string]string{"error":err.Error()});return}
   slog.Info("request","method",r.Method,"path",r.URL.Path)
   mux.ServeHTTP(w,r)
  })
