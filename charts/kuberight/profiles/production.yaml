@@ -1,0 +1,30 @@
+# Production-shaped hardening baseline for the development preview. This
+# remains a singleton because application state is process-local; it is not HA.
+replicaCount: 1
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+topologySpreadConstraints:
+  enabled: true
+  maxSkew: 1
+  topologyKey: topology.kubernetes.io/zone
+  whenUnsatisfiable: DoNotSchedule
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 1
+  targetCPUUtilizationPercentage: 70
+networkPolicy:
+  enabled: true
+metrics:
+  # Enable only after installing Prometheus Operator CRDs in the target cluster.
+  serviceMonitor:
+    enabled: false
+  prometheusRule:
+    enabled: false
+ml:
+  replicaCount: 1
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 1

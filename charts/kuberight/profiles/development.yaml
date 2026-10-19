@@ -1,0 +1,23 @@
+# Single-node development profile. It is not an HA production configuration.
+replicaCount: 1
+autoscaling:
+  enabled: false
+podDisruptionBudget:
+  enabled: false
+topologySpreadConstraints:
+  enabled: false
+networkPolicy:
+  enabled: false
+resources:
+  requests:
+    cpu: 25m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+ml:
+  replicaCount: 1
+  autoscaling:
+    enabled: false
+  podDisruptionBudget:
+    enabled: false

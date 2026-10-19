@@ -1,5 +1,26 @@
 .env
 *.test
 coverage.out
+.coverage
+coverage-go.out
+coverage-python.xml
+*.spdx.json
+*.oci.tar
+release-digests.txt
 bin/
 .DS_Store
+
+# Generated dependency and tool output
+**/node_modules/
+**/node_modules.*/
+**/.venv/
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/coverage/
+**/dist/
+*.tsbuildinfo
+web/vite.config.js
+web/vite.config.d.ts

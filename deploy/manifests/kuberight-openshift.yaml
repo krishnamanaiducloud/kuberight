@@ -1,0 +1,350 @@
+---
+# Source: kuberight/templates/namespace.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kuberight
+
+---
+# Source: kuberight/templates/networkpolicy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kuberight
+  namespace: kuberight
+  labels:
+    helm.sh/chart: kuberight-0.1.0-rc.1
+    app.kubernetes.io/name: kuberight
+    app.kubernetes.io/instance: kuberight
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "0.1.0-rc.1"
+    app.kubernetes.io/component: server
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kuberight
+      app.kubernetes.io/instance: kuberight
+      app.kubernetes.io/component: server
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8080
+    - from:
+      - namespaceSelector:
+          matchLabels:
+            network.openshift.io/policy-group: ingress
+      ports:
+      - port: 8080
+        protocol: TCP
+
+---
+# Source: kuberight/templates/pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kuberight
+  namespace: kuberight
+  labels:
+    helm.sh/chart: kuberight-0.1.0-rc.1
+    app.kubernetes.io/name: kuberight
+    app.kubernetes.io/instance: kuberight
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "0.1.0-rc.1"
+    app.kubernetes.io/component: server
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kuberight
+      app.kubernetes.io/instance: kuberight
+      app.kubernetes.io/component: server
+
+---
+# Source: kuberight/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kuberight
+  namespace: kuberight
+  labels:
+    helm.sh/chart: kuberight-0.1.0-rc.1
+    app.kubernetes.io/name: kuberight
+    app.kubernetes.io/instance: kuberight
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "0.1.0-rc.1"
+    app.kubernetes.io/component: server
+automountServiceAccountToken: true
+
+---
+# Source: kuberight/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kuberight-8cde1ab2-auth-reviewer
+  labels:
+    helm.sh/chart: kuberight-0.1.0-rc.1
+    app.kubernetes.io/name: kuberight
+    app.kubernetes.io/instance: kuberight
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "0.1.0-rc.1"
+    app.kubernetes.io/component: server
+rules:
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+  - apiGroups: ["authorization.k8s.io"]
+    resources: ["subjectaccessreviews"]
+    verbs: ["create"]
+
+---
+# Source: kuberight/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kuberight-8cde1ab2-auth-reviewer
+  labels:
+    helm.sh/chart: kuberight-0.1.0-rc.1
+    app.kubernetes.io/name: kuberight
+    app.kubernetes.io/instance: kuberight
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "0.1.0-rc.1"
+    app.kubernetes.io/component: server
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kuberight-8cde1ab2-auth-reviewer
+subjects:
+  - kind: ServiceAccount
+    name: kuberight
+    namespace: kuberight
+
+---
+# Source: kuberight/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kuberight-workloads
+  namespace: kuberight
+  labels:
+    helm.sh/chart: kuberight-0.1.0-rc.1
+    app.kubernetes.io/name: kuberight
+    app.kubernetes.io/instance: kuberight
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "0.1.0-rc.1"
+    app.kubernetes.io/component: server
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["list"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["list"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["list"]
+  - apiGroups: ["keda.sh"]
+    resources: ["scaledobjects", "scaledjobs"]
+    verbs: ["list"]
+  - apiGroups: ["autoscaling.k8s.io"]
+    resources: ["verticalpodautoscalers"]
+    verbs: ["list"]
+
+---
+# Source: kuberight/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kuberight-workloads
+  namespace: kuberight
+  labels:
+    helm.sh/chart: kuberight-0.1.0-rc.1
+    app.kubernetes.io/name: kuberight
+    app.kubernetes.io/instance: kuberight
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "0.1.0-rc.1"
+    app.kubernetes.io/component: server
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kuberight-workloads
+subjects:
+  - kind: ServiceAccount
+    name: kuberight
+    namespace: kuberight
+
+---
+# Source: kuberight/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: kuberight
+  namespace: kuberight
+  labels:
+    helm.sh/chart: kuberight-0.1.0-rc.1
+    app.kubernetes.io/name: kuberight
+    app.kubernetes.io/instance: kuberight
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "0.1.0-rc.1"
+    app.kubernetes.io/component: server
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: kuberight
+    app.kubernetes.io/instance: kuberight
+    app.kubernetes.io/component: server
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+
+---
+# Source: kuberight/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kuberight
+  namespace: kuberight
+  labels:
+    helm.sh/chart: kuberight-0.1.0-rc.1
+    app.kubernetes.io/name: kuberight
+    app.kubernetes.io/instance: kuberight
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "0.1.0-rc.1"
+    app.kubernetes.io/component: server
+spec:
+  replicas: 1
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kuberight
+      app.kubernetes.io/instance: kuberight
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kuberight
+        app.kubernetes.io/instance: kuberight
+        app.kubernetes.io/component: server
+      annotations:
+        checksum/config: 96438f4d01403610ce1e94698560db9c71ae4b2d94a7deba9a16426aa6aec712
+    spec:
+      serviceAccountName: kuberight
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: kuberight
+          image: "mohankrishna999/kuberight:0.1.0-rc.1"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: KUBERIGHT_LISTEN_ADDR
+              value: ":8080"
+            - name: KUBERIGHT_AUTH_MODE
+              value: "kubernetes"
+            - name: KUBERIGHT_OPERATION_MODE
+              value: "recommend"
+            - name: KUBERIGHT_INVENTORY_ENABLED
+              value: "true"
+            - name: KUBERIGHT_CLUSTER_ID
+              value: "kuberight"
+            - name: KUBERIGHT_INVENTORY_RESYNC
+              value: "10m"
+            - name: KUBERIGHT_KUBERNETES_QPS
+              value: "10"
+            - name: KUBERIGHT_KUBERNETES_BURST
+              value: "20"
+            - name: KUBERIGHT_INVENTORY_NAMESPACE
+              value: "kuberight"
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            failureThreshold: 30
+            periodSeconds: 2
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            limits:
+              cpu: 1
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: kuberight
+              app.kubernetes.io/instance: kuberight
+              app.kubernetes.io/component: server
+
+---
+# Source: kuberight/templates/route.yaml
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: kuberight
+  namespace: kuberight
+  labels:
+    helm.sh/chart: kuberight-0.1.0-rc.1
+    app.kubernetes.io/name: kuberight
+    app.kubernetes.io/instance: kuberight
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "0.1.0-rc.1"
+    app.kubernetes.io/component: server
+spec:
+  to:
+    kind: Service
+    name: kuberight
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

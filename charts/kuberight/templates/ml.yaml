@@ -1,0 +1,232 @@
+{{- if .Values.ml.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kuberight.fullname" . }}-ml
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kuberight.mlLabels" . | nindent 4 }}
+spec:
+  {{- if not .Values.ml.autoscaling.enabled }}
+  replicas: {{ .Values.ml.replicaCount }}
+  {{- end }}
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{- include "kuberight.mlSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kuberight.mlSelectorLabels" . | nindent 8 }}
+        {{- with .Values.ml.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.ml.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "kuberight.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- $pullSecrets := concat .Values.global.imagePullSecrets .Values.ml.imagePullSecrets }}
+      {{- with $pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.ml.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      containers:
+        - name: ml
+          image: {{ include "kuberight.mlImage" . | quote }}
+          imagePullPolicy: {{ .Values.ml.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.ml.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8081
+              protocol: TCP
+          env:
+            - name: PORT
+              value: "8081"
+            - name: KUBERIGHT_ML_LISTEN_ADDR
+              value: ":8081"
+            {{- with .Values.ml.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            failureThreshold: 60
+            periodSeconds: 2
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.ml.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+      {{- if .Values.topologySpreadConstraints.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: {{ .Values.topologySpreadConstraints.maxSkew }}
+          topologyKey: {{ .Values.topologySpreadConstraints.topologyKey }}
+          whenUnsatisfiable: {{ .Values.topologySpreadConstraints.whenUnsatisfiable }}
+          labelSelector:
+            matchLabels:
+              {{- include "kuberight.mlSelectorLabels" . | nindent 14 }}
+      {{- end }}
+      {{- with .Values.ml.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.ml.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.ml.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kuberight.fullname" . }}-ml
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kuberight.mlLabels" . | nindent 4 }}
+  {{- with .Values.ml.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  selector:
+    {{- include "kuberight.mlSelectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.ml.service.port }}
+      targetPort: http
+      protocol: TCP
+{{- if .Values.ml.podDisruptionBudget.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "kuberight.fullname" . }}-ml
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kuberight.mlLabels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.ml.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "kuberight.mlSelectorLabels" . | nindent 6 }}
+{{- end }}
+{{- if .Values.ml.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "kuberight.fullname" . }}-ml
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kuberight.mlLabels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "kuberight.fullname" . }}-ml
+  minReplicas: {{ .Values.ml.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.ml.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.ml.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}
+{{- if .Values.ml.networkPolicy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kuberight.fullname" . }}-ml
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kuberight.mlLabels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "kuberight.mlSelectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "kuberight.selectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 8081
+    {{- if and .Values.metrics.enabled .Values.metrics.serviceMonitor.enabled }}
+    - from:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.monitoring.namespaceSelector | nindent 12 }}
+          {{- with .Values.networkPolicy.monitoring.podSelector }}
+          podSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      ports:
+        - protocol: TCP
+          port: 8081
+    {{- end }}
+    {{- with .Values.ml.networkPolicy.ingress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- if and .Values.metrics.enabled .Values.metrics.serviceMonitor.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "kuberight.fullname" . }}-ml
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kuberight.mlLabels" . | nindent 4 }}
+    {{- with .Values.metrics.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "kuberight.mlSelectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,62 @@
+{{- if and .Values.metrics.enabled .Values.metrics.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "kuberight.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kuberight.labels" . | nindent 4 }}
+    {{- with .Values.metrics.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "kuberight.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: {{ .Values.metrics.path }}
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout }}
+      {{- with .Values.metrics.serviceMonitor.relabelings }}
+      relabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.metrics.serviceMonitor.metricRelabelings }}
+      metricRelabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
+{{- if and .Values.metrics.enabled .Values.metrics.prometheusRule.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "kuberight.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kuberight.labels" . | nindent 4 }}
+    {{- with .Values.metrics.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: kuberight.availability
+      rules:
+        - alert: KubeRightDeploymentUnavailable
+          expr: kube_deployment_status_replicas_unavailable{namespace={{ .Release.Namespace | quote }},deployment={{ include "kuberight.fullname" . | quote }}} > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeRight has unavailable replicas
+            runbook_url: https://github.com/krishnamanaiducloud/kuberight/blob/main/docs/operations-runbook.md
+        - alert: KubeRightHighHTTPErrorRate
+          expr: sum(rate(kuberight_http_requests_total{status=~"5.."}[5m])) / clamp_min(sum(rate(kuberight_http_requests_total[5m])), 1) > 0.05
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeRight HTTP 5xx rate exceeds 5 percent
+            runbook_url: https://github.com/krishnamanaiducloud/kuberight/blob/main/docs/operations-runbook.md
+{{- end }}

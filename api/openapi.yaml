@@ -1,0 +1,1029 @@
+openapi: 3.1.0
+info:
+  title: KubeRight API
+  version: 0.1.0-rc.1
+  description: |
+    The HTTP contract implemented by the KubeRight Go service. All `/api/v1`
+    operations require a bearer token. The token is authenticated either with
+    Kubernetes TokenReview and authorized with SubjectAccessReview, or against
+    the configured static token. Health, readiness, and Prometheus metrics are
+    intentionally public.
+
+    JSON request bodies reject unknown fields and multiple JSON values. The
+    default body limit is 1 MiB and is configurable from 1 KiB through 16 MiB.
+    The default per-request timeout is 15 seconds and is configurable from one
+    second through two minutes.
+servers:
+  - url: /
+security:
+  - bearerAuth: []
+tags:
+  - name: Operations
+  - name: Recommendations
+  - name: Inventory
+  - name: Configuration
+
+paths:
+  /healthz:
+    get:
+      tags: [Operations]
+      operationId: getHealth
+      summary: Process liveness
+      security: []
+      responses:
+        "200":
+          description: The process is alive.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+
+  /readyz:
+    get:
+      tags: [Operations]
+      operationId: getReadiness
+      summary: Dependency readiness
+      security: []
+      responses:
+        "200":
+          description: Required dependencies are ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Readiness"
+        "503":
+          description: Authentication or the configured data provider is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Readiness"
+
+  /metrics:
+    get:
+      tags: [Operations]
+      operationId: getMetrics
+      summary: Prometheus metrics
+      security: []
+      responses:
+        "200":
+          description: Metrics in Prometheus text exposition format.
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/v1/version:
+    get:
+      tags: [Operations]
+      operationId: getVersion
+      summary: Build and operation-mode information
+      responses:
+        "200":
+          description: Version information.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Version"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/AccessUnavailable" }
+
+  /api/v1/overview:
+    get:
+      tags: [Operations]
+      operationId: getOverview
+      summary: Service overview
+      responses:
+        "200":
+          description: Current mode, recommendation count, and inventory availability.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Overview"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/AccessUnavailable" }
+
+  /api/v1/recommendations:
+    get:
+      tags: [Recommendations]
+      operationId: listRecommendations
+      summary: List in-process recommendation history
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Filter"
+        - name: workload
+          in: query
+          schema: { type: string }
+        - name: confidence
+          in: query
+          schema:
+            $ref: "#/components/schemas/Level"
+        - name: risk
+          in: query
+          schema:
+            $ref: "#/components/schemas/Level"
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [createdAt, namespace, workload, confidence, risk]
+            default: createdAt
+        - $ref: "#/components/parameters/OrderWithDefault"
+      responses:
+        "200":
+          description: A page of recommendations, newest first by default.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecommendationCollection"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/AccessUnavailable" }
+    post:
+      tags: [Recommendations]
+      operationId: createRecommendation
+      summary: Calculate and retain a recommendation
+      description: Returns 403 when the service is in `observe` mode. It never mutates a workload.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecommendationInput"
+      responses:
+        "201":
+          $ref: "#/components/responses/RecommendationCreated"
+        "200":
+          $ref: "#/components/responses/RecommendationReplayed"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/IdempotencyConflict" }
+        "413": { $ref: "#/components/responses/RequestTooLarge" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+        "503": { $ref: "#/components/responses/AccessUnavailable" }
+
+  /api/v1/recommendations:calculate:
+    post:
+      tags: [Recommendations]
+      operationId: calculateRecommendation
+      summary: Calculate and retain a recommendation
+      description: Alias of `POST /api/v1/recommendations`.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecommendationInput"
+      responses:
+        "201":
+          $ref: "#/components/responses/RecommendationCreated"
+        "200":
+          $ref: "#/components/responses/RecommendationReplayed"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/IdempotencyConflict" }
+        "413": { $ref: "#/components/responses/RequestTooLarge" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+        "503": { $ref: "#/components/responses/AccessUnavailable" }
+
+  /api/v1/recommendations/{id}:
+    get:
+      tags: [Recommendations]
+      operationId: getRecommendation
+      summary: Get one retained recommendation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^rec_.+$'
+            minLength: 5
+            maxLength: 64
+      responses:
+        "200":
+          description: The recommendation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecommendationRecord"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/AccessUnavailable" }
+
+  /api/v1/policies:
+    get:
+      tags: [Configuration]
+      operationId: listPolicies
+      summary: List recommendation policies
+      responses:
+        "200":
+          description: The built-in policy collection.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyCollection"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/AccessUnavailable" }
+
+  /api/v1/audit:
+    get:
+      tags: [Configuration]
+      operationId: listAuditEvents
+      summary: List in-process audit history
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: A page of audit events.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditCollection"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/AccessUnavailable" }
+
+  /api/v1/settings/integrations:
+    get:
+      tags: [Configuration]
+      operationId: listIntegrations
+      summary: List runtime integration configuration
+      responses:
+        "200":
+          description: Integration configuration flags.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IntegrationCollection"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/AccessUnavailable" }
+
+  /api/v1/clusters:
+    get:
+      tags: [Inventory]
+      operationId: listClusters
+      summary: List Kubernetes clusters
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Cluster"
+        - $ref: "#/components/parameters/Filter"
+        - $ref: "#/components/parameters/Sort"
+        - $ref: "#/components/parameters/Order"
+      responses:
+        "200": { $ref: "#/components/responses/ObjectCollection" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/DependencyUnavailable" }
+
+  /api/v1/namespaces:
+    get:
+      tags: [Inventory]
+      operationId: listNamespaces
+      summary: List Kubernetes namespaces
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Cluster"
+        - $ref: "#/components/parameters/Filter"
+        - $ref: "#/components/parameters/Sort"
+        - $ref: "#/components/parameters/Order"
+      responses:
+        "200": { $ref: "#/components/responses/ObjectCollection" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/DependencyUnavailable" }
+
+  /api/v1/workloads:
+    get:
+      tags: [Inventory]
+      operationId: listWorkloads
+      summary: List Kubernetes workloads
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Cluster"
+        - $ref: "#/components/parameters/Filter"
+        - $ref: "#/components/parameters/Sort"
+        - $ref: "#/components/parameters/Order"
+      responses:
+        "200": { $ref: "#/components/responses/ObjectCollection" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/DependencyUnavailable" }
+
+  /api/v1/metrics/history:
+    get:
+      tags: [Inventory]
+      operationId: listMetricsHistory
+      summary: List historical metrics
+      description: Returns `status.available=false` until a supporting provider is configured.
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Cluster"
+        - $ref: "#/components/parameters/Filter"
+        - $ref: "#/components/parameters/Sort"
+        - $ref: "#/components/parameters/Order"
+      responses:
+        "200": { $ref: "#/components/responses/ObjectCollection" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/DependencyUnavailable" }
+
+  /api/v1/savings:
+    get:
+      tags: [Inventory]
+      operationId: listSavings
+      summary: List verified cost-savings estimates
+      description: Returns `status.available=false` until an OpenCost provider is configured.
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Cluster"
+        - $ref: "#/components/parameters/Filter"
+        - $ref: "#/components/parameters/Sort"
+        - $ref: "#/components/parameters/Order"
+      responses:
+        "200": { $ref: "#/components/responses/ObjectCollection" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/DependencyUnavailable" }
+
+  /api/v1/forecasts:
+    get:
+      tags: [Inventory]
+      operationId: listForecasts
+      summary: List forecasts
+      description: Returns `status.available=false` until a supporting provider is configured.
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Cluster"
+        - $ref: "#/components/parameters/Filter"
+        - $ref: "#/components/parameters/Sort"
+        - $ref: "#/components/parameters/Order"
+      responses:
+        "200": { $ref: "#/components/responses/ObjectCollection" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/DependencyUnavailable" }
+
+  /api/v1/autoscalers:
+    get:
+      tags: [Inventory]
+      operationId: listAutoscalers
+      summary: List HPA, KEDA, and VPA resources
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Cluster"
+        - $ref: "#/components/parameters/Filter"
+        - $ref: "#/components/parameters/Sort"
+        - $ref: "#/components/parameters/Order"
+      responses:
+        "200": { $ref: "#/components/responses/ObjectCollection" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/DependencyUnavailable" }
+
+  /api/v1/approvals:
+    get:
+      tags: [Inventory]
+      operationId: listApprovals
+      summary: List approvals
+      description: Returns `status.available=false` until a supporting provider is configured.
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Cluster"
+        - $ref: "#/components/parameters/Filter"
+        - $ref: "#/components/parameters/Sort"
+        - $ref: "#/components/parameters/Order"
+      responses:
+        "200": { $ref: "#/components/responses/ObjectCollection" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/DependencyUnavailable" }
+
+  /api/v1/gitops/changes:
+    get:
+      tags: [Inventory]
+      operationId: listGitOpsChanges
+      summary: List GitOps changes
+      description: Returns `status.available=false` until a supporting provider is configured.
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Cluster"
+        - $ref: "#/components/parameters/Filter"
+        - $ref: "#/components/parameters/Sort"
+        - $ref: "#/components/parameters/Order"
+      responses:
+        "200": { $ref: "#/components/responses/ObjectCollection" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/DependencyUnavailable" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Kubernetes/OpenShift token or the configured static API token. Encoded
+        bearer credentials longer than 16,384 characters are rejected.
+
+  parameters:
+    Page:
+      name: page
+      in: query
+      description: One-based page number.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000000
+        default: 1
+    PageSize:
+      name: pageSize
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+    Namespace:
+      name: namespace
+      in: query
+      schema: { type: string }
+    Cluster:
+      name: cluster
+      in: query
+      schema: { type: string }
+    Filter:
+      name: filter
+      in: query
+      description: Case-insensitive provider-defined text filter.
+      schema: { type: string }
+    Sort:
+      name: sort
+      in: query
+      description: Provider-defined field name. Unknown fields retain provider order.
+      schema: { type: string }
+    Order:
+      name: order
+      in: query
+      schema:
+        type: string
+        enum: [asc, desc]
+    OrderWithDefault:
+      name: order
+      in: query
+      schema:
+        type: string
+        enum: [asc, desc]
+        default: desc
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Replays return the original record with HTTP 200.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+        pattern: '^[A-Za-z0-9._:-]+$'
+
+  responses:
+    RecommendationCreated:
+      description: A new recommendation was calculated and retained.
+      headers:
+        Location:
+          schema: { type: string }
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/RecommendationRecord"
+    RecommendationReplayed:
+      description: The record associated with the idempotency key already existed.
+      headers:
+        Location:
+          schema: { type: string }
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/RecommendationRecord"
+    ObjectCollection:
+      description: |
+        A page of provider records. An unavailable integration is represented by
+        HTTP 200 with an empty `items` array and `status.available=false`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ObjectCollection"
+    BadRequest:
+      description: Invalid JSON, pagination, filter, sort, identifier, or idempotency key.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    IdempotencyConflict:
+      description: The idempotency key was already used in this identity and namespace scope for a different request.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    Unauthorized:
+      description: Bearer credentials were missing or rejected.
+      headers:
+        WWW-Authenticate:
+          schema: { type: string }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    Forbidden:
+      description: Authorization was denied or the operation is disabled in the current mode.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    NotFound:
+      description: The recommendation does not exist in retained history.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    RequestTooLarge:
+      description: The request body exceeds the configured limit.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    UnprocessableEntity:
+      description: The recommendation input violates optimizer constraints.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    AccessUnavailable:
+      description: Token authentication or authorization could not reach its dependency.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    DependencyUnavailable:
+      description: Authentication, authorization, or the configured data provider is unavailable.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  schemas:
+    Health:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          const: alive
+
+    Readiness:
+      type: object
+      additionalProperties: false
+      required: [status, checks]
+      properties:
+        status:
+          type: string
+          enum: [ready, not_ready]
+        checks:
+          type: object
+          required: [authentication, dataProvider]
+          properties:
+            authentication:
+              type: string
+              enum: [ready, unavailable]
+            dataProvider:
+              type: string
+              enum: [ready, unavailable, not_configured]
+
+    Version:
+      type: object
+      additionalProperties: false
+      required: [version, commit, buildDate, mode]
+      properties:
+        version: { type: string }
+        commit: { type: string }
+        buildDate: { type: string }
+        mode:
+          $ref: "#/components/schemas/OperationMode"
+
+    OperationMode:
+      type: string
+      enum: [observe, recommend]
+
+    Overview:
+      type: object
+      additionalProperties: false
+      required: [version, mode, recommendations, inventory, generatedAt]
+      properties:
+        version: { type: string }
+        mode:
+          $ref: "#/components/schemas/OperationMode"
+        recommendations:
+          type: object
+          additionalProperties: false
+          required: [total, source]
+          properties:
+            total: { type: integer, minimum: 0 }
+            source: { type: string, const: in_process_history }
+        inventory:
+          $ref: "#/components/schemas/Availability"
+        generatedAt:
+          type: string
+          format: date-time
+
+    Availability:
+      type: object
+      additionalProperties: false
+      required: [available, source]
+      properties:
+        available: { type: boolean }
+        source: { type: string }
+        reason: { type: string }
+
+    Pagination:
+      type: object
+      additionalProperties: false
+      required: [page, pageSize, total]
+      properties:
+        page:
+          type: integer
+          minimum: 1
+        pageSize:
+          type: integer
+          minimum: 1
+          maximum: 200
+        total:
+          type: integer
+          minimum: 0
+
+    ObjectCollection:
+      type: object
+      additionalProperties: false
+      required: [items, pagination, status]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+        status:
+          $ref: "#/components/schemas/Availability"
+
+    RecommendationCollection:
+      type: object
+      additionalProperties: false
+      required: [items, pagination, status]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecommendationRecord"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+        status:
+          $ref: "#/components/schemas/Availability"
+
+    RecommendationInput:
+      type: object
+      additionalProperties: false
+      description: |
+        Limits, when nonzero, must not be lower than their corresponding
+        requests. Current requests must not exceed the effective policy maxima.
+      required: [namespace, workload, container, cpuSamplesMilli, memorySamplesBytes]
+      properties:
+        cluster:
+          type: string
+          maxLength: 253
+        namespace:
+          type: string
+          minLength: 1
+          maxLength: 253
+        kind:
+          type: string
+          maxLength: 128
+        workload:
+          type: string
+          minLength: 1
+          maxLength: 253
+        container:
+          type: string
+          minLength: 1
+          maxLength: 253
+        criticality:
+          type: string
+          enum: [low, medium, high]
+        cpuRequestMilli:
+          type: integer
+          minimum: 0
+          maximum: 1000000000
+          default: 0
+        memoryRequestBytes:
+          type: integer
+          minimum: 0
+          maximum: 2305843009213693951
+          default: 0
+        cpuLimitMilli:
+          type: integer
+          minimum: 0
+          maximum: 1000000000
+          default: 0
+        memoryLimitBytes:
+          type: integer
+          minimum: 0
+          maximum: 2305843009213693951
+          default: 0
+        cpuSamplesMilli:
+          type: array
+          minItems: 1
+          maxItems: 100000
+          items:
+            type: number
+            minimum: 0
+            maximum: 1000000000
+        memorySamplesBytes:
+          type: array
+          minItems: 1
+          maxItems: 100000
+          items:
+            type: number
+            minimum: 0
+            maximum: 2305843009213693951
+        sampleIntervalSeconds:
+          type: integer
+          minimum: 0
+        observedContainerRestarts:
+          type: integer
+          minimum: 0
+        observedOomKills:
+          type: integer
+          minimum: 0
+        autoscaling:
+          $ref: "#/components/schemas/AutoscalingContext"
+        policy:
+          $ref: "#/components/schemas/Policy"
+
+    AutoscalingContext:
+      type: object
+      additionalProperties: false
+      properties:
+        hpaUtilizationBased: { type: boolean, default: false }
+        vpaControlsCpu: { type: boolean, default: false }
+        vpaControlsMemory: { type: boolean, default: false }
+        kedaEnabled: { type: boolean, default: false }
+
+    Policy:
+      type: object
+      additionalProperties: false
+      description: |
+        Minimum bounds must not exceed maximum bounds, and
+        `highConfidenceSamples` must be at least `minimumSamples`.
+      required:
+        - cpuSafetyMargin
+        - memorySafetyMargin
+        - limitSafetyMargin
+        - minimumCpuMilli
+        - minimumMemoryBytes
+        - maximumCpuMilli
+        - maximumMemoryBytes
+        - maximumReduction
+        - minimumSamples
+        - highConfidenceSamples
+      properties:
+        cpuSafetyMargin: { type: number, minimum: 0, maximum: 10 }
+        memorySafetyMargin: { type: number, minimum: 0, maximum: 10 }
+        limitSafetyMargin: { type: number, minimum: 0, maximum: 10 }
+        minimumCpuMilli: { type: integer, minimum: 1, maximum: 1000000000 }
+        minimumMemoryBytes: { type: integer, minimum: 1, maximum: 2305843009213693951 }
+        maximumCpuMilli: { type: integer, minimum: 1, maximum: 1000000000 }
+        maximumMemoryBytes: { type: integer, minimum: 1, maximum: 2305843009213693951 }
+        maximumReduction: { type: number, minimum: 0, maximum: 0.5 }
+        minimumSamples: { type: integer, minimum: 2, maximum: 100000 }
+        highConfidenceSamples: { type: integer, minimum: 2, maximum: 100000 }
+
+    Percentiles:
+      type: object
+      additionalProperties: false
+      required: [p50, p90, p95, p99, max]
+      properties:
+        p50: { type: number, minimum: 0 }
+        p90: { type: number, minimum: 0 }
+        p95: { type: number, minimum: 0 }
+        p99: { type: number, minimum: 0 }
+        max: { type: number, minimum: 0 }
+
+    DataQuality:
+      type: object
+      additionalProperties: false
+      required: [cpuSampleCount, memorySampleCount, minimumRequired, sufficient, issues]
+      properties:
+        cpuSampleCount: { type: integer, minimum: 0, maximum: 100000 }
+        memorySampleCount: { type: integer, minimum: 0, maximum: 100000 }
+        minimumRequired: { type: integer, minimum: 2, maximum: 100000 }
+        sufficient: { type: boolean }
+        issues:
+          type: array
+          items: { type: string }
+
+    Level:
+      type: string
+      enum: [low, medium, high]
+
+    RecommendationRecord:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - namespace
+        - workload
+        - container
+        - cpuRequestMilli
+        - memoryRequestBytes
+        - cpuLimitMilli
+        - memoryLimitBytes
+        - currentCpuRequestMilli
+        - currentMemoryRequestBytes
+        - currentCpuLimitMilli
+        - currentMemoryLimitBytes
+        - cpuStatisticsMilli
+        - memoryStatisticsBytes
+        - confidence
+        - confidenceScore
+        - risk
+        - burstable
+        - dataQuality
+        - reason
+        - warnings
+        - applied
+        - effectivePolicy
+        - createdAt
+      properties:
+        id:
+          type: string
+          pattern: '^rec_[0-9a-f]{32}$'
+        cluster: { type: string }
+        namespace: { type: string }
+        kind: { type: string }
+        workload: { type: string }
+        container: { type: string }
+        cpuRequestMilli: { type: integer, minimum: 0 }
+        memoryRequestBytes: { type: integer, minimum: 0 }
+        cpuLimitMilli: { type: integer, minimum: 0 }
+        memoryLimitBytes: { type: integer, minimum: 0 }
+        currentCpuRequestMilli: { type: integer, minimum: 0 }
+        currentMemoryRequestBytes: { type: integer, minimum: 0 }
+        currentCpuLimitMilli: { type: integer, minimum: 0 }
+        currentMemoryLimitBytes: { type: integer, minimum: 0 }
+        cpuStatisticsMilli:
+          $ref: "#/components/schemas/Percentiles"
+        memoryStatisticsBytes:
+          $ref: "#/components/schemas/Percentiles"
+        confidence:
+          $ref: "#/components/schemas/Level"
+        confidenceScore:
+          type: number
+          minimum: 0
+          maximum: 1
+        risk:
+          $ref: "#/components/schemas/Level"
+        burstable: { type: boolean }
+        dataQuality:
+          $ref: "#/components/schemas/DataQuality"
+        estimatedCpuChangePercent: { type: number }
+        estimatedMemoryChangePercent: { type: number }
+        reason: { type: string }
+        warnings:
+          type: array
+          items: { type: string }
+        applied:
+          type: boolean
+          description: Currently always false; this endpoint does not mutate workloads.
+        effectivePolicy:
+          $ref: "#/components/schemas/Policy"
+        createdAt:
+          type: string
+          format: date-time
+
+    PolicyCollection:
+      type: object
+      additionalProperties: false
+      required: [items, pagination, status]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [name, builtIn, policy]
+            properties:
+              name: { type: string }
+              builtIn: { type: boolean }
+              policy:
+                $ref: "#/components/schemas/Policy"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+        status:
+          $ref: "#/components/schemas/Availability"
+
+    AuditEvent:
+      type: object
+      additionalProperties: false
+      required: [id, timestamp, actor, action, resource, outcome, requestId]
+      properties:
+        id: { type: string }
+        timestamp: { type: string, format: date-time }
+        actor: { type: string }
+        action: { type: string }
+        resource: { type: string }
+        namespace: { type: string }
+        outcome: { type: string }
+        requestId: { type: string }
+
+    AuditCollection:
+      type: object
+      additionalProperties: false
+      required: [items, pagination, status]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AuditEvent"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+        status:
+          $ref: "#/components/schemas/Availability"
+
+    IntegrationCollection:
+      type: object
+      additionalProperties: false
+      required: [items, pagination, status]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [name, configured]
+            properties:
+              name:
+                type: string
+                enum: [kubernetesInventory, prometheus, gitops, forecasting]
+              configured: { type: boolean }
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+        status:
+          $ref: "#/components/schemas/Availability"
+
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            requestId: { type: string }
