@@ -114,6 +114,8 @@ jobs:
           skopeo copy --override-os linux --override-arch amd64 oci-archive:kuberight-ml.oci.tar oci-archive:kuberight-ml-linux-amd64.oci.tar
           skopeo copy --override-os linux --override-arch arm64 oci-archive:kuberight-ml.oci.tar oci-archive:kuberight-ml-linux-arm64.oci.tar
       - uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: v0.65.0
       - name: Block vulnerable release archives
         run: |
           trivy image --input kuberight-linux-amd64.oci.tar --exit-code 1 --severity HIGH,CRITICAL --vuln-type os,library
