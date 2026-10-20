@@ -1,12 +1,12 @@
 # Production readiness — blocked
 
-Status on 2026-10-19: **development preview, not production ready**. The current candidate is `0.1.0-rc.1`. Do not publish `latest`, create a stable `v0.1.0` tag, or claim Kubernetes-distribution certification.
+Status on 2026-10-20: **development preview, not production ready**. The current candidate is `0.1.0-rc.1`. Do not publish `latest`, create a stable `v0.1.0` tag, or claim Kubernetes-distribution certification.
 
 ## Acceptance evidence
 
 | Criterion | Implementation or evidence | Status |
 | --- | --- | --- |
-| Go API compiles and unit tests pass | Formatting, module verification, `go vet`, all unit tests, and `go build ./cmd/kuberight` passed locally with Go 1.27.2; measured aggregate statement coverage is 49.1% | Locally verified; CI race test pending |
+| Go API compiles and unit tests pass | Formatting, module verification, `go vet`, all unit tests, the race detector, coverage enforcement, and `go build ./cmd/kuberight` passed in CI; measured aggregate statement coverage is 49.1% | Verified on commit `6a892ef` in CI run `39497500255` |
 | Authentication fails closed | Kubernetes TokenReview/SubjectAccessReview and static-development mode tests in `internal/httpapi` | Locally verified; live-cluster test pending |
 | Read-only in-cluster inventory | `internal/provider/kubernetes.go` and fake-client tests | Locally verified; Kind/OpenShift runtime pending |
 | Recommendation engine | Deterministic optimizer tests cover sparse, bursty, HPA, and safety behavior | Locally verified |
@@ -14,10 +14,10 @@ Status on 2026-10-19: **development preview, not production ready**. The current
 | Dashboard quality gates | Typecheck, zero-warning lint, 5 tests, production build, and high-severity npm audit | Locally verified |
 | API contract | `api/openapi.yaml` validated with `openapi-spec-validator` 0.7.2 | Locally verified |
 | Helm packaging | Strict lint, default/profile renders, standalone-manifest drift, negative-value tests, and Kubernetes 1.35 kubeconform schemas | Locally verified |
-| Container build and runtime | Digest-pinned, non-root Minimus Dockerfiles and CI smoke jobs exist | **Unverified: no local Docker runtime** |
-| Image vulnerability policy | CI blocks HIGH/CRITICAL Trivy results; govulncheck, Python development-dependency audit, and npm audit passed locally | Container scan pending |
-| SBOM and signing | Release workflow creates SPDX SBOMs and keyless Cosign signatures | Pending release workflow |
-| Kubernetes integration | CI defines disposable Kind install and rollout checks | Pending first CI run |
+| Container build and runtime | CI built both amd64 images, enforced positive numeric users, verified the ML runtime is pip-free, and passed read-only smoke tests | Verified on commit `6a892ef` in CI run `39497500255`; release arm64 build pending |
+| Image vulnerability policy | Trivy 0.76.0 reported no HIGH/CRITICAL findings in either image; govulncheck, Python dependency audit, and npm audit also passed | Verified on commit `6a892ef` in CI run `39497500255` |
+| SBOM and signing | CI generated SPDX JSON SBOMs for both images | SBOM generation verified; release signing pending |
+| Kubernetes integration | CI installed both locally built images with Helm and completed both rollouts in disposable Kubernetes 1.35 Kind | Basic deployment verified; workload behavior scenarios remain pending |
 | OpenShift compatibility | Restricted settings and Route profile render | **No OpenShift end-to-end evidence** |
 | Durable persistence and recovery | No Go database adapter, migration, backup, or restore path | **Not implemented** |
 | Horizontal scaling and HA | Chart profiles remain singleton with HPAs disabled because API and ML state is local to each process or pod | **Not implemented** |
@@ -28,7 +28,7 @@ Status on 2026-10-19: **development preview, not production ready**. The current
 
 ## Release blockers
 
-1. Required GitHub quality gates must pass on the exact commit, including race tests, dependency scans, Docker builds, Trivy scans, SBOM generation, non-root checks, smoke tests, and Kind rollout.
+1. Required GitHub quality gates must pass on the exact commit. On commit `6a892ef`, every code, image, scan, SBOM, smoke, and Kind job passed, but Dependency Review failed because the repository Dependency Graph is disabled. An owner must enable it and the exact release candidate must then pass the complete workflow.
 2. Docker Hub release environment secrets and approval must be present; image tags, digests, signatures, and attestations must be recorded after publication.
 3. A live OpenShift test is required before any OpenShift certification claim.
 4. The unimplemented production capabilities listed above must either be delivered and verified or remain explicit exclusions from the product scope.
