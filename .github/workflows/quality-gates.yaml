@@ -234,21 +234,23 @@ jobs:
           test -n "$(docker image inspect --format '{{.Config.User}}' kuberight-ml:ci)"
           test "$(docker image inspect --format '{{.Config.User}}' kuberight-ml:ci)" != "0"
       - name: Scan backend/dashboard image
-        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: kuberight:ci
           format: table
           exit-code: "1"
           severity: HIGH,CRITICAL
           vuln-type: os,library
+          version: v0.76.0
       - name: Scan ML image
-        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: kuberight-ml:ci
           format: table
           exit-code: "1"
           severity: HIGH,CRITICAL
           vuln-type: os,library
+          version: v0.76.0
       - name: Generate backend/dashboard SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
