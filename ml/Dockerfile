@@ -19,10 +19,10 @@ LABEL org.opencontainers.image.title="KubeRight ML" \
       org.opencontainers.image.source="https://github.com/krishnamanaiducloud/kuberight" \
       org.opencontainers.image.licenses="Apache-2.0"
 USER 0:0
-# The Minimus Python runtime includes packaging clients that the isolated
-# application venv neither imports nor needs. Remove that global toolchain so
-# its transitive packages are not part of the runtime attack surface.
-RUN ["/usr/bin/python", "-m", "pip", "uninstall", "--yes", "msgpack", "setuptools", "urllib3", "pip"]
+# The pinned runtime carries an ensurepip bootstrap wheel whose vendored
+# libraries are not used by the isolated application venv. Remove that wheel
+# from the final filesystem so those unused libraries are not attack surface.
+RUN ["/usr/bin/python", "-c", "from pathlib import Path; Path('/usr/share/python-wheels/pip-26.2.1-py3-none-any.whl').unlink()"]
 WORKDIR /app
 COPY --from=build --chown=1000:1000 /opt/venv /opt/venv
 COPY --chown=1000:1000 service.py __init__.py ./
