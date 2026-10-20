@@ -228,11 +228,21 @@ jobs:
           tags: kuberight-ml:ci
           provenance: false
       - name: Enforce non-root image users
+        shell: bash
         run: |
-          test -n "$(docker image inspect --format '{{.Config.User}}' kuberight:ci)"
-          test "$(docker image inspect --format '{{.Config.User}}' kuberight:ci)" != "0"
-          test -n "$(docker image inspect --format '{{.Config.User}}' kuberight-ml:ci)"
-          test "$(docker image inspect --format '{{.Config.User}}' kuberight-ml:ci)" != "0"
+          set -euo pipefail
+          for image in kuberight:ci kuberight-ml:ci; do
+            configured_user="$(docker image inspect --format '{{.Config.User}}' "$image")"
+            configured_uid="${configured_user%%:*}"
+            if [[ ! "$configured_uid" =~ ^[1-9][0-9]*$ ]]; then
+              echo "Image $image has an unsafe configured user: ${configured_user:-<empty>}" >&2
+              exit 1
+            fi
+          done
+      - name: Verify ML runtime packaging tools are absent
+        run: |
+          docker run --rm --entrypoint /opt/venv/bin/python kuberight-ml:ci \
+            -c "import importlib.util; from pathlib import Path; assert importlib.util.find_spec('pip') is None; assert not Path('/usr/share/python-wheels/pip-26.2.1-py3-none-any.whl').exists()"
       - name: Scan backend/dashboard image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
