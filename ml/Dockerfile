@@ -5,7 +5,9 @@ USER root
 WORKDIR /build
 COPY requirements.lock ./
 RUN python -m venv /opt/venv && \
-    /opt/venv/bin/python -m pip install --no-cache-dir --require-hashes -r requirements.lock
+    /opt/venv/bin/python -m pip install --no-cache-dir --require-hashes -r requirements.lock && \
+    /opt/venv/bin/python -m pip uninstall --yes pip && \
+    /opt/venv/bin/python -c "import importlib.util; assert importlib.util.find_spec('pip') is None"
 
 FROM reg.mini.dev/python:v3.12.15@sha256:dccf22b5227855f951150d51f3d0262f5f9e49476ddaedfc7754146686d8979b
 ARG VERSION=dev
