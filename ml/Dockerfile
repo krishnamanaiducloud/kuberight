@@ -18,6 +18,11 @@ LABEL org.opencontainers.image.title="KubeRight ML" \
       org.opencontainers.image.created="${BUILD_DATE}" \
       org.opencontainers.image.source="https://github.com/krishnamanaiducloud/kuberight" \
       org.opencontainers.image.licenses="Apache-2.0"
+USER 0:0
+# The Minimus Python runtime includes packaging clients that the isolated
+# application venv neither imports nor needs. Remove that global toolchain so
+# its transitive packages are not part of the runtime attack surface.
+RUN ["/usr/bin/python", "-m", "pip", "uninstall", "--yes", "msgpack", "setuptools", "urllib3", "pip"]
 WORKDIR /app
 COPY --from=build --chown=1000:1000 /opt/venv /opt/venv
 COPY --chown=1000:1000 service.py __init__.py ./
