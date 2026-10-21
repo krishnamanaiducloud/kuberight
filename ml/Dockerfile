@@ -4,7 +4,12 @@ FROM python:3.12.15-slim-bookworm@sha256:6a0e06f5ba0b373d051aabd3fffb9b873f27f9a
 WORKDIR /build
 COPY requirements.lock ./
 RUN python -m pip install --no-cache-dir --require-hashes --only-binary=:all: --target /opt/python -r requirements.lock && \
-    PYTHONPATH=/opt/python python -c "import fastapi, joblib, numpy, pydantic, scipy, sklearn, uvicorn"
+    PYTHONPATH=/opt/python python -c "import fastapi, joblib, numpy, pydantic, scipy, sklearn, uvicorn" && \
+    mkdir -p /opt/runtime-libs && \
+    library="$(ldconfig -p | awk '$1 == "libstdc++.so.6" { print $NF; exit }')" && \
+    test -n "$library" && \
+    cp --dereference "$library" /opt/runtime-libs/libstdc++.so.6 && \
+    dpkg-query --show libstdc++6 > /opt/runtime-libs/LIBSTDCPP_SOURCE
 
 FROM ubuntu/python:3.12-24.04_stable@sha256:e7f3e3c521b5d63316b49024157c4e41ec30494bf70499d178a5cdcdb6918c40
 ARG VERSION=dev
@@ -23,8 +28,10 @@ USER 0:0
 RUN ["/usr/bin/python3", "-c", "from pathlib import Path; Path('/usr/bin/pebble').unlink()"]
 WORKDIR /app
 COPY --from=build --chown=584792:584792 /opt/python /opt/python
+COPY --from=build --chown=0:0 /opt/runtime-libs /opt/runtime-libs
 COPY --chown=584792:584792 service.py __init__.py ./
-ENV PYTHONPATH=/opt/python \
+ENV LD_LIBRARY_PATH=/opt/runtime-libs \
+    PYTHONPATH=/opt/python \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     KUBERIGHT_ML_MODEL_DIR=/tmp/kuberight-ml/models
