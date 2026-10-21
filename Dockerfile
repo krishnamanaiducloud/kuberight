@@ -1,14 +1,16 @@
 # syntax=docker/dockerfile:1.7
 
-FROM reg.mini.dev/node:v24.22.0-dev@sha256:b41f072456c4ffac8e73d900946e08042acbdc8b0f2eb541dad30561909620e9 AS web-build
-USER 1000:1000
+FROM node:24.22.0-bookworm-slim@sha256:91acba91b842bec0bf7ea6f5e09c644c7ccad72c4996ed9616d861d1c7cd60d4 AS web-build
+USER root
 WORKDIR /app
+RUN chown 1000:1000 /app
+USER 1000:1000
 COPY --chown=1000:1000 web/package.json web/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY --chown=1000:1000 web/ ./
 RUN npm run build
 
-FROM reg.mini.dev/go:v1.27.2-dev@sha256:acd94a6ed1439dbb2b5e6e3303dd5ccce4d6685c33ee7d5cf11edf7cf4f40d70 AS go-build
+FROM golang:1.27.3-bookworm@sha256:21ade014faf952365b9ecbd8dbdb87176fbacb82fac9fb132d9f2a7b8cc3f132 AS go-build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download && go mod verify
@@ -25,7 +27,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     -ldflags="-s -w -X github.com/kuberight/kuberight/internal/httpapi.Version=${VERSION} -X github.com/kuberight/kuberight/internal/httpapi.Commit=${VCS_REF} -X github.com/kuberight/kuberight/internal/httpapi.BuildDate=${BUILD_DATE}" \
     -o /out/kuberight ./cmd/kuberight
 
-FROM reg.mini.dev/static:latest@sha256:18215a61b935746515939deb207e27182368adeb244a9ae6922e94a21eaac007
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:516757106de35205efb70b91ba03f6f1298424a0678c603255cf2852a7000087
 ARG VERSION=dev
 ARG VCS_REF=unknown
 ARG BUILD_DATE=unknown
@@ -37,10 +39,10 @@ LABEL org.opencontainers.image.title="KubeRight" \
       org.opencontainers.image.source="https://github.com/krishnamanaiducloud/kuberight" \
       org.opencontainers.image.licenses="Apache-2.0"
 WORKDIR /app
-COPY --from=go-build --chown=1000:1000 /out/kuberight /app/kuberight
-COPY --from=web-build --chown=1000:1000 /app/dist /app/web
+COPY --from=go-build --chown=65532:65532 /out/kuberight /app/kuberight
+COPY --from=web-build --chown=65532:65532 /app/dist /app/web
 ENV KUBERIGHT_WEB_ROOT=/app/web
-USER 1000:1000
+USER 65532:65532
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=4s --start-period=10s --retries=3 CMD ["/app/kuberight", "healthcheck"]
 ENTRYPOINT ["/app/kuberight"]

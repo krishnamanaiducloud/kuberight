@@ -241,8 +241,8 @@ jobs:
           done
       - name: Verify ML runtime packaging tools are absent
         run: |
-          docker run --rm --entrypoint /opt/venv/bin/python kuberight-ml:ci \
-            -c "import importlib.util; from pathlib import Path; assert importlib.util.find_spec('pip') is None; assert not Path('/usr/share/python-wheels/pip-26.2.1-py3-none-any.whl').exists()"
+          docker run --rm --entrypoint /usr/bin/python3 kuberight-ml:ci \
+            -c "import importlib.util; from pathlib import Path; assert importlib.util.find_spec('pip') is None; assert importlib.util.find_spec('ensurepip') is None; assert not Path('/usr/bin/pebble').exists(); import fastapi, joblib, numpy, pydantic, scipy, sklearn, uvicorn"
       - name: Scan backend/dashboard image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
