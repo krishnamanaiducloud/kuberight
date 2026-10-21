@@ -17,7 +17,7 @@ The Go API does **not** yet query Prometheus or OpenCost, call the ML service, p
 
 ## Quick start from source
 
-Prerequisites are Go 1.27, Node.js 24, and npm. This local mode disables in-cluster inventory and uses a static token; it is for development only.
+Prerequisites are Go 1.27.3, Node.js 24, and npm. This local mode disables in-cluster inventory and uses a static token; it is for development only.
 
 ```sh
 npm ci --prefix web

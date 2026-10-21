@@ -39,7 +39,8 @@ This list describes the current implementation, not planned behavior. KubeRight 
 
 ## Packaging and compatibility
 
-- The Docker build stages use digest-pinned Minimus bases. [Minimus has announced](https://www.minimus.io/) that `reg.mini.dev` will cease operation on 2026-10-22. Published KubeRight images remain self-contained, but rebuilding will require an approved mirrored base or a reviewed base-image migration after that date.
+- Source builds use digest-pinned official Node, Go, Python, and Ubuntu builders. The backend runtime is Google Distroless static and the ML runtime is Canonical's chiselled Python image. Rebuilding does not depend on `reg.mini.dev`, but every digest refresh still requires review and the complete image build, scan, SBOM, runtime, and architecture gates.
+- The configured arm64 gate uses QEMU on an amd64 GitHub-hosted runner. It is designed to validate the instruction set, dynamic linking, scientific imports, and startup, but it is not native-arm performance or kernel-behavior evidence.
 - A Dockerfile or Helm `appVersion` does not prove the corresponding public image tag exists. Only use a digest from a successful release workflow and verify its signature.
 - The checked-in OpenAPI file is a repository artifact and is not served by the Go process. Contract drift remains possible and must be caught in review and tests.
 - The chart declares Kubernetes 1.35 or newer, matching an actively maintained upstream line at the time of this candidate. Compatibility outside CI's tested Kubernetes schema/Kind versions is unverified.

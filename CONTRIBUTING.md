@@ -4,7 +4,7 @@ KubeRight is a development preview. Contributions should preserve its fail-close
 
 ## Development setup
 
-Use Go 1.27, Python 3.12, Node.js 24, npm, and Helm 4.3.1. The CI workflow is the authoritative list of required checks.
+Use Go 1.27.3, Python 3.12, Node.js 24, npm, and Helm 4.3.1. The CI workflow is the authoritative list of required checks.
 
 ```sh
 go mod download

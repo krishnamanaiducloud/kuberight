@@ -11,7 +11,7 @@ KubeRight is a development preview. The commands below describe the supplied pac
 - Prometheus Operator CRDs only when `metrics.serviceMonitor.enabled` or `metrics.prometheusRule.enabled` is true.
 - OpenShift Route API only when `route.enabled` is true.
 
-Source image builds currently depend on digest-pinned bases from `reg.mini.dev`. [Minimus says](https://www.minimus.io/) that registry is scheduled to cease operation on 2026-10-22; mirror or migrate those bases through a reviewed change before attempting later rebuilds. This does not add a runtime dependency to already-published KubeRight application images.
+Source image builds use digest-pinned official Node, Go, Python, and Ubuntu builders, a Google Distroless static backend runtime, and a Canonical chiselled Python ML runtime. The final images are shell-less and run as positive numeric non-root users. Treat base-digest changes as reviewed release changes and require both architecture gates before publication.
 
 The default authentication mode also requires the KubeRight service account to create `TokenReview` and `SubjectAccessReview` objects. The chart grants those review permissions when `rbac.create=true` and `rbac.authReviews=true`.
 

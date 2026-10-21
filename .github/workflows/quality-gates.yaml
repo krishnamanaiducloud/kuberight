@@ -242,7 +242,7 @@ jobs:
       - name: Verify ML runtime packaging tools are absent
         run: |
           docker run --rm --entrypoint /usr/bin/python3 kuberight-ml:ci \
-            -c "import importlib.util; from pathlib import Path; assert importlib.util.find_spec('pip') is None; assert importlib.util.find_spec('ensurepip') is None; assert not Path('/usr/bin/pebble').exists(); import fastapi, joblib, numpy, pydantic, scipy, sklearn, uvicorn"
+            -c "import importlib.util; from pathlib import Path; assert importlib.util.find_spec('pip') is None; assert importlib.util.find_spec('ensurepip') is None; assert not Path('/usr/bin/pebble').exists(); assert 'Package: libstdc++6' in Path('/var/lib/dpkg/status.d/libstdc++6').read_text(); assert Path('/usr/share/doc/libstdc++6/copyright').is_file(); import fastapi, joblib, numpy, pydantic, scipy, sklearn, uvicorn"
       - name: Scan backend/dashboard image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -275,6 +275,10 @@ jobs:
           format: spdx-json
           output-file: kuberight-ml.spdx.json
           artifact-name: kuberight-ml-ci-sbom.spdx.json
+      - name: Verify ML SBOM identifies copied C++ runtime
+        shell: bash
+        run: |
+          jq -e 'any(.packages[]; .name == "libstdc++6" and (.versionInfo | length > 0))' kuberight-ml.spdx.json
       - name: Container smoke tests
         shell: bash
         run: |
@@ -311,6 +315,119 @@ jobs:
           kubectl -n kuberight rollout status deployment/kuberight-ml --timeout=2m
           kubectl -n kuberight get pods,services
 
+  containers_arm64:
+    name: Build, scan, and execute ARM64 images
+    needs:
+      - containers
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Set up ARM64 emulation
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+        with:
+          platforms: arm64
+          image: docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build ARM64 backend/dashboard image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/arm64
+          load: true
+          push: false
+          tags: kuberight:ci-arm64
+          provenance: false
+      - name: Build ARM64 ML image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ./ml
+          file: ./ml/Dockerfile
+          platforms: linux/arm64
+          load: true
+          push: false
+          tags: kuberight-ml:ci-arm64
+          provenance: false
+      - name: Verify ARM64 platforms and non-root users
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          for image in kuberight:ci-arm64 kuberight-ml:ci-arm64; do
+            platform="$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")"
+            test "$platform" = linux/arm64 || {
+              echo "Expected linux/arm64 image, got $platform for $image" >&2
+              exit 1
+            }
+            configured_user="$(docker image inspect --format '{{.Config.User}}' "$image")"
+            configured_uid="${configured_user%%:*}"
+            if [[ ! "$configured_uid" =~ ^[1-9][0-9]*$ ]]; then
+              echo "Image $image has an unsafe configured user: ${configured_user:-<empty>}" >&2
+              exit 1
+            fi
+          done
+      - name: Verify ARM64 ML runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --platform linux/arm64 \
+            --entrypoint /usr/bin/python3 kuberight-ml:ci-arm64 \
+            -c "import importlib.util, platform; from pathlib import Path; machine = platform.machine(); print(machine); assert machine in {'aarch64', 'arm64'}, machine; assert importlib.util.find_spec('pip') is None; assert importlib.util.find_spec('ensurepip') is None; assert not Path('/usr/bin/pebble').exists(); assert 'Package: libstdc++6' in Path('/var/lib/dpkg/status.d/libstdc++6').read_text(); assert Path('/usr/share/doc/libstdc++6/copyright').is_file(); import fastapi, joblib, numpy, pydantic, scipy, sklearn, uvicorn"
+      - name: Scan ARM64 backend/dashboard image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: kuberight:ci-arm64
+          format: table
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          vuln-type: os,library
+          version: v0.76.0
+      - name: Scan ARM64 ML image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: kuberight-ml:ci-arm64
+          format: table
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          vuln-type: os,library
+          version: v0.76.0
+      - name: Run ARM64 read-only smoke tests under QEMU
+        shell: bash
+        run: |
+          set -euo pipefail
+          cleanup() {
+            docker logs kuberight-arm64-smoke || true
+            docker logs kuberight-ml-arm64-smoke || true
+            docker rm -f kuberight-arm64-smoke kuberight-ml-arm64-smoke >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker run --platform linux/arm64 -d --name kuberight-arm64-smoke \
+            --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            -e KUBERIGHT_AUTH_MODE=static \
+            -e KUBERIGHT_API_TOKEN=ci-smoke-token-at-least-32-characters \
+            -e KUBERIGHT_INVENTORY_ENABLED=false \
+            -p 18082:8080 kuberight:ci-arm64
+          docker run --platform linux/arm64 -d --name kuberight-ml-arm64-smoke \
+            --read-only --tmpfs /tmp:rw,noexec,nosuid,size=256m \
+            -p 18083:8081 kuberight-ml:ci-arm64
+          wait_for_url() {
+            local url="$1"
+            for attempt in {1..60}; do
+              if curl --fail --silent "$url" >/dev/null; then
+                return 0
+              fi
+              sleep 2
+            done
+            echo "Timed out waiting for $url" >&2
+            return 1
+          }
+          wait_for_url http://127.0.0.1:18082/healthz
+          curl --fail --silent --show-error http://127.0.0.1:18082/readyz
+          wait_for_url http://127.0.0.1:18083/healthz
+          curl --fail --silent --show-error http://127.0.0.1:18083/readyz
+
   complete:
     name: All mandatory gates passed
     if: always()
@@ -323,6 +440,7 @@ jobs:
       - secrets
       - helm
       - containers
+      - containers_arm64
     runs-on: ubuntu-latest
     steps:
       - name: Require every mandatory result
@@ -335,6 +453,7 @@ jobs:
           SECRETS_RESULT: ${{ needs.secrets.result }}
           HELM_RESULT: ${{ needs.helm.result }}
           CONTAINERS_RESULT: ${{ needs.containers.result }}
+          ARM64_CONTAINERS_RESULT: ${{ needs.containers_arm64.result }}
         run: |
           test "$GO_RESULT" = success
           test "$PYTHON_RESULT" = success
@@ -348,3 +467,4 @@ jobs:
           test "$SECRETS_RESULT" = success
           test "$HELM_RESULT" = success
           test "$CONTAINERS_RESULT" = success
+          test "$ARM64_CONTAINERS_RESULT" = success

@@ -1,15 +1,22 @@
 # syntax=docker/dockerfile:1.7
 
+FROM ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac AS runtime-libs
+RUN mkdir -p /opt/runtime-libs \
+        /opt/runtime-metadata/usr/share/doc/libstdc++6 \
+        /opt/runtime-metadata/var/lib/dpkg/status.d && \
+    library="$(ldconfig -p | awk '$1 == "libstdc++.so.6" { print $NF; exit }')" && \
+    test -n "$library" && \
+    cp --dereference "$library" /opt/runtime-libs/libstdc++.so.6 && \
+    dpkg-query --show libstdc++6 > /opt/runtime-libs/LIBSTDCPP_SOURCE && \
+    dpkg-query --status libstdc++6 > /opt/runtime-metadata/var/lib/dpkg/status.d/libstdc++6 && \
+    test -f /usr/share/doc/libstdc++6/copyright && \
+    cp /usr/share/doc/libstdc++6/copyright /opt/runtime-metadata/usr/share/doc/libstdc++6/copyright
+
 FROM python:3.12.15-slim-bookworm@sha256:6a0e06f5ba0b373d051aabd3fffb9b873f27f9a2a3a14bcbe37dee6f0e3bbc70 AS build
 WORKDIR /build
 COPY requirements.lock ./
 RUN python -m pip install --no-cache-dir --require-hashes --only-binary=:all: --target /opt/python -r requirements.lock && \
-    PYTHONPATH=/opt/python python -c "import fastapi, joblib, numpy, pydantic, scipy, sklearn, uvicorn" && \
-    mkdir -p /opt/runtime-libs && \
-    library="$(ldconfig -p | awk '$1 == "libstdc++.so.6" { print $NF; exit }')" && \
-    test -n "$library" && \
-    cp --dereference "$library" /opt/runtime-libs/libstdc++.so.6 && \
-    dpkg-query --show libstdc++6 > /opt/runtime-libs/LIBSTDCPP_SOURCE
+    PYTHONPATH=/opt/python python -c "import fastapi, joblib, numpy, pydantic, scipy, sklearn, uvicorn"
 
 FROM ubuntu/python:3.12-24.04_stable@sha256:e7f3e3c521b5d63316b49024157c4e41ec30494bf70499d178a5cdcdb6918c40
 ARG VERSION=dev
@@ -28,7 +35,8 @@ USER 0:0
 RUN ["/usr/bin/python3", "-c", "from pathlib import Path; Path('/usr/bin/pebble').unlink()"]
 WORKDIR /app
 COPY --from=build --chown=584792:584792 /opt/python /opt/python
-COPY --from=build --chown=0:0 /opt/runtime-libs /opt/runtime-libs
+COPY --from=runtime-libs --chown=0:0 /opt/runtime-libs /opt/runtime-libs
+COPY --from=runtime-libs --chown=0:0 /opt/runtime-metadata/ /
 COPY --chown=584792:584792 service.py __init__.py ./
 ENV LD_LIBRARY_PATH=/opt/runtime-libs \
     PYTHONPATH=/opt/python \
