@@ -1,0 +1,23 @@
+KubeRight {{ .Chart.AppVersion }} has been rendered in {{ .Values.operationMode }} mode.
+
+Service:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "kuberight.fullname" . }} 8080:{{ .Values.service.port }}
+  http://127.0.0.1:8080/
+
+{{- if eq .Values.auth.mode "disabled" }}
+WARNING: authentication is disabled. Do not expose this release outside a trusted local test environment.
+{{- end }}
+{{- if and .Values.networkPolicy.enabled .Values.ingress.enabled }}
+IMPORTANT: networkPolicy permits same-namespace traffic by default. Add your ingress controller namespace/pod selectors to networkPolicy.ingress.
+{{- end }}
+{{- if eq .Values.rbac.scope "cluster" }}
+Cluster-wide read-only inventory RBAC is enabled. Review the rendered ClusterRole before installation.
+{{- else }}
+Inventory RBAC is namespace scoped to {{ .Release.Namespace }}.
+{{- end }}
+{{- if or (gt (int .Values.replicaCount) 1) .Values.autoscaling.enabled }}
+WARNING: API horizontal scaling is unsupported in this preview. Recommendation, idempotency, and audit state is process-local, so replicas do not share a consistent store.
+{{- end }}
+{{- if and .Values.ml.enabled (or (gt (int .Values.ml.replicaCount) 1) .Values.ml.autoscaling.enabled) }}
+WARNING: ML horizontal scaling is unsupported in this preview. The supplied deployment stores models on each pod's ephemeral local filesystem.
+{{- end }}

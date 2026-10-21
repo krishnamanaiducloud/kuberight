@@ -1,8 +1,50 @@
-FROM python:3.12-slim
+# syntax=docker/dockerfile:1.7
+
+FROM ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac AS runtime-libs
+RUN mkdir -p /opt/runtime-libs \
+        /opt/runtime-metadata/usr/share/doc/libstdc++6 \
+        /opt/runtime-metadata/var/lib/dpkg/status.d && \
+    library="$(ldconfig -p | awk '$1 == "libstdc++.so.6" { print $NF; exit }')" && \
+    test -n "$library" && \
+    cp --dereference "$library" /opt/runtime-libs/libstdc++.so.6 && \
+    dpkg-query --show libstdc++6 > /opt/runtime-libs/LIBSTDCPP_SOURCE && \
+    dpkg-query --status libstdc++6 > /opt/runtime-metadata/var/lib/dpkg/status.d/libstdc++6 && \
+    test -f /usr/share/doc/libstdc++6/copyright && \
+    cp /usr/share/doc/libstdc++6/copyright /opt/runtime-metadata/usr/share/doc/libstdc++6/copyright
+
+FROM python:3.12.15-slim-bookworm@sha256:6a0e06f5ba0b373d051aabd3fffb9b873f27f9a2a3a14bcbe37dee6f0e3bbc70 AS build
+WORKDIR /build
+COPY requirements.lock ./
+RUN python -m pip install --no-cache-dir --require-hashes --only-binary=:all: --target /opt/python -r requirements.lock && \
+    PYTHONPATH=/opt/python python -c "import fastapi, joblib, numpy, pydantic, scipy, sklearn, uvicorn"
+
+FROM ubuntu/python:3.12-24.04_stable@sha256:e7f3e3c521b5d63316b49024157c4e41ec30494bf70499d178a5cdcdb6918c40
+ARG VERSION=dev
+ARG VCS_REF=unknown
+ARG BUILD_DATE=unknown
+LABEL org.opencontainers.image.title="KubeRight ML" \
+      org.opencontainers.image.description="Bounded CPU and memory forecasting service for KubeRight" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.source="https://github.com/krishnamanaiducloud/kuberight" \
+      org.opencontainers.image.licenses="Apache-2.0"
+USER 0:0
+# The base image's Pebble supervisor is not used because this image supplies
+# its own entrypoint. Remove it so an unused binary is not attack surface.
+RUN ["/usr/bin/python3", "-c", "from pathlib import Path; Path('/usr/bin/pebble').unlink()"]
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY service.py .
-USER 65532:65532
+COPY --from=build --chown=584792:584792 /opt/python /opt/python
+COPY --from=runtime-libs --chown=0:0 /opt/runtime-libs /opt/runtime-libs
+COPY --from=runtime-libs --chown=0:0 /opt/runtime-metadata/ /
+COPY --chown=584792:584792 service.py __init__.py ./
+ENV LD_LIBRARY_PATH=/opt/runtime-libs \
+    PYTHONPATH=/opt/python \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    KUBERIGHT_ML_MODEL_DIR=/tmp/kuberight-ml/models
+USER 584792:584792
 EXPOSE 8081
-CMD ["uvicorn", "service:app", "--host", "0.0.0.0", "--port", "8081"]
+HEALTHCHECK --interval=30s --timeout=4s --start-period=15s --retries=3 CMD ["/usr/bin/python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/healthz', timeout=3).read()"]
+ENTRYPOINT ["/usr/bin/python3", "-m", "uvicorn"]
+CMD ["service:app", "--host", "0.0.0.0", "--port", "8081", "--no-access-log"]

@@ -1,0 +1,204 @@
+name: Release immutable images
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Validate release tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag=${GITHUB_REF_NAME}
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || {
+            echo "release tag must match vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc.N" >&2
+            exit 1
+          }
+          version=${tag#v}
+          chart_version=$(awk '$1 == "version:" { gsub(/"/, "", $2); print $2; exit }' charts/kuberight/Chart.yaml)
+          app_version=$(awk '$1 == "appVersion:" { gsub(/"/, "", $2); print $2; exit }' charts/kuberight/Chart.yaml)
+          test "$version" = "$chart_version" || {
+            echo "release tag $version does not match chart version $chart_version" >&2
+            exit 1
+          }
+          test "$version" = "$app_version" || {
+            echo "release tag $version does not match chart appVersion $app_version" >&2
+            exit 1
+          }
+          git merge-base --is-ancestor "$GITHUB_SHA" "origin/main" || {
+            echo "release commit must be reachable from main" >&2
+            exit 1
+          }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  quality-gates:
+    needs: version
+    uses: ./.github/workflows/quality-gates.yaml
+
+  publish:
+    name: Publish, sign, and verify
+    needs:
+      - version
+      - quality-gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: dockerhub-release
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      BACKEND_IMAGE: docker.io/mohankrishna999/kuberight
+      ML_IMAGE: docker.io/mohankrishna999/kuberight-ml
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+        with:
+          platforms: arm64
+          image: docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Refuse mutable tag replacement
+        shell: bash
+        run: |
+          set -euo pipefail
+          for image in "$BACKEND_IMAGE" "$ML_IMAGE"; do
+            if docker buildx imagetools inspect "$image:$VERSION" >/dev/null 2>&1; then
+              echo "immutable release tag already exists: $image:$VERSION" >&2
+              exit 1
+            fi
+          done
+      - name: Build reproducible multi-architecture OCI archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_date=$(git show -s --format=%cI "$GITHUB_SHA")
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            --provenance=mode=max --sbom=true \
+            --build-arg "VERSION=$VERSION" --build-arg "VCS_REF=$GITHUB_SHA" --build-arg "BUILD_DATE=$build_date" \
+            --tag "$BACKEND_IMAGE:$VERSION" \
+            --output type=oci,dest=kuberight.oci.tar .
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            --provenance=mode=max --sbom=true \
+            --build-arg "VERSION=$VERSION" --build-arg "VCS_REF=$GITHUB_SHA" --build-arg "BUILD_DATE=$build_date" \
+            --tag "$ML_IMAGE:$VERSION" \
+            --output type=oci,dest=kuberight-ml.oci.tar ./ml
+      - name: Extract single-platform archives for security gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes skopeo
+          skopeo copy --override-os linux --override-arch amd64 oci-archive:kuberight.oci.tar oci-archive:kuberight-linux-amd64.oci.tar
+          skopeo copy --override-os linux --override-arch arm64 oci-archive:kuberight.oci.tar oci-archive:kuberight-linux-arm64.oci.tar
+          skopeo copy --override-os linux --override-arch amd64 oci-archive:kuberight-ml.oci.tar oci-archive:kuberight-ml-linux-amd64.oci.tar
+          skopeo copy --override-os linux --override-arch arm64 oci-archive:kuberight-ml.oci.tar oci-archive:kuberight-ml-linux-arm64.oci.tar
+      - uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: v0.76.0
+      - name: Block vulnerable release archives
+        run: |
+          trivy image --input kuberight-linux-amd64.oci.tar --exit-code 1 --severity HIGH,CRITICAL --vuln-type os,library
+          trivy image --input kuberight-linux-arm64.oci.tar --exit-code 1 --severity HIGH,CRITICAL --vuln-type os,library
+          trivy image --input kuberight-ml-linux-amd64.oci.tar --exit-code 1 --severity HIGH,CRITICAL --vuln-type os,library
+          trivy image --input kuberight-ml-linux-arm64.oci.tar --exit-code 1 --severity HIGH,CRITICAL --vuln-type os,library
+      - uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0
+      - name: Generate release SBOMs
+        run: |
+          syft oci-archive:kuberight-linux-amd64.oci.tar -o spdx-json=kuberight-linux-amd64.spdx.json
+          syft oci-archive:kuberight-linux-arm64.oci.tar -o spdx-json=kuberight-linux-arm64.spdx.json
+          syft oci-archive:kuberight-ml-linux-amd64.oci.tar -o spdx-json=kuberight-ml-linux-amd64.spdx.json
+          syft oci-archive:kuberight-ml-linux-arm64.oci.tar -o spdx-json=kuberight-ml-linux-arm64.spdx.json
+      - name: Publish the exact scanned archives
+        shell: bash
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$DOCKERHUB_TOKEN" | skopeo login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin
+          backend_archive_digest=$(skopeo inspect --format '{{.Digest}}' oci-archive:kuberight.oci.tar)
+          ml_archive_digest=$(skopeo inspect --format '{{.Digest}}' oci-archive:kuberight-ml.oci.tar)
+          skopeo copy --all --preserve-digests oci-archive:kuberight.oci.tar "docker://$BACKEND_IMAGE:$VERSION"
+          skopeo copy --all --preserve-digests oci-archive:kuberight-ml.oci.tar "docker://$ML_IMAGE:$VERSION"
+          backend_digest=$(skopeo inspect --no-tags --format '{{.Digest}}' "docker://$BACKEND_IMAGE:$VERSION")
+          ml_digest=$(skopeo inspect --no-tags --format '{{.Digest}}' "docker://$ML_IMAGE:$VERSION")
+          test "$backend_digest" = "$backend_archive_digest"
+          test "$ml_digest" = "$ml_archive_digest"
+          printf 'KUBERIGHT_DIGEST=%s\nKUBERIGHT_ML_DIGEST=%s\n' "$backend_digest" "$ml_digest" >> "$GITHUB_ENV"
+          printf '%s@%s\n%s@%s\n' "$BACKEND_IMAGE" "$backend_digest" "$ML_IMAGE" "$ml_digest" > release-digests.txt
+      - uses: sigstore/cosign-installer@d7543c93d881b35a8faa02e8e3605f69b7a1ce62 # v3.10.0
+      - name: Keyless-sign images and attach SBOM attestations
+        shell: bash
+        run: |
+          set -euo pipefail
+          cosign sign --yes "$BACKEND_IMAGE@$KUBERIGHT_DIGEST"
+          cosign sign --yes "$ML_IMAGE@$KUBERIGHT_ML_DIGEST"
+          cosign attest --yes --type spdxjson --predicate kuberight-linux-amd64.spdx.json "$BACKEND_IMAGE@$KUBERIGHT_DIGEST"
+          cosign attest --yes --type spdxjson --predicate kuberight-linux-arm64.spdx.json "$BACKEND_IMAGE@$KUBERIGHT_DIGEST"
+          cosign attest --yes --type spdxjson --predicate kuberight-ml-linux-amd64.spdx.json "$ML_IMAGE@$KUBERIGHT_ML_DIGEST"
+          cosign attest --yes --type spdxjson --predicate kuberight-ml-linux-arm64.spdx.json "$ML_IMAGE@$KUBERIGHT_ML_DIGEST"
+      - name: Verify published tags and signatures
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "$BACKEND_IMAGE:$VERSION"
+          docker buildx imagetools inspect "$ML_IMAGE:$VERSION"
+          published_backend_digest=$(skopeo inspect --no-tags --format '{{.Digest}}' "docker://$BACKEND_IMAGE:$VERSION")
+          published_ml_digest=$(skopeo inspect --no-tags --format '{{.Digest}}' "docker://$ML_IMAGE:$VERSION")
+          test "$published_backend_digest" = "$KUBERIGHT_DIGEST"
+          test "$published_ml_digest" = "$KUBERIGHT_ML_DIGEST"
+          # Download every manifest and layer, rather than treating a registry
+          # manifest lookup as proof that the published images are pullable.
+          skopeo copy --all "docker://$BACKEND_IMAGE:$VERSION" oci-archive:/tmp/kuberight-pull-check.oci.tar
+          skopeo copy --all "docker://$ML_IMAGE:$VERSION" oci-archive:/tmp/kuberight-ml-pull-check.oci.tar
+          cosign verify \
+            --certificate-identity "https://github.com/krishnamanaiducloud/kuberight/.github/workflows/release.yaml@refs/tags/v$VERSION" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$BACKEND_IMAGE@$KUBERIGHT_DIGEST"
+          cosign verify \
+            --certificate-identity "https://github.com/krishnamanaiducloud/kuberight/.github/workflows/release.yaml@refs/tags/v$VERSION" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$ML_IMAGE@$KUBERIGHT_ML_DIGEST"
+          cosign verify-attestation --type spdxjson \
+            --certificate-identity "https://github.com/krishnamanaiducloud/kuberight/.github/workflows/release.yaml@refs/tags/v$VERSION" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$BACKEND_IMAGE@$KUBERIGHT_DIGEST"
+          cosign verify-attestation --type spdxjson \
+            --certificate-identity "https://github.com/krishnamanaiducloud/kuberight/.github/workflows/release.yaml@refs/tags/v$VERSION" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$ML_IMAGE@$KUBERIGHT_ML_DIGEST"
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          prerelease: ${{ contains(needs.version.outputs.version, '-rc.') }}
+          files: |
+            kuberight-linux-amd64.spdx.json
+            kuberight-linux-arm64.spdx.json
+            kuberight-ml-linux-amd64.spdx.json
+            kuberight-ml-linux-arm64.spdx.json
+            release-digests.txt

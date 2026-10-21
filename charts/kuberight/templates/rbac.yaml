@@ -1,0 +1,88 @@
+{{- if .Values.rbac.create }}
+{{- if and (eq .Values.auth.mode "kubernetes") .Values.rbac.authReviews }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "kuberight.clusterScopedName" . }}-auth-reviewer
+  labels:
+    {{- include "kuberight.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+  - apiGroups: ["authorization.k8s.io"]
+    resources: ["subjectaccessreviews"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "kuberight.clusterScopedName" . }}-auth-reviewer
+  labels:
+    {{- include "kuberight.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "kuberight.clusterScopedName" . }}-auth-reviewer
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "kuberight.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- if or .Values.rbac.monitoring.enabled .Values.rbac.extraRules }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: {{ ternary "ClusterRole" "Role" (eq .Values.rbac.scope "cluster") }}
+metadata:
+  name: {{ if eq .Values.rbac.scope "cluster" }}{{ include "kuberight.clusterScopedName" . }}{{ else }}{{ include "kuberight.fullname" . }}{{ end }}-workloads
+  {{- if eq .Values.rbac.scope "namespace" }}
+  namespace: {{ .Release.Namespace }}
+  {{- end }}
+  labels:
+    {{- include "kuberight.labels" . | nindent 4 }}
+rules:
+  {{- if .Values.rbac.monitoring.enabled }}
+  {{- if eq .Values.rbac.scope "cluster" }}
+  - apiGroups: [""]
+    resources: ["nodes", "namespaces"]
+    verbs: ["list"]
+  {{- end }}
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["list"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["list"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["list"]
+  - apiGroups: ["keda.sh"]
+    resources: ["scaledobjects", "scaledjobs"]
+    verbs: ["list"]
+  - apiGroups: ["autoscaling.k8s.io"]
+    resources: ["verticalpodautoscalers"]
+    verbs: ["list"]
+  {{- end }}
+  {{- with .Values.rbac.extraRules }}
+  {{- toYaml . | nindent 2 }}
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: {{ ternary "ClusterRoleBinding" "RoleBinding" (eq .Values.rbac.scope "cluster") }}
+metadata:
+  name: {{ if eq .Values.rbac.scope "cluster" }}{{ include "kuberight.clusterScopedName" . }}{{ else }}{{ include "kuberight.fullname" . }}{{ end }}-workloads
+  {{- if eq .Values.rbac.scope "namespace" }}
+  namespace: {{ .Release.Namespace }}
+  {{- end }}
+  labels:
+    {{- include "kuberight.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: {{ ternary "ClusterRole" "Role" (eq .Values.rbac.scope "cluster") }}
+  name: {{ if eq .Values.rbac.scope "cluster" }}{{ include "kuberight.clusterScopedName" . }}{{ else }}{{ include "kuberight.fullname" . }}{{ end }}-workloads
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "kuberight.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- end }}

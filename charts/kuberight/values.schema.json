@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "KubeRight Helm values",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "replicaCount": { "type": "integer", "minimum": 1 },
+    "operationMode": { "type": "string", "enum": ["observe", "recommend"] },
+    "inventory": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "clusterID": { "type": "string", "maxLength": 253 },
+        "resync": { "type": "string", "minLength": 2 },
+        "qps": { "type": "number", "exclusiveMinimum": 0, "maximum": 1000 },
+        "burst": { "type": "integer", "minimum": 1, "maximum": 1000 }
+      }
+    },
+    "image": {
+      "type": "object",
+      "required": ["repository", "pullPolicy"],
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string" },
+        "digest": { "type": "string", "pattern": "^$|^sha256:[a-f0-9]{64}$" },
+        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "properties": {
+        "mode": { "type": "string", "enum": ["kubernetes", "static"] }
+      }
+    },
+    "rbac": {
+      "type": "object",
+      "properties": {
+        "scope": { "type": "string", "enum": ["namespace", "cluster"] },
+        "apply": false
+      }
+    },
+    "service": {
+      "type": "object",
+      "properties": {
+        "type": { "type": "string", "enum": ["ClusterIP", "NodePort", "LoadBalancer"] },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    },
+    "route": {
+      "type": "object",
+      "properties": {
+        "tls": {
+          "type": "object",
+          "properties": {
+            "termination": { "type": "string", "const": "edge" },
+            "insecureEdgeTerminationPolicy": { "type": "string", "enum": ["Allow", "Redirect", "None"] },
+            "destinationCACertificate": false
+          }
+        }
+      }
+    },
+    "autoscaling": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "minReplicas": { "type": "integer", "minimum": 1 },
+        "maxReplicas": { "type": "integer", "minimum": 1 },
+        "targetCPUUtilizationPercentage": {
+          "oneOf": [
+            { "type": "integer", "minimum": 1, "maximum": 100 },
+            { "type": "string", "maxLength": 0 }
+          ]
+        },
+        "targetMemoryUtilizationPercentage": {
+          "oneOf": [
+            { "type": "integer", "minimum": 1, "maximum": 100 },
+            { "type": "string", "maxLength": 0 }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "enabled": { "const": true } },
+            "required": ["enabled"]
+          },
+          "then": {
+            "anyOf": [
+              {
+                "properties": {
+                  "targetCPUUtilizationPercentage": { "type": "integer", "minimum": 1, "maximum": 100 }
+                },
+                "required": ["targetCPUUtilizationPercentage"]
+              },
+              {
+                "properties": {
+                  "targetMemoryUtilizationPercentage": { "type": "integer", "minimum": 1, "maximum": 100 }
+                },
+                "required": ["targetMemoryUtilizationPercentage"]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "networkPolicy": {
+      "type": "object",
+      "properties": {
+        "monitoring": {
+          "type": "object",
+          "required": ["namespaceSelector", "podSelector"],
+          "properties": {
+            "namespaceSelector": { "type": "object" },
+            "podSelector": { "type": "object" }
+          }
+        }
+      }
+    },
+    "ml": {
+      "type": "object",
+      "properties": {
+        "autoscaling": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "targetCPUUtilizationPercentage": {
+              "oneOf": [
+                { "type": "integer", "minimum": 1, "maximum": 100 },
+                { "type": "string", "maxLength": 0 }
+              ]
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": { "enabled": { "const": true } },
+                "required": ["enabled"]
+              },
+              "then": {
+                "properties": {
+                  "targetCPUUtilizationPercentage": { "type": "integer", "minimum": 1, "maximum": 100 }
+                },
+                "required": ["targetCPUUtilizationPercentage"]
+              }
+            }
+          ]
+        }
+      }
+    },
+    "terminationGracePeriodSeconds": { "type": "integer", "minimum": 0 },
+    "postgresql": false
+  }
+}

@@ -1,0 +1,317 @@
+package httpapi
+
+import (
+	"bufio"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+)
+
+type contextKey string
+
+const (
+	requestIDKey      contextKey = "request-id"
+	principalKey      contextKey = "principal"
+	telemetryStateKey contextKey = "telemetry-state"
+)
+
+type telemetryState struct {
+	subject string
+}
+
+type metricKey struct {
+	method string
+	route  string
+	status int
+}
+
+type metricValue struct {
+	count       uint64
+	durationSum float64
+}
+
+type apiMetrics struct {
+	mu              sync.Mutex
+	requests        map[metricKey]metricValue
+	recommendations map[string]uint64
+	inFlight        atomic.Int64
+}
+
+var fixedTelemetryRoutes = map[string]struct{}{
+	"GET /healthz": {}, "GET /readyz": {}, "GET /metrics": {},
+	"GET /api/v1/version": {}, "GET /api/v1/overview": {},
+	"GET /api/v1/recommendations": {}, "POST /api/v1/recommendations": {},
+	"POST /api/v1/recommendations:calculate": {}, "GET /api/v1/policies": {},
+	"GET /api/v1/audit": {}, "GET /api/v1/settings/integrations": {},
+	"GET /api/v1/clusters": {}, "GET /api/v1/namespaces": {},
+	"GET /api/v1/workloads": {}, "GET /api/v1/metrics/history": {},
+	"GET /api/v1/savings":   {},
+	"GET /api/v1/forecasts": {}, "GET /api/v1/autoscalers": {},
+	"GET /api/v1/approvals": {}, "GET /api/v1/gitops/changes": {},
+}
+
+func newAPIMetrics() *apiMetrics {
+	return &apiMetrics{requests: make(map[metricKey]metricValue), recommendations: make(map[string]uint64)}
+}
+
+func (metrics *apiMetrics) observeRequest(method, route string, status int, duration time.Duration) {
+	metrics.mu.Lock()
+	defer metrics.mu.Unlock()
+	key := metricKey{method: method, route: route, status: status}
+	value := metrics.requests[key]
+	value.count++
+	value.durationSum += duration.Seconds()
+	metrics.requests[key] = value
+}
+
+func boundedHTTPMethod(method string) string {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodConnect, http.MethodOptions, http.MethodTrace:
+		return method
+	default:
+		return "OTHER"
+	}
+}
+
+func (metrics *apiMetrics) observeRecommendation(confidence, risk string) {
+	metrics.mu.Lock()
+	defer metrics.mu.Unlock()
+	metrics.recommendations[confidence+"\x00"+risk]++
+}
+
+func prometheusLabel(value string) string {
+	value = strings.ReplaceAll(value, "\\", "\\\\")
+	value = strings.ReplaceAll(value, "\n", "\\n")
+	return strings.ReplaceAll(value, "\"", "\\\"")
+}
+
+func telemetryRoute(request *http.Request) string {
+	if request.Pattern != "" {
+		return request.Pattern
+	}
+	candidate := request.Method + " " + request.URL.Path
+	if _, ok := fixedTelemetryRoutes[candidate]; ok {
+		return candidate
+	}
+	if request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/api/v1/recommendations/") {
+		identifier := strings.TrimPrefix(request.URL.Path, "/api/v1/recommendations/")
+		if identifier != "" && !strings.Contains(identifier, "/") {
+			return "GET /api/v1/recommendations/{id}"
+		}
+	}
+	if !strings.HasPrefix(request.URL.Path, "/api/") {
+		return "web"
+	}
+	return "unmatched"
+}
+
+func (metrics *apiMetrics) render(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = fmt.Fprintln(w, "# HELP kuberight_http_requests_in_flight Current in-flight HTTP requests.")
+	_, _ = fmt.Fprintln(w, "# TYPE kuberight_http_requests_in_flight gauge")
+	_, _ = fmt.Fprintf(w, "kuberight_http_requests_in_flight %d\n", metrics.inFlight.Load())
+	_, _ = fmt.Fprintln(w, "# HELP kuberight_http_requests_total Completed HTTP requests.")
+	_, _ = fmt.Fprintln(w, "# TYPE kuberight_http_requests_total counter")
+	_, _ = fmt.Fprintln(w, "# HELP kuberight_http_request_duration_seconds_sum Cumulative HTTP request duration.")
+	_, _ = fmt.Fprintln(w, "# TYPE kuberight_http_request_duration_seconds_sum counter")
+
+	metrics.mu.Lock()
+	requestKeys := make([]metricKey, 0, len(metrics.requests))
+	for key := range metrics.requests {
+		requestKeys = append(requestKeys, key)
+	}
+	sort.Slice(requestKeys, func(i, j int) bool {
+		left, right := requestKeys[i], requestKeys[j]
+		if left.route != right.route {
+			return left.route < right.route
+		}
+		if left.method != right.method {
+			return left.method < right.method
+		}
+		return left.status < right.status
+	})
+	for _, key := range requestKeys {
+		value := metrics.requests[key]
+		labels := fmt.Sprintf("method=\"%s\",route=\"%s\",status=\"%d\"", prometheusLabel(key.method), prometheusLabel(key.route), key.status)
+		_, _ = fmt.Fprintf(w, "kuberight_http_requests_total{%s} %d\n", labels, value.count)
+		_, _ = fmt.Fprintf(w, "kuberight_http_request_duration_seconds_sum{%s} %s\n", labels, strconv.FormatFloat(value.durationSum, 'f', -1, 64))
+	}
+	_, _ = fmt.Fprintln(w, "# HELP kuberight_recommendations_total Recommendations generated by confidence and risk.")
+	_, _ = fmt.Fprintln(w, "# TYPE kuberight_recommendations_total counter")
+	recommendationKeys := make([]string, 0, len(metrics.recommendations))
+	for key := range metrics.recommendations {
+		recommendationKeys = append(recommendationKeys, key)
+	}
+	sort.Strings(recommendationKeys)
+	for _, key := range recommendationKeys {
+		parts := strings.SplitN(key, "\x00", 2)
+		_, _ = fmt.Fprintf(w, "kuberight_recommendations_total{confidence=\"%s\",risk=\"%s\"} %d\n", prometheusLabel(parts[0]), prometheusLabel(parts[1]), metrics.recommendations[key])
+	}
+	metrics.mu.Unlock()
+}
+
+type responseCapture struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+}
+
+func (capture *responseCapture) WriteHeader(status int) {
+	if capture.status != 0 {
+		return
+	}
+	capture.status = status
+	capture.ResponseWriter.WriteHeader(status)
+}
+
+func (capture *responseCapture) Write(body []byte) (int, error) {
+	if capture.status == 0 {
+		capture.WriteHeader(http.StatusOK)
+	}
+	written, err := capture.ResponseWriter.Write(body)
+	capture.bytes += written
+	return written, err
+}
+
+func (capture *responseCapture) Flush() {
+	if flusher, ok := capture.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (capture *responseCapture) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := capture.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("response writer does not support hijacking")
+	}
+	return hijacker.Hijack()
+}
+
+func (capture *responseCapture) Unwrap() http.ResponseWriter { return capture.ResponseWriter }
+
+func requestIDFromContext(ctx context.Context) string {
+	value, _ := ctx.Value(requestIDKey).(string)
+	return value
+}
+
+func principalFromContext(ctx context.Context) (Principal, bool) {
+	value, ok := ctx.Value(principalKey).(Principal)
+	return value, ok
+}
+
+func recordTelemetrySubject(ctx context.Context, subject string) {
+	if state, ok := ctx.Value(telemetryStateKey).(*telemetryState); ok {
+		state.subject = subject
+	}
+}
+
+func validRequestID(value string) bool {
+	if len(value) == 0 || len(value) > 128 {
+		return false
+	}
+	for _, character := range value {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || strings.ContainsRune("._:-", character) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func generateRequestID() string {
+	random := make([]byte, 16)
+	if _, err := rand.Read(random); err == nil {
+		return hex.EncodeToString(random)
+	}
+	return strconv.FormatInt(time.Now().UnixNano(), 36)
+}
+
+func remoteAddress(request *http.Request) string {
+	host, _, err := net.SplitHostPort(request.RemoteAddr)
+	if err == nil {
+		return host
+	}
+	return request.RemoteAddr
+}
+
+func withRequestID(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestID := r.Header.Get("X-Request-ID")
+		if !validRequestID(requestID) {
+			requestID = generateRequestID()
+		}
+		w.Header().Set("X-Request-ID", requestID)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), requestIDKey, requestID)))
+	})
+}
+
+func withSecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/readyz" || r.URL.Path == "/healthz" {
+			w.Header().Set("Cache-Control", "no-store")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func withTelemetry(next http.Handler, logger *slog.Logger, metrics *apiMetrics) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		metrics.inFlight.Add(1)
+		capture := &responseCapture{ResponseWriter: w}
+		state := &telemetryState{}
+		next.ServeHTTP(capture, r.WithContext(context.WithValue(r.Context(), telemetryStateKey, state)))
+		metrics.inFlight.Add(-1)
+		if capture.status == 0 {
+			capture.status = http.StatusOK
+		}
+		route := telemetryRoute(r)
+		duration := time.Since(started)
+		metrics.observeRequest(boundedHTTPMethod(r.Method), route, capture.status, duration)
+		attributes := []any{
+			"request_id", requestIDFromContext(r.Context()),
+			"method", r.Method,
+			"route", route,
+			"status", capture.status,
+			"response_bytes", capture.bytes,
+			"duration_ms", float64(duration.Microseconds()) / 1000,
+			"remote_address", remoteAddress(r),
+		}
+		if state.subject != "" {
+			attributes = append(attributes, "subject", state.subject)
+		}
+		if capture.status >= 500 {
+			logger.Error("http request completed", attributes...)
+		} else {
+			logger.Info("http request completed", attributes...)
+		}
+	})
+}
+
+func withRecovery(next http.Handler, logger *slog.Logger) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				logger.Error("panic recovered", "request_id", requestIDFromContext(r.Context()), "panic", fmt.Sprint(recovered))
+				respondError(w, r, http.StatusInternalServerError, "internal_error", "an internal error occurred")
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}

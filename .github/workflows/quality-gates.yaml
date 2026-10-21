@@ -1,0 +1,470 @@
+name: Required quality gates
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  go:
+    name: Go build, test, race, vet
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify committed dependencies
+        run: |
+          test -s go.sum
+          go mod verify
+          git diff --exit-code -- go.mod go.sum
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l ./cmd ./internal)
+          test -z "$unformatted" || { printf '%s\n' "$unformatted"; exit 1; }
+      - run: go vet ./...
+      - name: Unit tests and race detector
+        run: go test -race -covermode=atomic -coverprofile=coverage-go.out ./...
+      - name: Enforce aggregate Go coverage floor
+        shell: bash
+        run: |
+          coverage=$(go tool cover -func=coverage-go.out | awk '/^total:/ { gsub(/%/, "", $3); print $3 }')
+          printf 'aggregate Go statement coverage: %s%%\n' "$coverage"
+          awk -v coverage="$coverage" 'BEGIN { exit !(coverage >= 45.0) }'
+      - name: Build production entrypoint
+        run: go build -trimpath -o /tmp/kuberight ./cmd/kuberight
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: go-coverage
+          path: coverage-go.out
+          if-no-files-found: error
+
+  python:
+    name: Python lint, types, tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            ml/requirements.txt
+            ml/requirements-dev.txt
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -r ml/requirements-dev.txt
+      - run: python -m ruff format --check ml
+      - run: python -m ruff check ml
+      - run: python -m mypy --config-file ml/pyproject.toml ml
+      - name: Validate OpenAPI contract
+        run: openapi-spec-validator api/openapi.yaml
+      - name: Unit tests with coverage
+        run: python -m pytest ml --cov=ml --cov-report=term-missing --cov-report=xml:coverage-python.xml --cov-fail-under=90
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: python-coverage
+          path: coverage-python.xml
+          if-no-files-found: error
+
+  frontend:
+    name: Frontend lint, types, tests, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --prefix web
+      - run: npm run lint --prefix web
+      - run: npm run typecheck --prefix web
+      - run: npm test --prefix web
+      - run: npm run build --prefix web
+      - run: npm audit --prefix web --audit-level=high
+
+  dependencies:
+    name: Dependency vulnerabilities
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Go vulnerability database
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          govulncheck ./...
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: ml/requirements.txt
+      - run: python -m pip install pip-audit==2.10.1
+      - run: python -m pip_audit -r ml/requirements-dev.txt --strict
+
+  dependency-review:
+    name: Pull request dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
+        with:
+          fail-on-severity: high
+          deny-licenses: GPL-3.0, AGPL-3.0
+
+  secrets:
+    name: Secret scanning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  helm:
+    name: Helm and Kubernetes schemas
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: azure/setup-helm@b9e51907a09c216f16ebe8536097933489208112 # v4.3.0
+        with:
+          version: v4.3.1
+      - run: helm lint --strict charts/kuberight
+      - name: Render every supported profile
+        run: |
+          mkdir -p /tmp/rendered
+          helm template kuberight charts/kuberight --namespace kuberight > /tmp/rendered/default.yaml
+          helm template kuberight charts/kuberight --namespace kuberight -f charts/kuberight/profiles/development.yaml > /tmp/rendered/development.yaml
+          helm template kuberight charts/kuberight --namespace kuberight -f charts/kuberight/profiles/production.yaml > /tmp/rendered/production.yaml
+          helm template kuberight charts/kuberight --namespace kuberight -f charts/kuberight/profiles/openshift.yaml > /tmp/rendered/openshift.yaml
+          helm template kuberight charts/kuberight --namespace kuberight -f charts/kuberight/profiles/cluster-wide.yaml > /tmp/rendered/cluster-wide.yaml
+          helm template kuberight charts/kuberight --namespace kuberight \
+            --set ml.enabled=true \
+            > /tmp/rendered/ml-enabled.yaml
+      - name: Verify committed standalone manifests
+        run: scripts/render-manifests.sh --check
+      - name: Validate core Kubernetes schemas
+        run: |
+          docker run --rm -v /tmp/rendered:/manifests:ro \
+            ghcr.io/yannh/kubeconform:v0.8.0@sha256:faffaf43f95aa6425306e1ab8d6fcad72acb9049158f38e574c085ea1ec0f64e \
+            -strict -summary -kubernetes-version 1.35.0 \
+            /manifests/default.yaml /manifests/development.yaml \
+            /manifests/cluster-wide.yaml /manifests/ml-enabled.yaml
+      - name: Validate profiles containing extension APIs
+        run: |
+          docker run --rm -v /tmp/rendered:/manifests:ro \
+            ghcr.io/yannh/kubeconform:v0.8.0@sha256:faffaf43f95aa6425306e1ab8d6fcad72acb9049158f38e574c085ea1ec0f64e \
+            -strict -summary -ignore-missing-schemas -kubernetes-version 1.35.0 \
+            /manifests/production.yaml /manifests/openshift.yaml
+      - uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
+        with:
+          cluster_name: kuberight-schema
+          version: v0.33.0
+          node_image: kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0
+          kubectl_version: v1.35.8
+      - name: Kubernetes API server dry-run
+        run: |
+          kubectl create namespace kuberight
+          kubectl apply --server-side --dry-run=server -f deploy/manifests/kuberight.yaml
+
+  containers:
+    name: Build, scan, SBOM, smoke, Kind
+    needs:
+      - go
+      - python
+      - frontend
+      - dependencies
+      - secrets
+      - helm
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build backend/dashboard image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          load: true
+          push: false
+          tags: kuberight:ci
+          provenance: false
+      - name: Build ML image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ./ml
+          file: ./ml/Dockerfile
+          load: true
+          push: false
+          tags: kuberight-ml:ci
+          provenance: false
+      - name: Enforce non-root image users
+        shell: bash
+        run: |
+          set -euo pipefail
+          for image in kuberight:ci kuberight-ml:ci; do
+            configured_user="$(docker image inspect --format '{{.Config.User}}' "$image")"
+            configured_uid="${configured_user%%:*}"
+            if [[ ! "$configured_uid" =~ ^[1-9][0-9]*$ ]]; then
+              echo "Image $image has an unsafe configured user: ${configured_user:-<empty>}" >&2
+              exit 1
+            fi
+          done
+      - name: Verify ML runtime packaging tools are absent
+        run: |
+          docker run --rm --entrypoint /usr/bin/python3 kuberight-ml:ci \
+            -c "import importlib.util; from pathlib import Path; assert importlib.util.find_spec('pip') is None; assert importlib.util.find_spec('ensurepip') is None; assert not Path('/usr/bin/pebble').exists(); assert 'Package: libstdc++6' in Path('/var/lib/dpkg/status.d/libstdc++6').read_text(); assert Path('/usr/share/doc/libstdc++6/copyright').is_file(); import fastapi, joblib, numpy, pydantic, scipy, sklearn, uvicorn"
+      - name: Scan backend/dashboard image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: kuberight:ci
+          format: table
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          vuln-type: os,library
+          version: v0.76.0
+      - name: Scan ML image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: kuberight-ml:ci
+          format: table
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          vuln-type: os,library
+          version: v0.76.0
+      - name: Generate backend/dashboard SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: kuberight:ci
+          format: spdx-json
+          output-file: kuberight.spdx.json
+          artifact-name: kuberight-ci-sbom.spdx.json
+      - name: Generate ML SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: kuberight-ml:ci
+          format: spdx-json
+          output-file: kuberight-ml.spdx.json
+          artifact-name: kuberight-ml-ci-sbom.spdx.json
+      - name: Verify ML SBOM identifies copied C++ runtime
+        shell: bash
+        run: |
+          jq -e 'any(.packages[]; .name == "libstdc++6" and (.versionInfo | length > 0))' kuberight-ml.spdx.json
+      - name: Container smoke tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name kuberight-smoke --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            -e KUBERIGHT_AUTH_MODE=static -e KUBERIGHT_API_TOKEN=ci-smoke-token-at-least-32-characters \
+            -e KUBERIGHT_INVENTORY_ENABLED=false \
+            -p 18080:8080 kuberight:ci
+          docker run -d --name kuberight-ml-smoke --read-only --tmpfs /tmp:rw,noexec,nosuid,size=256m \
+            -p 18081:8081 kuberight-ml:ci
+          trap 'docker logs kuberight-smoke || true; docker logs kuberight-ml-smoke || true; docker rm -f kuberight-smoke kuberight-ml-smoke || true' EXIT
+          for attempt in {1..30}; do curl --fail --silent http://127.0.0.1:18080/healthz && break; sleep 1; done
+          curl --fail --silent http://127.0.0.1:18080/readyz
+          for attempt in {1..30}; do curl --fail --silent http://127.0.0.1:18081/healthz && break; sleep 1; done
+          curl --fail --silent http://127.0.0.1:18081/readyz
+      - uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
+        with:
+          cluster_name: kuberight-integration
+          version: v0.33.0
+          node_image: kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0
+          kubectl_version: v1.35.8
+      - name: Install images into disposable Kind cluster
+        run: |
+          kind load docker-image kuberight:ci kuberight-ml:ci --name kuberight-integration
+          helm upgrade --install kuberight charts/kuberight \
+            --namespace kuberight --create-namespace --wait --timeout 5m \
+            --set image.repository=kuberight --set image.tag=ci --set image.pullPolicy=Never \
+            --set replicaCount=1 --set podDisruptionBudget.enabled=false \
+            --set topologySpreadConstraints.enabled=false \
+            --set ml.enabled=true --set ml.image.repository=kuberight-ml \
+            --set ml.image.tag=ci --set ml.image.pullPolicy=Never \
+            --set ml.replicaCount=1 --set ml.podDisruptionBudget.enabled=false
+          kubectl -n kuberight rollout status deployment/kuberight --timeout=2m
+          kubectl -n kuberight rollout status deployment/kuberight-ml --timeout=2m
+          kubectl -n kuberight get pods,services
+
+  containers_arm64:
+    name: Build, scan, and execute ARM64 images
+    needs:
+      - containers
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Set up ARM64 emulation
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+        with:
+          platforms: arm64
+          image: docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build ARM64 backend/dashboard image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/arm64
+          load: true
+          push: false
+          tags: kuberight:ci-arm64
+          provenance: false
+      - name: Build ARM64 ML image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ./ml
+          file: ./ml/Dockerfile
+          platforms: linux/arm64
+          load: true
+          push: false
+          tags: kuberight-ml:ci-arm64
+          provenance: false
+      - name: Verify ARM64 platforms and non-root users
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          for image in kuberight:ci-arm64 kuberight-ml:ci-arm64; do
+            platform="$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")"
+            test "$platform" = linux/arm64 || {
+              echo "Expected linux/arm64 image, got $platform for $image" >&2
+              exit 1
+            }
+            configured_user="$(docker image inspect --format '{{.Config.User}}' "$image")"
+            configured_uid="${configured_user%%:*}"
+            if [[ ! "$configured_uid" =~ ^[1-9][0-9]*$ ]]; then
+              echo "Image $image has an unsafe configured user: ${configured_user:-<empty>}" >&2
+              exit 1
+            fi
+          done
+      - name: Verify ARM64 ML runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --platform linux/arm64 \
+            --entrypoint /usr/bin/python3 kuberight-ml:ci-arm64 \
+            -c "import importlib.util, platform; from pathlib import Path; machine = platform.machine(); print(machine); assert machine in {'aarch64', 'arm64'}, machine; assert importlib.util.find_spec('pip') is None; assert importlib.util.find_spec('ensurepip') is None; assert not Path('/usr/bin/pebble').exists(); assert 'Package: libstdc++6' in Path('/var/lib/dpkg/status.d/libstdc++6').read_text(); assert Path('/usr/share/doc/libstdc++6/copyright').is_file(); import fastapi, joblib, numpy, pydantic, scipy, sklearn, uvicorn"
+      - name: Scan ARM64 backend/dashboard image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: kuberight:ci-arm64
+          format: table
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          vuln-type: os,library
+          version: v0.76.0
+      - name: Scan ARM64 ML image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: kuberight-ml:ci-arm64
+          format: table
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          vuln-type: os,library
+          version: v0.76.0
+      - name: Run ARM64 read-only smoke tests under QEMU
+        shell: bash
+        run: |
+          set -euo pipefail
+          cleanup() {
+            docker logs kuberight-arm64-smoke || true
+            docker logs kuberight-ml-arm64-smoke || true
+            docker rm -f kuberight-arm64-smoke kuberight-ml-arm64-smoke >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker run --platform linux/arm64 -d --name kuberight-arm64-smoke \
+            --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            -e KUBERIGHT_AUTH_MODE=static \
+            -e KUBERIGHT_API_TOKEN=ci-smoke-token-at-least-32-characters \
+            -e KUBERIGHT_INVENTORY_ENABLED=false \
+            -p 18082:8080 kuberight:ci-arm64
+          docker run --platform linux/arm64 -d --name kuberight-ml-arm64-smoke \
+            --read-only --tmpfs /tmp:rw,noexec,nosuid,size=256m \
+            -p 18083:8081 kuberight-ml:ci-arm64
+          wait_for_url() {
+            local url="$1"
+            for attempt in {1..60}; do
+              if curl --fail --silent "$url" >/dev/null; then
+                return 0
+              fi
+              sleep 2
+            done
+            echo "Timed out waiting for $url" >&2
+            return 1
+          }
+          wait_for_url http://127.0.0.1:18082/healthz
+          curl --fail --silent --show-error http://127.0.0.1:18082/readyz
+          wait_for_url http://127.0.0.1:18083/healthz
+          curl --fail --silent --show-error http://127.0.0.1:18083/readyz
+
+  complete:
+    name: All mandatory gates passed
+    if: always()
+    needs:
+      - go
+      - python
+      - frontend
+      - dependencies
+      - dependency-review
+      - secrets
+      - helm
+      - containers
+      - containers_arm64
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every mandatory result
+        env:
+          GO_RESULT: ${{ needs.go.result }}
+          PYTHON_RESULT: ${{ needs.python.result }}
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
+          DEPENDENCIES_RESULT: ${{ needs.dependencies.result }}
+          DEPENDENCY_REVIEW_RESULT: ${{ needs.dependency-review.result }}
+          SECRETS_RESULT: ${{ needs.secrets.result }}
+          HELM_RESULT: ${{ needs.helm.result }}
+          CONTAINERS_RESULT: ${{ needs.containers.result }}
+          ARM64_CONTAINERS_RESULT: ${{ needs.containers_arm64.result }}
+        run: |
+          test "$GO_RESULT" = success
+          test "$PYTHON_RESULT" = success
+          test "$FRONTEND_RESULT" = success
+          test "$DEPENDENCIES_RESULT" = success
+          if [[ "${{ github.event_name }}" = pull_request ]]; then
+            test "$DEPENDENCY_REVIEW_RESULT" = success
+          else
+            test "$DEPENDENCY_REVIEW_RESULT" = skipped
+          fi
+          test "$SECRETS_RESULT" = success
+          test "$HELM_RESULT" = success
+          test "$CONTAINERS_RESULT" = success
+          test "$ARM64_CONTAINERS_RESULT" = success

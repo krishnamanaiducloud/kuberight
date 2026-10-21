@@ -1,4 +1,16 @@
 .git
 .github
-*.md
+.env
+.DS_Store
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/coverage
+**/coverage.out
+**/dist
+**/node_modules
+**/node_modules.*
+bin
 examples

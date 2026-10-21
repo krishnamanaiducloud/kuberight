@@ -1,17 +1,250 @@
+# KubeRight chart defaults. See docs/helm-values.md for the complete contract.
+global:
+  imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+namespace:
+  # Helm users should prefer --create-namespace. Standalone rendering enables this.
+  create: false
+  labels: {}
+  annotations: {}
+
+# Recommendation, idempotency, and audit state is process-local. Keep one
+# replica until the API has a shared durable store.
 replicaCount: 1
+
 image:
   repository: mohankrishna999/kuberight
-  tag: "dev"
+  # Empty means Chart.appVersion. Release workflows publish immutable semver tags.
+  tag: ""
+  digest: ""
   pullPolicy: IfNotPresent
-service:
-  port: 8080
+
+imagePullSecrets: []
+
+operationMode: recommend
+
+inventory:
+  enabled: true
+  # Empty uses the release name as the stable cluster identity.
+  clusterID: ""
+  resync: 10m
+  qps: 10
+  burst: 20
+
+serviceAccount:
+  create: true
+  automountServiceAccountToken: true
+  annotations: {}
+  name: ""
+
+rbac:
+  create: true
+  # namespace is the least-privilege default. Use cluster only for fleet-wide inventory.
+  scope: namespace
+  authReviews: true
+  monitoring:
+    enabled: true
+  extraRules: []
+
 auth:
+  # Kubernetes TokenReview accepts service-account, OpenShift OAuth, and
+  # cluster-configured OIDC bearer tokens and then authorizes every request
+  # with SubjectAccessReview. Static mode is intended for isolated development.
   mode: kubernetes
-apiTokenSecretName: kuberight-api-token
+  staticToken:
+    existingSecret: ""
+    key: token
+
+service:
+  type: ClusterIP
+  port: 8080
+  annotations: {}
+  clusterIP: ""
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: kuberight.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+route:
+  enabled: false
+  host: ""
+  annotations: {}
+  tls:
+    enabled: true
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+
+config:
+  existingConfigMap: ""
+  data: {}
+
+secretEnv: []
+extraEnv: []
+extraEnvFrom: []
+
+podAnnotations: {}
+podLabels: {}
+deploymentAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
 resources:
   requests:
-    cpu: 50m
-    memory: 64Mi
+    cpu: 100m
+    memory: 128Mi
   limits:
-    cpu: 500m
-    memory: 256Mi
+    cpu: 1
+    memory: 512Mi
+
+probes:
+  startup:
+    enabled: true
+    failureThreshold: 30
+    periodSeconds: 2
+  readiness:
+    enabled: true
+    initialDelaySeconds: 2
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+  liveness:
+    enabled: true
+    initialDelaySeconds: 10
+    periodSeconds: 20
+    timeoutSeconds: 2
+    failureThreshold: 3
+
+terminationGracePeriodSeconds: 30
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+  maxUnavailable: ""
+
+autoscaling:
+  # Horizontal scaling is unsupported while API state is process-local.
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 1
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: ""
+  behavior: {}
+
+topologySpreadConstraints:
+  enabled: true
+  maxSkew: 1
+  topologyKey: kubernetes.io/hostname
+  whenUnsatisfiable: ScheduleAnyway
+  extra: []
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""
+runtimeClassName: ""
+
+networkPolicy:
+  enabled: true
+  # Ingress is limited to same-namespace pods unless additional peers are supplied.
+  ingressFromSameNamespace: true
+  ingress: []
+  # Applied automatically when a ServiceMonitor is enabled. Adjust these selectors
+  # to match the namespace and pods that run Prometheus in the target cluster.
+  monitoring:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: monitoring
+    podSelector: {}
+  # Enabling egress isolation requires explicit rules for Kubernetes API, DNS,
+  # Prometheus/OpenCost, and registered cluster endpoints.
+  egressIsolation: false
+  egress: []
+
+metrics:
+  enabled: true
+  path: /metrics
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}
+    relabelings: []
+    metricRelabelings: []
+  prometheusRule:
+    enabled: false
+    labels: {}
+
+ml:
+  enabled: false
+  # Persisted models use a pod-local filesystem in the supplied chart.
+  replicaCount: 1
+  image:
+    repository: mohankrishna999/kuberight-ml
+    tag: ""
+    digest: ""
+    pullPolicy: IfNotPresent
+  imagePullSecrets: []
+  service:
+    port: 8081
+    annotations: {}
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 1
+      memory: 1Gi
+  podAnnotations: {}
+  podLabels: {}
+  podSecurityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+  autoscaling:
+    # Horizontal scaling is unsupported while model storage is pod-local.
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 1
+    targetCPUUtilizationPercentage: 70
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  networkPolicy:
+    enabled: true
+    ingress: []
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  extraEnv: []
+
+extraVolumes: []
+extraVolumeMounts: []
+
+commonLabels: {}
+commonAnnotations: {}

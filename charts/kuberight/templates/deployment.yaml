@@ -1,40 +1,180 @@
+{{- include "kuberight.validateValues" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ .Release.Name }}
+  name: {{ include "kuberight.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kuberight.labels" . | nindent 4 }}
+  {{- with (mergeOverwrite (dict) .Values.commonAnnotations .Values.deploymentAnnotations) }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
+  {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
-    matchLabels: {app.kubernetes.io/name: kuberight}
+    matchLabels:
+      {{- include "kuberight.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      labels: {app.kubernetes.io/name: kuberight}
+      labels:
+        {{- include "kuberight.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ toJson .Values.config | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
     spec:
-      serviceAccountName: {{ .Release.Name }}
-      automountServiceAccountToken: {{ eq .Values.auth.mode "kubernetes" }}
+      serviceAccountName: {{ include "kuberight.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      {{- $pullSecrets := concat .Values.global.imagePullSecrets .Values.imagePullSecrets }}
+      {{- with $pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       securityContext:
-        runAsNonRoot: true
-        seccompProfile: {type: RuntimeDefault}
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with .Values.runtimeClassName }}
+      runtimeClassName: {{ . }}
+      {{- end }}
       containers:
         - name: kuberight
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: {{ include "kuberight.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          ports: [{name: http, containerPort: 8080}]
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
           env:
+            - name: KUBERIGHT_LISTEN_ADDR
+              value: ":8080"
             - name: KUBERIGHT_AUTH_MODE
               value: {{ .Values.auth.mode | quote }}
+            - name: KUBERIGHT_OPERATION_MODE
+              value: {{ .Values.operationMode | quote }}
+            - name: KUBERIGHT_INVENTORY_ENABLED
+              value: {{ .Values.inventory.enabled | quote }}
+            - name: KUBERIGHT_CLUSTER_ID
+              value: {{ default (include "kuberight.fullname" .) .Values.inventory.clusterID | quote }}
+            - name: KUBERIGHT_INVENTORY_RESYNC
+              value: {{ .Values.inventory.resync | quote }}
+            - name: KUBERIGHT_KUBERNETES_QPS
+              value: {{ .Values.inventory.qps | quote }}
+            - name: KUBERIGHT_KUBERNETES_BURST
+              value: {{ .Values.inventory.burst | quote }}
+            {{- if eq .Values.rbac.scope "namespace" }}
+            - name: KUBERIGHT_INVENTORY_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            {{- end }}
             {{- if eq .Values.auth.mode "static" }}
             - name: KUBERIGHT_API_TOKEN
               valueFrom:
-                secretKeyRef: {name: {{ .Values.apiTokenSecretName | quote }}, key: token}
+                secretKeyRef:
+                  name: {{ .Values.auth.staticToken.existingSecret | quote }}
+                  key: {{ .Values.auth.staticToken.key | quote }}
             {{- end }}
+            {{- if .Values.ml.enabled }}
+            - name: KUBERIGHT_ML_URL
+              value: {{ printf "http://%s-ml:%v" (include "kuberight.fullname" .) .Values.ml.service.port | quote }}
+            {{- end }}
+            {{- with .Values.secretEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- $configMapName := default (include "kuberight.fullname" .) .Values.config.existingConfigMap }}
+          {{- if or .Values.config.data .Values.config.existingConfigMap .Values.extraEnvFrom }}
+          envFrom:
+            {{- if or .Values.config.data .Values.config.existingConfigMap }}
+            - configMapRef:
+                name: {{ $configMapName }}
+            {{- end }}
+            {{- with .Values.extraEnvFrom }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+          {{- if .Values.probes.startup.enabled }}
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+          {{- end }}
+          {{- if .Values.probes.readiness.enabled }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          {{- end }}
+          {{- if .Values.probes.liveness.enabled }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities: {drop: [ALL]}
-          readinessProbe:
-            httpGet: {path: /readyz, port: http}
-          livenessProbe:
-            httpGet: {path: /healthz, port: http}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- if .Values.topologySpreadConstraints.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: {{ .Values.topologySpreadConstraints.maxSkew }}
+          topologyKey: {{ .Values.topologySpreadConstraints.topologyKey }}
+          whenUnsatisfiable: {{ .Values.topologySpreadConstraints.whenUnsatisfiable }}
+          labelSelector:
+            matchLabels:
+              {{- include "kuberight.selectorLabels" . | nindent 14 }}
+        {{- with .Values.topologySpreadConstraints.extra }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

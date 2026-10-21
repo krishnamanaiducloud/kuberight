@@ -1,0 +1,12 @@
+# Fleet inventory profile. This grants read-only access across the cluster.
+replicaCount: 1
+autoscaling:
+  enabled: false
+ml:
+  replicaCount: 1
+  autoscaling:
+    enabled: false
+rbac:
+  scope: cluster
+  monitoring:
+    enabled: true
