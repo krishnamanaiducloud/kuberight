@@ -40,6 +40,9 @@ type Policy struct {
 	// before these fields existed keep their original behavior.
 	CPUPercentile    float64 `json:"cpuPercentile,omitempty"`
 	MemoryPercentile float64 `json:"memoryPercentile,omitempty"`
+	// TrendHorizonDays is how far a significant rising trend is projected when
+	// sizing, from 1 to 30 days. Zero selects 7.
+	TrendHorizonDays int `json:"trendHorizonDays,omitempty"`
 }
 
 const (
@@ -65,6 +68,7 @@ func DefaultPolicy() Policy {
 		HighConfidenceSamples: 500,
 		CPUPercentile:         defaultCPUPercentile,
 		MemoryPercentile:      defaultMemoryPercentile,
+		TrendHorizonDays:      defaultTrendHorizonDays,
 	}
 }
 
@@ -111,6 +115,9 @@ func normalizePolicy(policy Policy) Policy {
 	}
 	if policy.MemoryPercentile == 0 {
 		policy.MemoryPercentile = defaultMemoryPercentile
+	}
+	if policy.TrendHorizonDays == 0 {
+		policy.TrendHorizonDays = defaultTrendHorizonDays
 	}
 	return policy
 }
@@ -208,6 +215,8 @@ type Recommendation struct {
 	Risk                      string      `json:"risk"`
 	Burstable                 bool        `json:"burstable"`
 	CPUThrottlingRatio        float64     `json:"cpuThrottlingRatio,omitempty"`
+	Trends                    Trends      `json:"trends"`
+	Backtest                  Backtest    `json:"backtest"`
 	DataQuality               DataQuality `json:"dataQuality"`
 	EstimatedCPUChangePercent float64     `json:"estimatedCpuChangePercent,omitempty"`
 	EstimatedMemoryChangePct  float64     `json:"estimatedMemoryChangePercent,omitempty"`
@@ -266,6 +275,9 @@ func validatePolicy(policy Policy) error {
 	}
 	if !validPercentile(policy.CPUPercentile) || !validPercentile(policy.MemoryPercentile) {
 		return errors.New("CPU and memory percentiles must be 0.9, 0.95, 0.99, or 1")
+	}
+	if policy.TrendHorizonDays < 1 || policy.TrendHorizonDays > 30 {
+		return errors.New("trend horizon must be between 1 and 30 days")
 	}
 	return nil
 }
@@ -420,8 +432,18 @@ func Recommend(input Input) (Recommendation, error) {
 		warnings = append(warnings, "observed OOM kills prevent memory request and limit reductions")
 	}
 
-	cpuRequest := roundedRecommendation(cpuStats.at(policy.CPUPercentile), policy.CPUSafetyMargin, policy.MinimumCPUMilli, policy.MaximumCPUMilli)
-	memoryRequest := roundedRecommendation(memoryStats.at(policy.MemoryPercentile), policy.MemorySafetyMargin, policy.MinimumMemoryBytes, policy.MaximumMemoryBytes)
+	// Size for where usage is heading, not only where it has been.
+	trends := Trends{CPU: Trend(input.CPUSamplesMilli, input.SampleIntervalSeconds), Memory: Trend(input.MemorySamplesBytes, input.SampleIntervalSeconds)}
+	if trends.Memory.Significant && trends.Memory.SlopePerDay > 0 {
+		memoryMaximumReduction = 0
+		warnings = append(warnings, fmt.Sprintf("memory grows %.1f%% per day (R² %.2f); memory was not reduced and is sized for %d days of growth; investigate a possible leak", trends.Memory.GrowthPerDayPercent, trends.Memory.RSquared, policy.TrendHorizonDays))
+	}
+	if trends.CPU.Significant && trends.CPU.SlopePerDay > 0 {
+		warnings = append(warnings, fmt.Sprintf("CPU usage grows %.1f%% per day (R² %.2f); CPU is sized for %d days of growth", trends.CPU.GrowthPerDayPercent, trends.CPU.RSquared, policy.TrendHorizonDays))
+	}
+
+	cpuRequest := roundedRecommendation(trends.CPU.withUplift(cpuStats.at(policy.CPUPercentile), policy.TrendHorizonDays), policy.CPUSafetyMargin, policy.MinimumCPUMilli, policy.MaximumCPUMilli)
+	memoryRequest := roundedRecommendation(trends.Memory.withUplift(memoryStats.at(policy.MemoryPercentile), policy.TrendHorizonDays), policy.MemorySafetyMargin, policy.MinimumMemoryBytes, policy.MaximumMemoryBytes)
 	// A throttled container is CPU-constrained even when its averaged usage
 	// looks low, so its CPU must not be reduced.
 	throttled := input.ObservedCPUThrottlingRatio >= throttlingThreshold
@@ -483,6 +505,12 @@ func Recommend(input Input) (Recommendation, error) {
 		memoryLimit = roundedRecommendation(memoryStats.at(math.Max(0.99, policy.MemoryPercentile)), policy.LimitSafetyMargin, memoryRequest, policy.MaximumMemoryBytes)
 		memoryLimit = max(memoryLimit, reductionFloor(input.MemoryLimitBytes, memoryMaximumReduction))
 		memoryLimit = max(memoryLimit, memoryRequest)
+		// A memory limit below an observed peak would have OOM-killed the
+		// container, so the limit always keeps headroom above the peak.
+		if peakFloor := int64(math.Ceil(memoryStats.Max * (1 + memoryLimitPeakHeadroom))); memoryLimit < peakFloor {
+			memoryLimit = min(peakFloor, policy.MaximumMemoryBytes)
+			warnings = append(warnings, "memory limit was raised to keep 10% headroom above the observed peak")
+		}
 	} else {
 		warnings = append(warnings, "memory limit is absent and no new limit was introduced")
 	}
@@ -524,5 +552,7 @@ func Recommend(input Input) (Recommendation, error) {
 		Warnings:                  warnings,
 		Applied:                   false,
 		Policy:                    policy,
+		Trends:                    trends,
+		Backtest:                  backtest(input, cpuRequest, cpuLimit, memoryRequest, memoryLimit),
 	}, nil
 }
