@@ -518,6 +518,96 @@ paths:
         "503": { $ref: "#/components/responses/DependencyUnavailable" }
         "504": { $ref: "#/components/responses/DependencyUnavailable" }
 
+  /api/v1/efficiency/workloads:
+    get:
+      tags: [Inventory]
+      operationId: getWorkloadEfficiency
+      summary: Per-workload right-sizing within one namespace
+      description: |
+        Attributes Prometheus per-pod usage to workloads by controller pod
+        naming and compares each workload's per-pod request with its pods'
+        average and the busiest pod's P95. Reclaimable = (per-pod request -
+        busiest P95) x replicas. Requires the `list` verb on `efficiency`.
+      parameters:
+        - $ref: "#/components/parameters/SubjectNamespace"
+        - name: window
+          in: query
+          schema: { type: string, default: 24h }
+      responses:
+        "200":
+          description: Workloads ranked by reclaimable CPU.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, pagination, status]
+                properties:
+                  items:
+                    type: array
+                    items: { type: object, additionalProperties: true }
+                  pagination: { $ref: "#/components/schemas/Pagination" }
+                  status: { $ref: "#/components/schemas/Availability" }
+                  summary: { type: object, additionalProperties: true }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/DependencyUnavailable" }
+
+  /api/v1/capacity:
+    get:
+      tags: [Inventory]
+      operationId: getCapacity
+      summary: Node impact of the current recommendations
+      description: |
+        Packs every pod by its requests onto the cluster's schedulable node
+        shapes with first-fit-decreasing, after reserving DaemonSet pods on
+        each node, once with current requests and once with the newest
+        non-rejected recommendations. Reports Karpenter NodePools (read-only,
+        `karpenter.sh/v1`) and Cluster Autoscaler presence, and explains how
+        node savings are realized. Requires cluster-scoped inventory and the
+        `list` verb on `capacity`.
+      responses:
+        "200":
+          description: Node counts now and after, autoscaler context, and assumptions.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/DependencyUnavailable" }
+
+  /api/v1/metrics/signals:
+    get:
+      tags: [Inventory]
+      operationId: getSignals
+      summary: Correlated signals and findings for one container
+      description: |
+        CPU, memory, CFS throttling, replica count, and optional application
+        latency (from `KUBERIGHT_LATENCY_QUERY`) on one time axis; restart,
+        OOM-kill, and Deployment rollout events; Pearson correlations over
+        shared timestamps; and plain-language findings. Optional series are
+        omitted when their metrics are absent. Requires the `list` verb on
+        `metrics-history`.
+      parameters:
+        - $ref: "#/components/parameters/SubjectNamespace"
+        - $ref: "#/components/parameters/SubjectKind"
+        - $ref: "#/components/parameters/SubjectWorkload"
+        - $ref: "#/components/parameters/SubjectContainer"
+        - name: window
+          in: query
+          schema: { type: string, default: 24h }
+      responses:
+        "200":
+          description: Signals, correlations, and findings.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+        "503": { $ref: "#/components/responses/DependencyUnavailable" }
+
   /api/v1/forecasts:
     get:
       tags: [Inventory]
@@ -1111,6 +1201,12 @@ components:
           enum: [0.9, 0.95, 0.99, 1]
           default: 0.99
           description: Usage statistic memory requests are sized from; 1 is the observed peak. Omitted or zero selects the default.
+        trendHorizonDays:
+          type: integer
+          minimum: 1
+          maximum: 30
+          default: 7
+          description: Days a significant rising trend is projected when sizing. Omitted or zero selects the default.
 
     Percentiles:
       type: object
@@ -1201,6 +1297,19 @@ components:
           $ref: "#/components/schemas/Level"
         burstable: { type: boolean }
         cpuThrottlingRatio: { type: number, minimum: 0, maximum: 1 }
+        trends:
+          type: object
+          description: Least-squares usage trends. A significant rising trend raises the sizing statistic by its projected growth, capped at 50%.
+          additionalProperties: true
+        backtest:
+          type: object
+          description: |
+            Share of observed samples above current and recommended requests and
+            limits. Memory above a limit would have been OOM-killed; CPU above a
+            limit would have been throttled. Omitted fields mean the setting is
+            unset. A recommended memory limit always keeps 10% headroom above
+            the observed peak.
+          additionalProperties: true
         dataQuality:
           $ref: "#/components/schemas/DataQuality"
         estimatedCpuChangePercent: { type: number }
