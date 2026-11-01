@@ -108,7 +108,10 @@ paths:
     get:
       tags: [Recommendations]
       operationId: listRecommendations
-      summary: List in-process recommendation history
+      summary: List retained recommendations
+      description: |
+        Records come from PostgreSQL when `KUBERIGHT_DATABASE_URL` is set and
+        from bounded process memory otherwise; `status.source` names the store.
       parameters:
         - $ref: "#/components/parameters/Page"
         - $ref: "#/components/parameters/PageSize"
@@ -117,6 +120,8 @@ paths:
         - name: workload
           in: query
           schema: { type: string }
+        - $ref: "#/components/parameters/ReviewStatus"
+        - $ref: "#/components/parameters/Latest"
         - name: confidence
           in: query
           schema:
@@ -221,6 +226,91 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/AccessUnavailable" }
+
+  /api/v1/recommendations:generate:
+    post:
+      tags: [Recommendations]
+      operationId: generateRecommendation
+      summary: Generate a recommendation from live inventory and Prometheus
+      description: |
+        Reads the container's current requests, limits, replicas, and HPA,
+        KEDA, and VPA context from the Kubernetes inventory, and its CPU and
+        memory usage from Prometheus over `window` at the configured step.
+        Sparse, stale, or missing history blocks reductions. Requires the
+        `create` verb on `recommendations` in the namespace. Returns 403 in
+        `observe` mode. It never mutates a workload.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenerateRequest"
+      responses:
+        "201":
+          $ref: "#/components/responses/RecommendationCreated"
+        "200":
+          description: An idempotent replay of a stored recommendation, or a dry-run preview.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/RecommendationRecord"
+                  - $ref: "#/components/schemas/RecommendationPreview"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/IdempotencyConflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+        "503": { $ref: "#/components/responses/DependencyUnavailable" }
+        "504": { $ref: "#/components/responses/DependencyUnavailable" }
+
+  /api/v1/recommendations/{id}/review:
+    post:
+      tags: [Recommendations]
+      operationId: reviewRecommendation
+      summary: Approve or reject a pending recommendation
+      description: |
+        Records a single, terminal review decision and an audit event in one
+        transaction. Approval never applies the change. Authorized like the
+        Kubernetes CSR approval subresource: verb `update`, resource
+        `recommendations`, subresource `approval`. When separation of duties is
+        enabled, the creator of a recommendation cannot review it. Returns 403
+        in `observe` mode.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^rec_.+$'
+            minLength: 5
+            maxLength: 64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReviewRequest"
+      responses:
+        "200":
+          description: The reviewed recommendation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecommendationRecord"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: The recommendation has already been reviewed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
         "503": { $ref: "#/components/responses/AccessUnavailable" }
 
   /api/v1/policies:
@@ -338,65 +428,141 @@ paths:
   /api/v1/metrics/history:
     get:
       tags: [Inventory]
-      operationId: listMetricsHistory
-      summary: List historical metrics
-      description: Returns `status.available=false` until a supporting provider is configured.
+      operationId: getMetricsHistory
+      summary: CPU and memory usage history for one container
+      description: |
+        Reads Prometheus cAdvisor series for the busiest replica at each step.
+        The step is coarsened so a window yields at most about 600 points.
+        Missing samples are omitted, never zero-filled. Returns
+        `status.available=false` when Prometheus is not configured. Requires
+        the `list` verb on `metrics-history` in the namespace.
       parameters:
-        - $ref: "#/components/parameters/Page"
-        - $ref: "#/components/parameters/PageSize"
-        - $ref: "#/components/parameters/Namespace"
-        - $ref: "#/components/parameters/Cluster"
-        - $ref: "#/components/parameters/Filter"
-        - $ref: "#/components/parameters/Sort"
-        - $ref: "#/components/parameters/Order"
+        - $ref: "#/components/parameters/SubjectNamespace"
+        - $ref: "#/components/parameters/SubjectKind"
+        - $ref: "#/components/parameters/SubjectWorkload"
+        - $ref: "#/components/parameters/SubjectContainer"
+        - name: window
+          in: query
+          description: Go duration from 1h to 720h. Defaults to the recommendation window.
+          schema: { type: string, example: 24h }
       responses:
-        "200": { $ref: "#/components/responses/ObjectCollection" }
+        "200":
+          description: CPU (millicores) and memory (bytes) series with data-quality reports.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UsageHistory"
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "503": { $ref: "#/components/responses/DependencyUnavailable" }
+        "504": { $ref: "#/components/responses/DependencyUnavailable" }
 
   /api/v1/savings:
     get:
       tags: [Inventory]
       operationId: listSavings
-      summary: List verified cost-savings estimates
-      description: Returns `status.available=false` until an OpenCost provider is configured.
+      summary: Request-based monthly cost estimates
+      description: |
+        Uses the newest non-rejected recommendation for each container:
+        requested CPU and memory multiplied by operator-configured unit prices,
+        replicas, and 730 hours. These are estimates, not billing data.
+        Returns `status.available=false` until both unit prices are set.
+        Items are sorted by estimated savings, largest first; `order=asc`
+        reverses the order.
       parameters:
         - $ref: "#/components/parameters/Page"
         - $ref: "#/components/parameters/PageSize"
         - $ref: "#/components/parameters/Namespace"
-        - $ref: "#/components/parameters/Cluster"
-        - $ref: "#/components/parameters/Filter"
-        - $ref: "#/components/parameters/Sort"
         - $ref: "#/components/parameters/Order"
       responses:
-        "200": { $ref: "#/components/responses/ObjectCollection" }
+        "200":
+          description: A page of estimates and a summary across all of them.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SavingsCollection"
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "503": { $ref: "#/components/responses/DependencyUnavailable" }
 
-  /api/v1/forecasts:
+  /api/v1/efficiency:
     get:
       tags: [Inventory]
-      operationId: listForecasts
-      summary: List forecasts
-      description: Returns `status.available=false` until a supporting provider is configured.
+      operationId: getEfficiency
+      summary: Requested versus used resources per namespace
+      description: |
+        Joins inventory requests (per-pod requests multiplied by desired
+        replicas) with Prometheus average and P95 usage of every container in
+        each namespace. Reclaimable capacity is requested minus P95 usage.
+        Only namespaces visible to the inventory are reported. Returns
+        `status.available=false` unless both the inventory and Prometheus are
+        configured. Requires the `list` verb on `efficiency`.
       parameters:
-        - $ref: "#/components/parameters/Page"
-        - $ref: "#/components/parameters/PageSize"
         - $ref: "#/components/parameters/Namespace"
-        - $ref: "#/components/parameters/Cluster"
-        - $ref: "#/components/parameters/Filter"
-        - $ref: "#/components/parameters/Sort"
-        - $ref: "#/components/parameters/Order"
+        - name: window
+          in: query
+          description: Go duration from 1h to 720h.
+          schema: { type: string, default: 24h }
       responses:
-        "200": { $ref: "#/components/responses/ObjectCollection" }
+        "200":
+          description: Per-namespace efficiency and fleet totals.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EfficiencyCollection"
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "503": { $ref: "#/components/responses/DependencyUnavailable" }
+        "504": { $ref: "#/components/responses/DependencyUnavailable" }
+
+  /api/v1/forecasts:
+    get:
+      tags: [Inventory]
+      operationId: getForecastStatus
+      summary: Forecast integration status
+      description: Forecasts are computed on demand and not stored, so `items` is always empty; `status` reports availability.
+      responses:
+        "200": { $ref: "#/components/responses/ObjectCollection" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/AccessUnavailable" }
+    post:
+      tags: [Inventory]
+      operationId: createForecast
+      summary: Forecast one container's CPU or memory usage
+      description: |
+        Sends Prometheus history at the configured forecast step to the
+        forecasting service. Results are experimental and advisory; they never
+        change recommendations or workloads. CPU values are millicores and
+        memory values are bytes. Requires the `create` verb on `forecasts` in
+        the namespace.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ForecastRequest"
+      responses:
+        "200":
+          description: History, forecast points with intervals, and model diagnostics.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForecastResult"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+        "429":
+          description: The forecasting service is at capacity. Retry after the `Retry-After` interval.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "503": { $ref: "#/components/responses/DependencyUnavailable" }
+        "504": { $ref: "#/components/responses/DependencyUnavailable" }
 
   /api/v1/autoscalers:
     get:
@@ -422,18 +588,36 @@ paths:
     get:
       tags: [Inventory]
       operationId: listApprovals
-      summary: List approvals
-      description: Returns `status.available=false` until a supporting provider is configured.
+      summary: Recommendation review queue
+      description: |
+        Lists recommendations by review status, pending by default. Use
+        `reviewStatus=all` for every status. Requires the `list` verb on
+        `approvals`.
       parameters:
         - $ref: "#/components/parameters/Page"
         - $ref: "#/components/parameters/PageSize"
         - $ref: "#/components/parameters/Namespace"
-        - $ref: "#/components/parameters/Cluster"
         - $ref: "#/components/parameters/Filter"
-        - $ref: "#/components/parameters/Sort"
-        - $ref: "#/components/parameters/Order"
+        - name: reviewStatus
+          in: query
+          schema:
+            type: string
+            enum: [pending, approved, rejected, all]
+            default: pending
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [createdAt, namespace, workload, confidence, risk]
+            default: createdAt
+        - $ref: "#/components/parameters/OrderWithDefault"
       responses:
-        "200": { $ref: "#/components/responses/ObjectCollection" }
+        "200":
+          description: A page of recommendations in the requested review state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecommendationCollection"
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
@@ -528,6 +712,37 @@ components:
         minLength: 1
         maxLength: 128
         pattern: '^[A-Za-z0-9._:-]+$'
+    ReviewStatus:
+      name: reviewStatus
+      in: query
+      schema:
+        $ref: "#/components/schemas/ReviewStatus"
+    Latest:
+      name: latest
+      in: query
+      description: When true, keep only the newest recommendation per cluster, namespace, kind, workload, and container before filtering.
+      schema: { type: boolean, default: false }
+    SubjectNamespace:
+      name: namespace
+      in: query
+      required: true
+      schema: { type: string, pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$', maxLength: 63 }
+    SubjectKind:
+      name: kind
+      in: query
+      required: true
+      schema:
+        $ref: "#/components/schemas/WorkloadKind"
+    SubjectWorkload:
+      name: workload
+      in: query
+      required: true
+      schema: { type: string, maxLength: 253 }
+    SubjectContainer:
+      name: container
+      in: query
+      required: true
+      schema: { type: string, pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$', maxLength: 63 }
 
   responses:
     RecommendationCreated:
@@ -600,7 +815,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/ErrorResponse" }
     DependencyUnavailable:
-      description: Authentication, authorization, or the configured data provider is unavailable.
+      description: Authentication, authorization, or a configured dependency (Kubernetes inventory, Prometheus, the forecasting service, or the recommendation store) is unavailable or not configured.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ErrorResponse" }
@@ -625,7 +840,11 @@ components:
           enum: [ready, not_ready]
         checks:
           type: object
-          required: [authentication, dataProvider]
+          description: |
+            Authentication, the data provider, and the repository are critical
+            and make the service not ready. Prometheus (`usageMetrics`) and
+            forecasting are optional and report `degraded` without failing.
+          required: [authentication, dataProvider, repository, usageMetrics, forecasting]
           properties:
             authentication:
               type: string
@@ -633,6 +852,15 @@ components:
             dataProvider:
               type: string
               enum: [ready, unavailable, not_configured]
+            repository:
+              type: string
+              enum: [ready, unavailable]
+            usageMetrics:
+              type: string
+              enum: [ready, degraded, not_configured]
+            forecasting:
+              type: string
+              enum: [ready, degraded, not_configured]
 
     Version:
       type: object
@@ -652,20 +880,38 @@ components:
     Overview:
       type: object
       additionalProperties: false
-      required: [version, mode, recommendations, inventory, generatedAt]
+      required: [version, mode, recommendations, inventory, dependencies, generatedAt]
       properties:
         version: { type: string }
         mode:
           $ref: "#/components/schemas/OperationMode"
+        clusters:
+          type: integer
+          minimum: 0
+          description: Present only when the inventory answered.
+        namespaces: { type: integer, minimum: 0 }
+        workloads: { type: integer, minimum: 0 }
         recommendations:
           type: object
           additionalProperties: false
-          required: [total, source]
+          required: [total, pending, approved, rejected, source]
           properties:
             total: { type: integer, minimum: 0 }
-            source: { type: string, const: in_process_history }
+            pending: { type: integer, minimum: 0 }
+            approved: { type: integer, minimum: 0 }
+            rejected: { type: integer, minimum: 0 }
+            source: { type: string, enum: [memory, postgres] }
+        estimatedMonthlySavings:
+          type: number
+          description: Present only when unit prices are configured.
+        approvedMonthlySavings: { type: number }
+        currency: { type: string, pattern: '^[A-Z]{3}$' }
         inventory:
           $ref: "#/components/schemas/Availability"
+        dependencies:
+          type: array
+          items:
+            $ref: "#/components/schemas/DependencyStatus"
         generatedAt:
           type: string
           format: date-time
@@ -798,6 +1044,21 @@ components:
         observedOomKills:
           type: integer
           minimum: 0
+        replicas:
+          type: integer
+          minimum: 0
+          maximum: 100000
+          description: Desired replicas, used only for savings estimates.
+        observedCpuThrottlingRatio:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Share of CFS periods in which the container was throttled. At 5% or more, CPU is not reduced and an existing CPU limit is raised.
+        dataQualityIssues:
+          type: array
+          maxItems: 32
+          description: Metric-source problems. Any entry blocks reductions.
+          items: { type: string, minLength: 1, maxLength: 256 }
         autoscaling:
           $ref: "#/components/schemas/AutoscalingContext"
         policy:
@@ -840,6 +1101,16 @@ components:
         maximumReduction: { type: number, minimum: 0, maximum: 0.5 }
         minimumSamples: { type: integer, minimum: 2, maximum: 100000 }
         highConfidenceSamples: { type: integer, minimum: 2, maximum: 100000 }
+        cpuPercentile:
+          type: number
+          enum: [0.9, 0.95, 0.99, 1]
+          default: 0.95
+          description: Usage statistic CPU requests are sized from; 1 is the observed peak. Omitted or zero selects the default.
+        memoryPercentile:
+          type: number
+          enum: [0.9, 0.95, 0.99, 1]
+          default: 0.99
+          description: Usage statistic memory requests are sized from; 1 is the observed peak. Omitted or zero selects the default.
 
     Percentiles:
       type: object
@@ -897,6 +1168,8 @@ components:
         - applied
         - effectivePolicy
         - createdAt
+        - source
+        - reviewStatus
       properties:
         id:
           type: string
@@ -927,6 +1200,7 @@ components:
         risk:
           $ref: "#/components/schemas/Level"
         burstable: { type: boolean }
+        cpuThrottlingRatio: { type: number, minimum: 0, maximum: 1 }
         dataQuality:
           $ref: "#/components/schemas/DataQuality"
         estimatedCpuChangePercent: { type: number }
@@ -940,9 +1214,345 @@ components:
           description: Currently always false; this endpoint does not mutate workloads.
         effectivePolicy:
           $ref: "#/components/schemas/Policy"
+        replicas: { type: integer, minimum: 0 }
         createdAt:
           type: string
           format: date-time
+        createdBy: { type: string }
+        source:
+          type: string
+          enum: [request, prometheus]
+          description: Whether samples came from the caller or from Prometheus.
+        reviewStatus:
+          $ref: "#/components/schemas/ReviewStatus"
+        reviewedBy: { type: string }
+        reviewedAt: { type: string, format: date-time }
+        reviewComment: { type: string, maxLength: 1024 }
+
+    ReviewStatus:
+      type: string
+      enum: [pending, approved, rejected]
+
+    ReviewRequest:
+      type: object
+      additionalProperties: false
+      required: [decision]
+      properties:
+        decision:
+          type: string
+          enum: [approve, reject]
+        comment:
+          type: string
+          maxLength: 1024
+          description: Required when rejecting.
+
+    WorkloadKind:
+      type: string
+      enum: [Deployment, StatefulSet, DaemonSet, ReplicaSet, Job, CronJob]
+
+    GenerateRequest:
+      type: object
+      additionalProperties: false
+      required: [namespace, kind, workload, container]
+      properties:
+        namespace: { type: string, pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$', maxLength: 63 }
+        kind:
+          $ref: "#/components/schemas/WorkloadKind"
+        workload: { type: string, maxLength: 253 }
+        container: { type: string, pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$', maxLength: 63 }
+        criticality:
+          $ref: "#/components/schemas/Level"
+        window:
+          type: string
+          description: Go duration from 1h to 720h. Defaults to KUBERIGHT_RECOMMENDATION_WINDOW.
+          example: 168h
+        profile:
+          type: string
+          enum: [conservative, balanced, aggressive]
+          description: Built-in policy to use when `policy` is omitted. Defaults to balanced.
+        policy:
+          $ref: "#/components/schemas/Policy"
+        dryRun:
+          type: boolean
+          default: false
+          description: Calculate and return the recommendation without storing or auditing it. Permitted in observe mode.
+
+    RecommendationPreview:
+      type: object
+      required: [dryRun, recommendation, source, window, step, events]
+      properties:
+        dryRun: { type: boolean, const: true }
+        recommendation:
+          description: The calculated recommendation. It has no `id` because it was not stored.
+          type: object
+          additionalProperties: true
+        source: { type: string, const: prometheus }
+        window: { type: string }
+        step: { type: string }
+        events:
+          type: object
+          required: [available, restarts, oomKills, throttlingAvailable, throttlingRatio]
+          properties:
+            available:
+              type: boolean
+              description: Whether kube-state-metrics restart and OOM series were found.
+            restarts: { type: integer, minimum: 0 }
+            oomKills: { type: integer, minimum: 0 }
+            throttlingAvailable:
+              type: boolean
+              description: False when the container has no CPU limit or throttling series are absent.
+            throttlingRatio: { type: number, minimum: 0, maximum: 1 }
+
+    EfficiencyRow:
+      type: object
+      additionalProperties: false
+      required: [namespace, workloads, pods, containersWithoutRequests, usageAvailable, cpuRequestedMilli, memoryRequestedBytes]
+      description: Usage-derived fields are omitted, never zero-filled, when Prometheus returned no series for the namespace.
+      properties:
+        namespace: { type: string }
+        workloads: { type: integer, minimum: 0 }
+        pods: { type: integer, minimum: 0 }
+        containersWithoutRequests: { type: integer, minimum: 0 }
+        usageAvailable: { type: boolean }
+        cpuRequestedMilli: { type: integer, minimum: 0 }
+        cpuAverageMilli: { type: number, minimum: 0 }
+        cpuP95Milli: { type: number, minimum: 0 }
+        cpuEfficiency: { type: number, minimum: 0, description: Average usage divided by requested. }
+        cpuReclaimableMilli: { type: number, minimum: 0, description: Requested minus P95 usage, floored at zero. }
+        memoryRequestedBytes: { type: integer, minimum: 0 }
+        memoryAverageBytes: { type: number, minimum: 0 }
+        memoryP95Bytes: { type: number, minimum: 0 }
+        memoryEfficiency: { type: number, minimum: 0 }
+        memoryReclaimableBytes: { type: number, minimum: 0 }
+        requestedMonthlyCost: { type: number }
+        reclaimableMonthlyCost: { type: number }
+
+    EfficiencyCollection:
+      type: object
+      additionalProperties: false
+      required: [items, pagination, status]
+      properties:
+        items:
+          type: array
+          description: Namespaces sorted by reclaimable CPU, largest first.
+          items:
+            $ref: "#/components/schemas/EfficiencyRow"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+        status:
+          $ref: "#/components/schemas/Availability"
+        summary:
+          type: object
+          description: Totals over namespaces with reported usage.
+          additionalProperties: true
+
+    DataQualityReport:
+      type: object
+      required: [issues, expectedSamples, acceptedSamples, coverage]
+      properties:
+        issues:
+          type: [array, "null"]
+          items:
+            type: string
+            enum: [missing, stale, sparse, duplicate, anomalous]
+        expectedSamples: { type: integer, minimum: 0 }
+        receivedSamples: { type: integer, minimum: 0 }
+        acceptedSamples: { type: integer, minimum: 0 }
+        missingSamples: { type: integer, minimum: 0 }
+        staleSamples: { type: integer, minimum: 0 }
+        duplicateSamples: { type: integer, minimum: 0 }
+        anomalousSamples: { type: integer, minimum: 0 }
+        coverage: { type: number, minimum: 0, maximum: 1 }
+        lastAcceptedSample: { type: string, format: date-time }
+
+    UsagePoint:
+      type: object
+      additionalProperties: false
+      required: [timestamp, value]
+      properties:
+        timestamp: { type: string, format: date-time }
+        value: { type: number, minimum: 0 }
+
+    UsageSeries:
+      type: object
+      additionalProperties: false
+      required: [resource, unit, points, quality]
+      properties:
+        resource: { type: string, enum: [cpu, memory] }
+        unit: { type: string, enum: [millicores, bytes] }
+        points:
+          type: array
+          items:
+            $ref: "#/components/schemas/UsagePoint"
+        quality:
+          $ref: "#/components/schemas/DataQualityReport"
+
+    ContainerSpec:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string }
+        cpuRequestMilli: { type: integer, minimum: 0 }
+        cpuLimitMilli: { type: integer, minimum: 0 }
+        memoryRequestBytes: { type: integer, minimum: 0 }
+        memoryLimitBytes: { type: integer, minimum: 0 }
+        vpaControlsCpu: { type: boolean }
+        vpaControlsMemory: { type: boolean }
+
+    UsageHistory:
+      type: object
+      additionalProperties: false
+      required: [items, pagination, status]
+      properties:
+        items:
+          type: array
+          description: CPU then memory. Empty when Prometheus is not configured.
+          items:
+            $ref: "#/components/schemas/UsageSeries"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+        status:
+          $ref: "#/components/schemas/Availability"
+        subject:
+          type: object
+          properties:
+            namespace: { type: string }
+            kind: { type: string }
+            workload: { type: string }
+            container: { type: string }
+        start: { type: string, format: date-time }
+        end: { type: string, format: date-time }
+        step: { type: string }
+        warnings:
+          type: array
+          items: { type: string }
+        current:
+          $ref: "#/components/schemas/ContainerSpec"
+
+    ForecastRequest:
+      type: object
+      additionalProperties: false
+      required: [namespace, kind, workload, container, resource]
+      properties:
+        namespace: { type: string, pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$', maxLength: 63 }
+        kind:
+          $ref: "#/components/schemas/WorkloadKind"
+        workload: { type: string, maxLength: 253 }
+        container: { type: string, pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$', maxLength: 63 }
+        resource: { type: string, enum: [cpu, memory] }
+        horizon:
+          type: integer
+          minimum: 1
+          maximum: 168
+          default: 24
+          description: Number of forecast steps.
+        window:
+          type: string
+          description: Go duration from 48h to 720h. Defaults to KUBERIGHT_FORECAST_WINDOW.
+        confidenceLevel:
+          type: number
+          enum: [0.8, 0.9, 0.95]
+          default: 0.9
+
+    ForecastResult:
+      type: object
+      required: [resource, unit, step, history, forecast, confidenceLevel, diagnostics, experimental, warning]
+      properties:
+        subject: { type: object }
+        resource: { type: string, enum: [cpu, memory] }
+        unit: { type: string, enum: [millicores, bytes] }
+        step: { type: string }
+        history:
+          type: array
+          items:
+            $ref: "#/components/schemas/UsagePoint"
+        historyQuality:
+          $ref: "#/components/schemas/DataQualityReport"
+        forecast:
+          type: array
+          items:
+            type: object
+            required: [timestamp, value, lower, upper]
+            properties:
+              timestamp: { type: string, format: date-time }
+              value: { type: number }
+              lower: { type: number, minimum: 0 }
+              upper: { type: number }
+        confidenceLevel: { type: number }
+        diagnostics:
+          type: object
+          description: Model metadata and diagnostics passed through from the forecasting service.
+          additionalProperties: true
+          properties:
+            model: { type: string }
+            modelVersion: { type: string }
+            fallbackUsed: { type: boolean }
+            fallbackReasons:
+              type: array
+              items: { type: string }
+            confidence: { type: number }
+        experimental: { type: boolean, const: true }
+        warning: { type: string }
+
+    SavingsItem:
+      type: object
+      additionalProperties: false
+      required: [id, namespace, workload, container, replicas, reviewStatus, currentMonthlyCost, recommendedMonthlyCost, estimatedMonthlySavings, currency, createdAt]
+      properties:
+        id: { type: string, description: Recommendation identifier. }
+        cluster: { type: string }
+        namespace: { type: string }
+        kind: { type: string }
+        workload: { type: string }
+        container: { type: string }
+        replicas: { type: integer, minimum: 1 }
+        reviewStatus:
+          $ref: "#/components/schemas/ReviewStatus"
+        currentMonthlyCost: { type: number }
+        recommendedMonthlyCost: { type: number }
+        estimatedMonthlySavings:
+          type: number
+          description: Negative values are cost increases.
+        currency: { type: string, pattern: '^[A-Z]{3}$' }
+        createdAt: { type: string, format: date-time }
+
+    SavingsCollection:
+      type: object
+      additionalProperties: false
+      required: [items, pagination, status]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/SavingsItem"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+        status:
+          $ref: "#/components/schemas/Availability"
+        summary:
+          type: object
+          additionalProperties: false
+          required: [estimatedMonthlySavings, approvedMonthlySavings, currency, recommendations, truncated, basis]
+          properties:
+            estimatedMonthlySavings: { type: number }
+            approvedMonthlySavings: { type: number }
+            currency: { type: string }
+            recommendations: { type: integer, minimum: 0 }
+            truncated:
+              type: boolean
+              description: True when more than 10,000 recommendations exist and only the newest were included.
+            basis: { type: string }
+
+    DependencyStatus:
+      type: object
+      additionalProperties: false
+      required: [name, configured, healthy, critical, detail]
+      properties:
+        name: { type: string }
+        configured: { type: boolean }
+        healthy: { type: boolean }
+        critical: { type: boolean }
+        detail: { type: string }
 
     PolicyCollection:
       type: object
@@ -954,10 +1564,14 @@ components:
           items:
             type: object
             additionalProperties: false
-            required: [name, builtIn, policy]
+            required: [name, builtIn, default, description, policy]
             properties:
-              name: { type: string }
+              name: { type: string, enum: [conservative, balanced, aggressive] }
               builtIn: { type: boolean }
+              default:
+                type: boolean
+                description: True for the profile used when a request names none.
+              description: { type: string }
               policy:
                 $ref: "#/components/schemas/Policy"
         pagination:
@@ -1000,15 +1614,9 @@ components:
       properties:
         items:
           type: array
+          description: Live health of each integration, checked concurrently with a three-second timeout.
           items:
-            type: object
-            additionalProperties: false
-            required: [name, configured]
-            properties:
-              name:
-                type: string
-                enum: [kubernetesInventory, prometheus, gitops, forecasting]
-              configured: { type: boolean }
+            $ref: "#/components/schemas/DependencyStatus"
         pagination:
           $ref: "#/components/schemas/Pagination"
         status:
