@@ -100,6 +100,8 @@ export type RecommendationRecord = {
   risk: 'low' | 'medium' | 'high'
   burstable: boolean
   cpuThrottlingRatio?: number
+  trends?: Trends
+  backtest?: Backtest
   dataQuality: { cpuSampleCount: number; memorySampleCount: number; minimumRequired: number; sufficient: boolean; issues: string[] }
   estimatedCpuChangePercent?: number
   estimatedMemoryChangePercent?: number
@@ -251,4 +253,69 @@ export type EfficiencyResponse = {
     window: string
     basis: string
   }
+}
+
+export type Exceedance = { overRequest?: number; overLimit?: number }
+export type Backtest = { cpuCurrent: Exceedance; cpuRecommended: Exceedance; memoryCurrent: Exceedance; memoryRecommended: Exceedance }
+export type TrendSummary = { slopePerDay: number; growthPerDayPercent: number; rSquared: number; significant: boolean; projectedUplift: number }
+export type Trends = { cpu: TrendSummary; memory: TrendSummary }
+
+export type SignalEvent = { timestamp: string; kind: 'restart' | 'oom_kill' | 'rollout'; count?: number; detail?: string }
+export type Insight = { severity: 'info' | 'warning' | 'critical'; title: string; detail: string }
+
+export type SignalsResponse = {
+  status: ApiStatus
+  signals?: {
+    start: string
+    end: string
+    step: string
+    cpu: UsageSeries
+    memory: UsageSeries
+    throttling?: UsageSeries
+    replicas?: UsageSeries
+    latency?: UsageSeries
+    events: SignalEvent[]
+    warnings: string[]
+  }
+  current?: ContainerSpec
+  correlations?: { cpuThrottling?: number; cpuReplicas?: number; cpuLatency?: number; throttlingLatency?: number; memoryLatency?: number }
+  insights?: Insight[]
+  latencyConfigured?: boolean
+}
+
+export type CapacityResponse = {
+  status: ApiStatus
+  nodes?: { total: number; schedulable: number }
+  allocatable?: { cpuMilli: number; memoryBytes: number }
+  current?: { nodesNeeded: number; unplacedPods: number; cpuRequestedMilli: number; memoryRequestedBytes: number }
+  recommended?: { nodesNeeded: number; unplacedPods: number; cpuRequestedMilli: number; memoryRequestedBytes: number }
+  reclaimableNodes?: number
+  containersWithRecommendations?: number
+  autoscaling?: {
+    karpenter: boolean
+    clusterAutoscaler: boolean
+    nodePools: Array<{ name: string; consolidationPolicy: string; consolidateAfter?: string; disruptionBudgets: string[] }>
+    warnings: string[]
+  }
+  realization?: string
+  assumptions?: string[]
+}
+
+export type WorkloadEfficiencyRow = {
+  kind: string
+  name: string
+  replicas: number
+  podsObserved: number
+  containersWithoutRequests: number
+  cpuRequestPerPodMilli: number
+  cpuAveragePerPodMilli?: number
+  cpuP95PerPodMilli?: number
+  cpuEfficiency?: number
+  cpuReclaimableMilli?: number
+  memoryRequestPerPodBytes: number
+  memoryAveragePerPodBytes?: number
+  memoryP95PerPodBytes?: number
+  memoryEfficiency?: number
+  memoryReclaimableBytes?: number
+  reclaimableMonthlyCost?: number
 }

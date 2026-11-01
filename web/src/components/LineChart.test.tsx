@@ -27,3 +27,12 @@ describe('LineChart', () => {
     expect(screen.getByText(/No disk samples/)).toBeInTheDocument()
   })
 })
+
+describe('LineChart references', () => {
+  it('moves a crowded reference label below its line', () => {
+    render(<LineChart title="CPU" series={[{ name: 'Usage', color: seriesColors[0], points }]} references={[{ label: 'Request', value: 1000 }, { label: 'Limit', value: 1050 }]} format={(value) => `${value}m`} />)
+    const request = Number(screen.getByText('Request 1000m').getAttribute('y'))
+    const limit = Number(screen.getByText('Limit 1050m').getAttribute('y'))
+    expect(Math.abs(request - limit)).toBeGreaterThanOrEqual(12)
+  })
+})

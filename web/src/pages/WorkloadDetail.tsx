@@ -12,7 +12,7 @@ import { api, ApiError, type ApiRecord, type CollectionEnvelope, type Recommenda
 import { AnalyzeDialog } from '../components/AnalyzeDialog'
 import { GenerateDialog } from '../components/GenerateDialog'
 import { RecommendationDrawer } from '../components/RecommendationDrawer'
-import { UsageCharts } from '../components/UsageCharts'
+import { SignalsPanel } from '../components/SignalsPanel'
 import { formatBytes, formatDate, formatMillicores, formatPercent } from '../format'
 import { usageWindows } from '../usageWindows'
 
@@ -141,7 +141,7 @@ export function WorkloadDetail() {
               {usageWindows.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}
             </TextField>
           </Stack>
-          <UsageCharts subject={subject(activeContainer)} usageWindow={usageWindow} />
+          <SignalsPanel subject={subject(activeContainer)} usageWindow={usageWindow} />
         </Box>
       )}
 

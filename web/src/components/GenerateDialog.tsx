@@ -10,6 +10,7 @@ import { formatBytes, formatMillicores } from '../format'
 import { useDebounced } from '../hooks'
 import { PolicyTuner } from './PolicyTuner'
 import { ResourceTable } from './ResourceTable'
+import { BacktestTable, TrendChips } from './Backtest'
 import { WorkloadPicker } from './WorkloadPicker'
 
 const windows = [
@@ -44,6 +45,8 @@ function PreviewPanel({ preview }: { preview: RecommendationPreview }) {
         {events.available && events.oomKills > 0 && <Chip size="small" variant="outlined" color="error" label={`${events.oomKills} OOM kill${events.oomKills === 1 ? '' : 's'}`} />}
       </Stack>
       <ResourceTable record={recommendation} />
+      <TrendChips trends={recommendation.trends} />
+      {recommendation.backtest && <BacktestTable backtest={recommendation.backtest} />}
       <Typography variant="caption" color="text.secondary">
         {recommendation.reason}. Observed P95 CPU {formatMillicores(recommendation.cpuStatisticsMilli.p95)}, peak memory {formatBytes(recommendation.memoryStatisticsBytes.max)},
         from {recommendation.dataQuality.cpuSampleCount} samples over {preview.window.replace(/0m0s$/, '').replace(/h$/, ' h')}.

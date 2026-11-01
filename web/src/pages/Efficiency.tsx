@@ -1,13 +1,17 @@
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
-  Alert, Box, Button, Card, CardContent, LinearProgress, MenuItem, Skeleton, Stack, Table, TableBody, TableCell,
+  Alert, Box, Button, Card, CardContent, IconButton, LinearProgress, MenuItem, Skeleton, Stack, Table, TableBody, TableCell,
   TableContainer, TableHead, TableRow, TextField, Typography,
 } from '@mui/material'
 import WarningAmberOutlined from '@mui/icons-material/WarningAmberOutlined'
+import KeyboardArrowDown from '@mui/icons-material/KeyboardArrowDown'
+import KeyboardArrowUp from '@mui/icons-material/KeyboardArrowUp'
 import { api, ApiError, type EfficiencyResponse } from '../api'
 import { AnalyzeDialog } from '../components/AnalyzeDialog'
+import { CapacityCard } from '../components/CapacityCard'
 import { UsageMeter } from '../components/UsageMeter'
+import { WorkloadBreakdown } from '../components/WorkloadBreakdown'
 import { formatBytes, formatCurrency, formatMillicores, formatRatio } from '../format'
 import { PageHeader } from './PageHeader'
 
@@ -36,6 +40,7 @@ function StatTile({ label, value, note, warning }: { label: string; value: strin
 export function Efficiency({ title, description }: { title: string; description: string }) {
   const [usageWindow, setUsageWindow] = useState('24h')
   const [analyze, setAnalyze] = useState<string>()
+  const [expanded, setExpanded] = useState<string>()
   const query = useQuery({
     queryKey: ['resource', 'efficiency', usageWindow],
     queryFn: ({ signal }) => api.get<EfficiencyResponse>(`/api/v1/efficiency?window=${usageWindow}`, { signal }),
@@ -79,6 +84,8 @@ export function Efficiency({ title, description }: { title: string; description:
         )}
       </Box>
 
+      {data?.status.available && <CapacityCard />}
+
       {data && data.items.length > 0 && (
         <Card>
           <CardContent>
@@ -103,8 +110,14 @@ export function Efficiency({ title, description }: { title: string; description:
                 </TableHead>
                 <TableBody>
                   {data.items.map((row) => (
-                    <TableRow key={row.namespace} hover>
-                      <TableCell sx={{ fontWeight: 700 }}>{row.namespace}</TableCell>
+                    <Fragment key={row.namespace}>
+                    <TableRow hover>
+                      <TableCell sx={{ fontWeight: 700, whiteSpace: 'nowrap' }}>
+                        <IconButton size="small" aria-label={`${expanded === row.namespace ? 'Hide' : 'Show'} workloads in ${row.namespace}`} aria-expanded={expanded === row.namespace} onClick={() => setExpanded(expanded === row.namespace ? undefined : row.namespace)}>
+                          {expanded === row.namespace ? <KeyboardArrowUp fontSize="small" /> : <KeyboardArrowDown fontSize="small" />}
+                        </IconButton>
+                        {row.namespace}
+                      </TableCell>
                       <TableCell align="right">{row.pods}</TableCell>
                       <TableCell><UsageMeter label={`${row.namespace} CPU`} requested={row.cpuRequestedMilli} average={row.cpuAverageMilli} p95={row.cpuP95Milli} format={formatMillicores} /></TableCell>
                       <TableCell align="right">{row.cpuReclaimableMilli !== undefined ? formatMillicores(row.cpuReclaimableMilli) : '—'}</TableCell>
@@ -114,6 +127,14 @@ export function Efficiency({ title, description }: { title: string; description:
                       <TableCell align="right">{row.containersWithoutRequests || '—'}</TableCell>
                       <TableCell align="right"><Button size="small" onClick={() => setAnalyze(row.namespace)}>Analyze</Button></TableCell>
                     </TableRow>
+                    {expanded === row.namespace && (
+                      <TableRow>
+                        <TableCell colSpan={summary?.currency ? 9 : 8} sx={{ bgcolor: 'rgba(255,255,255,.02)', py: 2 }}>
+                          <WorkloadBreakdown namespace={row.namespace} usageWindow={usageWindow} currency={summary?.currency} />
+                        </TableCell>
+                      </TableRow>
+                    )}
+                    </Fragment>
                   ))}
                 </TableBody>
               </Table>

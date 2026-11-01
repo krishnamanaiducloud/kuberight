@@ -9,6 +9,7 @@ import ContentCopyIcon from '@mui/icons-material/ContentCopy'
 import { api, ApiError, type RecommendationRecord } from '../api'
 import { formatBytes, formatDate, formatMillicores, kubectlCommand, yamlPatch } from '../format'
 import { ResourceTable } from './ResourceTable'
+import { BacktestTable, TrendChips } from './Backtest'
 
 const riskColor = { low: 'success', medium: 'warning', high: 'error' } as const
 const reviewColor = { pending: 'warning', approved: 'success', rejected: 'default' } as const
@@ -98,6 +99,8 @@ export function RecommendationDrawer({ id, onClose }: { id: string | undefined; 
               </Stack>
             </Box>
             <ResourceTable record={record} />
+            <TrendChips trends={record.trends} />
+            {record.backtest && <BacktestTable backtest={record.backtest} />}
             <Typography variant="body2" color="text.secondary">{record.reason}</Typography>
 
             <Box>

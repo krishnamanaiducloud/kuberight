@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
 import { Box, Stack, Typography } from '@mui/material'
+import { statusColors } from '../chartColors'
 
 const textPrimary = '#eef8f6'
 const textSecondary = '#a9bec8'
@@ -9,6 +10,7 @@ export type ChartPoint = { time: number; value: number }
 export type ChartSeries = { name: string; color: string; points: ChartPoint[] }
 export type ChartBand = { color: string; points: Array<{ time: number; lower: number; upper: number }> }
 export type ChartReference = { label: string; value: number }
+export type ChartMarker = { time: number; label: string; tone: 'critical' | 'warning' | 'neutral' }
 
 type LineChartProps = {
   title: string
@@ -17,6 +19,10 @@ type LineChartProps = {
   references?: ChartReference[]
   format: (value: number) => string
   height?: number
+  /** Fixes the time axis so stacked charts line up. */
+  domain?: [number, number]
+  /** Vertical event markers, such as restarts and rollouts. */
+  markers?: ChartMarker[]
 }
 
 const margin = { top: 12, right: 16, bottom: 28, left: 64 }
@@ -54,7 +60,7 @@ function timeLabel(time: number, span: number) {
  * at the hovered time. Reference lines are dashed, neutral, and directly
  * labeled so requests and limits never compete with measured series.
  */
-export function LineChart({ title, series, band, references = [], format, height = 260 }: LineChartProps) {
+export function LineChart({ title, series, band, references = [], format, height = 260, domain, markers = [] }: LineChartProps) {
   const [containerRef, width] = useWidth()
   const [active, setActive] = useState<number | null>(null)
 
@@ -66,8 +72,8 @@ export function LineChart({ title, series, band, references = [], format, height
 
   const plotWidth = width - margin.left - margin.right
   const plotHeight = height - margin.top - margin.bottom
-  const minTime = times[0] ?? 0
-  const maxTime = times[times.length - 1] ?? 1
+  const minTime = domain?.[0] ?? times[0] ?? 0
+  const maxTime = domain?.[1] ?? times[times.length - 1] ?? 1
   const span = Math.max(1, maxTime - minTime)
   const maxValue = niceMaximum(Math.max(
     ...series.flatMap((item) => item.points.map((point) => point.value)),
@@ -107,6 +113,13 @@ export function LineChart({ title, series, band, references = [], format, height
   })
   const activeBand = activeTime === undefined ? undefined : band?.points.find((point) => point.time === activeTime)
   const tooltipLeft = activeTime === undefined ? 0 : Math.min(Math.max(x(activeTime) + 12, 0), width - 232)
+  // A label sits above its line unless an earlier label is within 14px,
+  // in which case it moves below so close references stay legible.
+  const labelY = (index: number) => {
+    const lineY = y(references[index].value)
+    const crowded = references.slice(0, index).some((other) => Math.abs(y(other.value) - lineY) < 14)
+    return crowded ? lineY + 14 : lineY - 6
+  }
   const yTicks = [0, 0.25, 0.5, 0.75, 1].map((fraction) => fraction * maxValue)
   const xFractions = width < 520 ? [0, 0.5, 1] : [0, 0.25, 0.5, 0.75, 1]
   const xTicks = times.length ? xFractions.map((fraction) => minTime + fraction * span) : []
@@ -154,10 +167,16 @@ export function LineChart({ title, series, band, references = [], format, height
             <text key={tick} x={x(tick)} y={height - 8} textAnchor={index === 0 ? 'start' : index === xTicks.length - 1 ? 'end' : 'middle'} fontSize={11} fill={textSecondary}>{timeLabel(tick, span)}</text>
           ))}
           {bandPath && <path d={bandPath} fill={band!.color} opacity={0.18} />}
-          {references.map((reference) => (
+          {markers.filter((marker) => marker.time >= minTime && marker.time <= maxTime).map((marker) => (
+            <g key={`${marker.time}-${marker.label}`}>
+              <line x1={x(marker.time)} x2={x(marker.time)} y1={margin.top} y2={margin.top + plotHeight} stroke={statusColors[marker.tone]} strokeWidth={1.5} opacity={0.85} />
+              <circle cx={x(marker.time)} cy={margin.top + 4} r={4} fill={statusColors[marker.tone]} stroke="#0d1b28" strokeWidth={2}><title>{marker.label}</title></circle>
+            </g>
+          ))}
+          {references.map((reference, index) => (
             <g key={reference.label}>
               <line x1={margin.left} x2={width - margin.right} y1={y(reference.value)} y2={y(reference.value)} stroke={textSecondary} strokeWidth={1.5} strokeDasharray="6 4" />
-              <text x={width - margin.right - 4} y={y(reference.value) - 6} textAnchor="end" fontSize={11} fill={textSecondary}>{`${reference.label} ${format(reference.value)}`}</text>
+              <text x={width - margin.right - 4} y={labelY(index)} textAnchor="end" fontSize={11} fill={textSecondary}>{`${reference.label} ${format(reference.value)}`}</text>
             </g>
           ))}
           {series.map((item) => (
