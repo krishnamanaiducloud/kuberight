@@ -12,6 +12,24 @@ jobs:
     name: Go build, test, race, vet
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    services:
+      # Disposable database for the PostgreSQL store contract and migration
+      # tests. Without it those tests skip and the store would be unverified.
+      postgres:
+        image: postgres:18-alpine@sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
+        env:
+          POSTGRES_USER: kuberight
+          POSTGRES_PASSWORD: kuberight-ci
+          POSTGRES_DB: kuberight
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U kuberight -d kuberight"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      KUBERIGHT_TEST_DATABASE_URL: postgres://kuberight:kuberight-ci@127.0.0.1:5432/kuberight?sslmode=disable
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -168,6 +186,26 @@ jobs:
           helm template kuberight charts/kuberight --namespace kuberight \
             --set ml.enabled=true \
             > /tmp/rendered/ml-enabled.yaml
+          helm template kuberight charts/kuberight --namespace kuberight \
+            --set ml.enabled=true --set ml.apiKey.existingSecret=kuberight-ml \
+            --set database.enabled=true --set database.existingSecret=kuberight-db --set replicaCount=2 \
+            --set prometheus.url=http://prometheus.monitoring.svc:9090 --set prometheus.allowHTTP=true \
+            --set cost.cpuCoreHour=0.031 --set cost.memoryGiBHour=0.004 \
+            > /tmp/rendered/integrations.yaml
+      - name: Reject unsafe integration values
+        shell: bash
+        run: |
+          # "! cmd" does not trip errexit, so each rejection is checked explicitly.
+          reject() {
+            if helm template kuberight charts/kuberight "$@" >/dev/null 2>&1; then
+              echo "chart accepted unsafe values: $*" >&2
+              exit 1
+            fi
+          }
+          reject --set replicaCount=2
+          reject --set database.enabled=true
+          reject --set cost.cpuCoreHour=0.031
+          reject --set cost.currency=usd
       - name: Verify committed standalone manifests
         run: scripts/render-manifests.sh --check
       - name: Validate core Kubernetes schemas
@@ -176,7 +214,7 @@ jobs:
             ghcr.io/yannh/kubeconform:v0.8.0@sha256:faffaf43f95aa6425306e1ab8d6fcad72acb9049158f38e574c085ea1ec0f64e \
             -strict -summary -kubernetes-version 1.35.0 \
             /manifests/default.yaml /manifests/development.yaml \
-            /manifests/cluster-wide.yaml /manifests/ml-enabled.yaml
+            /manifests/cluster-wide.yaml /manifests/ml-enabled.yaml /manifests/integrations.yaml
       - name: Validate profiles containing extension APIs
         run: |
           docker run --rm -v /tmp/rendered:/manifests:ro \
