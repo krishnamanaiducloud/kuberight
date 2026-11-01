@@ -137,6 +137,30 @@ spec:
             - name: KUBERIGHT_REQUIRE_DISTINCT_APPROVER
               value: {{ .Values.approvals.requireDistinctApprover | quote }}
             {{- end }}
+            {{- with .Values.latencyQuery }}
+            - name: KUBERIGHT_LATENCY_QUERY
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if .Values.exportRecommendationMetrics }}
+            - name: KUBERIGHT_EXPORT_RECOMMENDATION_METRICS
+              value: "true"
+            {{- end }}
+            {{- with .Values.webhook.existingSecret }}
+            - name: KUBERIGHT_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . | quote }}
+                  key: {{ $.Values.webhook.urlKey | quote }}
+            - name: KUBERIGHT_WEBHOOK_FORMAT
+              value: {{ $.Values.webhook.format | quote }}
+            {{- if $.Values.webhook.signingSecretKey }}
+            - name: KUBERIGHT_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . | quote }}
+                  key: {{ $.Values.webhook.signingSecretKey | quote }}
+            {{- end }}
+            {{- end }}
             {{- if .Values.cost.cpuCoreHour }}
             - name: KUBERIGHT_COST_CPU_CORE_HOUR
               value: {{ .Values.cost.cpuCoreHour | quote }}

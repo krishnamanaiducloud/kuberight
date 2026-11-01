@@ -46,6 +46,10 @@ rules:
   - apiGroups: [""]
     resources: ["nodes", "namespaces"]
     verbs: ["list"]
+  # Read-only Karpenter NodePools for node-impact estimates; absent CRDs are ignored.
+  - apiGroups: ["karpenter.sh"]
+    resources: ["nodepools"]
+    verbs: ["list"]
   {{- end }}
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]

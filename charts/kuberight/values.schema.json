@@ -204,6 +204,17 @@
         "currency": { "type": "string", "pattern": "^[A-Z]{3}$" }
       }
     },
+    "latencyQuery": { "type": "string", "maxLength": 2048, "pattern": "^$|^[^\\n\\r]*\\$(namespace|workload|container)[^\\n\\r]*$" },
+    "webhook": {
+      "type": "object",
+      "properties": {
+        "existingSecret": { "type": "string" },
+        "urlKey": { "type": "string", "minLength": 1 },
+        "signingSecretKey": { "type": "string" },
+        "format": { "type": "string", "enum": ["json", "slack"] }
+      }
+    },
+    "exportRecommendationMetrics": { "type": "boolean" },
     "terminationGracePeriodSeconds": { "type": "integer", "minimum": 0 },
     "postgresql": false
   }

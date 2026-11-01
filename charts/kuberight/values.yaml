@@ -77,6 +77,23 @@ cost:
   memoryGiBHour: ""
   currency: USD
 
+# Correlate an application latency series with resource signals. A one-line
+# PromQL template in seconds using $namespace, $workload, or $container.
+latencyQuery: ""
+
+# Recommendation lifecycle events for Slack, Teams, PagerDuty, Argo Events,
+# or CI. The Secret holds the URL and an optional HMAC signing secret.
+webhook:
+  existingSecret: ""
+  urlKey: url
+  signingSecretKey: ""
+  format: json
+
+# Export one gauge per container recommendation on /metrics for Grafana,
+# Coralogix, Datadog, or any OpenMetrics consumer. /metrics is
+# unauthenticated, so keep it reachable only by your monitoring stack.
+exportRecommendationMetrics: false
+
 serviceAccount:
   create: true
   automountServiceAccountToken: true
@@ -200,7 +217,10 @@ topologySpreadConstraints:
   whenUnsatisfiable: ScheduleAnyway
   extra: []
 
-nodeSelector: {}
+# Linux nodes by default, so mixed Windows and Linux clusters (AKS, EKS)
+# never schedule these Linux images onto Windows nodes.
+nodeSelector:
+  kubernetes.io/os: linux
 tolerations: []
 affinity: {}
 priorityClassName: ""
@@ -286,7 +306,8 @@ ml:
   networkPolicy:
     enabled: true
     ingress: []
-  nodeSelector: {}
+  nodeSelector:
+    kubernetes.io/os: linux
   tolerations: []
   affinity: {}
   extraEnv: []

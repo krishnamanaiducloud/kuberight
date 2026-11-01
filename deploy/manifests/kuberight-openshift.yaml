@@ -331,6 +331,8 @@ spec:
               app.kubernetes.io/name: kuberight
               app.kubernetes.io/instance: kuberight
               app.kubernetes.io/component: server
+      nodeSelector:
+        kubernetes.io/os: linux
 
 ---
 # Source: kuberight/templates/route.yaml
