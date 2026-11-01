@@ -2,9 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -14,8 +11,10 @@ import (
 	"time"
 
 	"github.com/kuberight/kuberight/internal/config"
+	"github.com/kuberight/kuberight/internal/forecast"
 	"github.com/kuberight/kuberight/internal/optimizer"
 	"github.com/kuberight/kuberight/internal/repository"
+	"github.com/kuberight/kuberight/internal/usage"
 )
 
 var (
@@ -53,20 +52,40 @@ type CollectionQuery struct {
 	Order     string
 }
 
+// UsageSource reads container usage history, normally from Prometheus.
+type UsageSource interface {
+	History(context.Context, usage.Subject, usage.Window) (usage.History, error)
+	Events(context.Context, usage.Subject, usage.Window) (usage.Events, error)
+	NamespaceUsage(ctx context.Context, namespaces []string, window time.Duration, end time.Time) (map[string]usage.NamespaceUsage, error)
+	Ready(context.Context) error
+}
+
+// Forecaster calls the forecasting service.
+type Forecaster interface {
+	Forecast(context.Context, forecast.Request) (forecast.Response, error)
+	Ready(context.Context) error
+}
+
 type Dependencies struct {
 	Access     AccessController
-	Repository *repository.Memory
+	Repository repository.Store
 	Provider   CollectionProvider
+	Usage      UsageSource
+	Forecaster Forecaster
 	Logger     *slog.Logger
+	Now        func() time.Time
 }
 
 type apiServer struct {
 	config     config.Config
 	access     AccessController
-	repository *repository.Memory
+	repository repository.Store
 	provider   CollectionProvider
+	usage      UsageSource
+	forecaster Forecaster
 	logger     *slog.Logger
 	metrics    *apiMetrics
+	now        func() time.Time
 }
 
 type unavailableAccess struct{ err error }
@@ -85,6 +104,7 @@ func NewHandler(cfg config.Config, dependencies Dependencies) (http.Handler, err
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
+	cfg = cfg.Normalized()
 	access := dependencies.Access
 	if access == nil {
 		var err error
@@ -101,13 +121,20 @@ func NewHandler(cfg config.Config, dependencies Dependencies) (http.Handler, err
 	if logger == nil {
 		logger = slog.Default()
 	}
+	now := dependencies.Now
+	if now == nil {
+		now = time.Now
+	}
 	server := &apiServer{
 		config:     cfg,
 		access:     access,
 		repository: repo,
 		provider:   dependencies.Provider,
+		usage:      dependencies.Usage,
+		forecaster: dependencies.Forecaster,
 		logger:     logger,
 		metrics:    newAPIMetrics(),
+		now:        now,
 	}
 
 	mux := http.NewServeMux()
@@ -119,11 +146,19 @@ func NewHandler(cfg config.Config, dependencies Dependencies) (http.Handler, err
 	mux.HandleFunc("GET /api/v1/recommendations", server.listRecommendations)
 	mux.HandleFunc("POST /api/v1/recommendations", server.calculateRecommendation)
 	mux.HandleFunc("POST /api/v1/recommendations:calculate", server.calculateRecommendation)
+	mux.HandleFunc("POST /api/v1/recommendations:generate", server.generateRecommendation)
 	mux.HandleFunc("GET /api/v1/recommendations/{id}", server.getRecommendation)
+	mux.HandleFunc("POST /api/v1/recommendations/{id}/review", server.reviewRecommendation)
+	mux.HandleFunc("GET /api/v1/approvals", server.approvals)
+	mux.HandleFunc("GET /api/v1/metrics/history", server.metricsHistory)
+	mux.HandleFunc("GET /api/v1/forecasts", server.forecastStatus)
+	mux.HandleFunc("POST /api/v1/forecasts", server.createForecast)
+	mux.HandleFunc("GET /api/v1/savings", server.savings)
+	mux.HandleFunc("GET /api/v1/efficiency", server.efficiency)
 	mux.HandleFunc("GET /api/v1/policies", server.policies)
 	mux.HandleFunc("GET /api/v1/audit", server.audit)
 	mux.HandleFunc("GET /api/v1/settings/integrations", server.integrations)
-	for _, resource := range []string{"clusters", "namespaces", "workloads", "metrics/history", "savings", "forecasts", "autoscalers", "approvals", "gitops/changes"} {
+	for _, resource := range []string{"clusters", "namespaces", "workloads", "autoscalers", "gitops/changes"} {
 		resource := resource
 		mux.HandleFunc("GET /api/v1/"+resource, func(w http.ResponseWriter, r *http.Request) {
 			server.collection(w, r, resource)
@@ -313,6 +348,17 @@ func (server *apiServer) ready(w http.ResponseWriter, r *http.Request) {
 	} else {
 		checks["dataProvider"] = "not_configured"
 	}
+	// The store holds recommendation and audit state, so it is critical.
+	if err := server.repository.Ready(r.Context()); err != nil {
+		checks["repository"] = "unavailable"
+		ready = false
+	} else {
+		checks["repository"] = "ready"
+	}
+	// Prometheus and forecasting are optional enrichments. Their outages
+	// degrade individual features but do not remove the API from service.
+	checks["usageMetrics"] = optionalCheck(r.Context(), server.usage)
+	checks["forecasting"] = optionalCheck(r.Context(), server.forecaster)
 	status := http.StatusOK
 	state := "ready"
 	if !ready {
@@ -320,6 +366,18 @@ func (server *apiServer) ready(w http.ResponseWriter, r *http.Request) {
 		state = "not_ready"
 	}
 	respondJSON(w, status, map[string]any{"status": state, "checks": checks})
+}
+
+type readinessChecker interface{ Ready(context.Context) error }
+
+func optionalCheck(ctx context.Context, dependency readinessChecker) string {
+	if dependency == nil {
+		return "not_configured"
+	}
+	if err := dependency.Ready(ctx); err != nil {
+		return "degraded"
+	}
+	return "ready"
 }
 
 func (server *apiServer) version(w http.ResponseWriter, r *http.Request) {
@@ -331,148 +389,21 @@ func (server *apiServer) version(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (server *apiServer) overview(w http.ResponseWriter, r *http.Request) {
-	if !server.authorize(w, r, AccessAttributes{Verb: "get", Resource: "overview"}) {
-		return
-	}
-	respondJSON(w, http.StatusOK, map[string]any{
-		"version": Version,
-		"mode":    server.config.OperationMode,
-		"recommendations": map[string]any{
-			"total":  server.repository.Count(),
-			"source": "in_process_history",
-		},
-		"inventory":   Availability{Available: server.provider != nil, Source: "kubernetes", Reason: availabilityReason(server.provider != nil, "inventory provider is not configured")},
-		"generatedAt": time.Now().UTC(),
-	})
-}
-
-func availabilityReason(available bool, reason string) string {
-	if available {
-		return ""
-	}
-	return reason
-}
-
-func (server *apiServer) listRecommendations(w http.ResponseWriter, r *http.Request) {
-	page, pageSize, err := parsePagination(r)
-	if err != nil {
-		respondError(w, r, http.StatusBadRequest, "invalid_pagination", err.Error())
-		return
-	}
-	query := r.URL.Query()
-	options := repository.ListOptions{
-		Page: page, PageSize: pageSize, Namespace: query.Get("namespace"), Workload: query.Get("workload"),
-		Confidence: query.Get("confidence"), Risk: query.Get("risk"), Filter: query.Get("filter"), Sort: query.Get("sort"), Order: query.Get("order"),
-	}
-	if options.Sort == "" {
-		options.Sort = "createdAt"
-	}
-	if options.Order == "" {
-		options.Order = "desc"
-	}
-	if !contains([]string{"createdAt", "namespace", "workload", "confidence", "risk"}, options.Sort) || !contains([]string{"asc", "desc"}, options.Order) {
-		respondError(w, r, http.StatusBadRequest, "invalid_sort", "sort or order is not supported")
-		return
-	}
-	if options.Confidence != "" && !contains([]string{"low", "medium", "high"}, options.Confidence) || options.Risk != "" && !contains([]string{"low", "medium", "high"}, options.Risk) {
-		respondError(w, r, http.StatusBadRequest, "invalid_filter", "confidence and risk filters must be low, medium, or high")
-		return
-	}
-	if !server.authorize(w, r, AccessAttributes{Verb: "list", Resource: "recommendations", Namespace: options.Namespace}) {
-		return
-	}
-	result := server.repository.List(options)
-	respondJSON(w, http.StatusOK, map[string]any{
-		"items":      result.Items,
-		"pagination": map[string]int{"page": result.Page, "pageSize": result.PageSize, "total": result.Total},
-		"status":     Availability{Available: true, Source: "in_process_history"},
-	})
-}
-
-func (server *apiServer) getRecommendation(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if len(id) < 5 || len(id) > 64 || !strings.HasPrefix(id, "rec_") {
-		respondError(w, r, http.StatusBadRequest, "invalid_id", "recommendation identifier is invalid")
-		return
-	}
-	record, ok := server.repository.Get(id)
-	if !ok {
-		respondError(w, r, http.StatusNotFound, "not_found", "recommendation was not found")
-		return
-	}
-	if !server.authorize(w, r, AccessAttributes{Verb: "get", Resource: "recommendations", Namespace: record.Namespace, Name: id}) {
-		return
-	}
-	respondJSON(w, http.StatusOK, record)
-}
-
-func (server *apiServer) calculateRecommendation(w http.ResponseWriter, r *http.Request) {
-	if server.config.OperationMode == config.ModeObserve {
-		respondError(w, r, http.StatusForbidden, "operation_disabled", "recommendation generation is disabled in observe mode")
-		return
-	}
-	var input optimizer.Input
-	if err := decodeJSON(w, r, &input); err != nil {
-		writeDecodeError(w, r, err)
-		return
-	}
-	if !server.authorize(w, r, AccessAttributes{Verb: "create", Resource: "recommendations", Namespace: input.Namespace}) {
-		return
-	}
-	recommendation, err := optimizer.Recommend(input)
-	if err != nil {
-		respondError(w, r, http.StatusUnprocessableEntity, "invalid_recommendation_input", err.Error())
-		return
-	}
-	payload, err := json.Marshal(input)
-	if err != nil {
-		respondError(w, r, http.StatusInternalServerError, "internal_error", "could not fingerprint the recommendation request")
-		return
-	}
-	fingerprintDigest := sha256.Sum256(payload)
-	principal, ok := principalFromContext(r.Context())
-	if !ok {
-		respondError(w, r, http.StatusUnauthorized, "unauthorized", "an authenticated identity is required")
-		return
-	}
-	record, created, err := server.repository.Create(recommendation, repository.CreateOptions{
-		IdempotencyKey: strings.TrimSpace(r.Header.Get("Idempotency-Key")),
-		Scope:          principal.Username + "\x00" + principal.UID + "\x00" + input.Namespace,
-		Fingerprint:    hex.EncodeToString(fingerprintDigest[:]),
-	})
-	if err != nil {
-		if errors.Is(err, repository.ErrIdempotencyConflict) {
-			respondError(w, r, http.StatusConflict, "idempotency_conflict", err.Error())
-			return
-		}
-		respondError(w, r, http.StatusBadRequest, "invalid_idempotency_key", err.Error())
-		return
-	}
-	action := "replay"
-	if created {
-		server.metrics.observeRecommendation(record.Confidence, record.Risk)
-		action = "create"
-	}
-	_ = server.repository.AddAudit(repository.AuditEvent{
-		Actor: principal.Username, Action: action, Resource: "recommendations/" + record.ID,
-		Namespace: record.Namespace, Outcome: "success", RequestID: requestIDFromContext(r.Context()),
-	})
-	status := http.StatusCreated
-	if !created {
-		status = http.StatusOK
-	}
-	w.Header().Set("Location", "/api/v1/recommendations/"+record.ID)
-	respondJSON(w, status, record)
-}
-
 func (server *apiServer) policies(w http.ResponseWriter, r *http.Request) {
 	if !server.authorize(w, r, AccessAttributes{Verb: "list", Resource: "policies"}) {
 		return
 	}
+	profiles := optimizer.Profiles()
+	items := make([]map[string]any, 0, len(profiles))
+	for _, profile := range profiles {
+		items = append(items, map[string]any{
+			"name": profile.Name, "builtIn": true, "default": profile.Name == "balanced",
+			"description": profile.Description, "policy": profile.Policy,
+		})
+	}
 	respondJSON(w, http.StatusOK, map[string]any{
-		"items":      []any{map[string]any{"name": "default", "builtIn": true, "policy": optimizer.DefaultPolicy()}},
-		"pagination": map[string]int{"page": 1, "pageSize": 50, "total": 1},
+		"items":      items,
+		"pagination": map[string]int{"page": 1, "pageSize": 50, "total": len(items)},
 		"status":     Availability{Available: true, Source: "built_in_policy"},
 	})
 }
@@ -486,26 +417,14 @@ func (server *apiServer) audit(w http.ResponseWriter, r *http.Request) {
 	if !server.authorize(w, r, AccessAttributes{Verb: "list", Resource: "audit"}) {
 		return
 	}
-	items, total := server.repository.ListAudit(page, pageSize)
-	respondJSON(w, http.StatusOK, map[string]any{
-		"items": items, "pagination": map[string]int{"page": page, "pageSize": pageSize, "total": total},
-		"status": Availability{Available: true, Source: "in_process_audit"},
-	})
-}
-
-func (server *apiServer) integrations(w http.ResponseWriter, r *http.Request) {
-	if !server.authorize(w, r, AccessAttributes{Verb: "list", Resource: "integrations"}) {
+	result, err := server.repository.ListAuditEvents(r.Context(), page, pageSize)
+	if err != nil {
+		server.repositoryFailure(w, r, "list audit events", err)
 		return
 	}
-	items := []map[string]any{
-		{"name": "kubernetesInventory", "configured": server.provider != nil},
-		{"name": "prometheus", "configured": server.config.PrometheusURL != ""},
-		{"name": "gitops", "configured": false},
-		{"name": "forecasting", "configured": false},
-	}
 	respondJSON(w, http.StatusOK, map[string]any{
-		"items": items, "pagination": map[string]int{"page": 1, "pageSize": len(items), "total": len(items)},
-		"status": Availability{Available: true, Source: "runtime_configuration"},
+		"items": result.Items, "pagination": map[string]int{"page": page, "pageSize": pageSize, "total": result.Total},
+		"status": Availability{Available: true, Source: server.repository.Kind() + "_audit"},
 	})
 }
 

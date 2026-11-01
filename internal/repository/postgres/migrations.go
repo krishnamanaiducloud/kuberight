@@ -1,6 +1,5 @@
-// Package postgres contains the PostgreSQL persistence building blocks. It is
-// intentionally independent of a database driver so schema compatibility can
-// be validated before a concrete connection-pool implementation is selected.
+// Package postgres implements the durable repository.Store on PostgreSQL,
+// including embedded, checksummed schema migrations.
 package postgres
 
 import (
@@ -15,7 +14,7 @@ import (
 )
 
 // LatestSchemaVersion is the schema version understood by this source tree.
-const LatestSchemaVersion uint64 = 1
+const LatestSchemaVersion uint64 = 2
 
 //go:embed migrations/*.sql
 var migrationFiles embed.FS

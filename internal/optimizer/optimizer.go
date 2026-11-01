@@ -34,7 +34,22 @@ type Policy struct {
 	MaximumReduction      float64 `json:"maximumReduction"`
 	MinimumSamples        int     `json:"minimumSamples"`
 	HighConfidenceSamples int     `json:"highConfidenceSamples"`
+	// CPUPercentile and MemoryPercentile select the usage statistic that
+	// requests are sized from: 0.9, 0.95, 0.99, or 1 for the observed
+	// maximum. Zero selects the defaults, 0.95 and 0.99, so policies stored
+	// before these fields existed keep their original behavior.
+	CPUPercentile    float64 `json:"cpuPercentile,omitempty"`
+	MemoryPercentile float64 `json:"memoryPercentile,omitempty"`
 }
+
+const (
+	defaultCPUPercentile    = 0.95
+	defaultMemoryPercentile = 0.99
+	// throttlingThreshold is the share of CFS periods in which a container
+	// was throttled above which CPU is treated as constrained, not idle.
+	throttlingThreshold       = 0.05
+	severeThrottlingThreshold = 0.25
+)
 
 func DefaultPolicy() Policy {
 	return Policy{
@@ -48,27 +63,110 @@ func DefaultPolicy() Policy {
 		MaximumReduction:      0.20,
 		MinimumSamples:        30,
 		HighConfidenceSamples: 500,
+		CPUPercentile:         defaultCPUPercentile,
+		MemoryPercentile:      defaultMemoryPercentile,
 	}
 }
 
+// Profile is a named, built-in policy.
+type Profile struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Policy      Policy `json:"policy"`
+}
+
+// Profiles returns the built-in policies, most cautious first.
+func Profiles() []Profile {
+	conservative := DefaultPolicy()
+	conservative.CPUPercentile, conservative.MemoryPercentile = 0.99, 1
+	conservative.CPUSafetyMargin, conservative.MemorySafetyMargin, conservative.LimitSafetyMargin = 0.40, 0.30, 0.75
+	conservative.MaximumReduction = 0.10
+	conservative.MinimumSamples, conservative.HighConfidenceSamples = 60, 1000
+
+	aggressive := DefaultPolicy()
+	aggressive.CPUPercentile, aggressive.MemoryPercentile = 0.90, 0.99
+	aggressive.CPUSafetyMargin, aggressive.MemorySafetyMargin, aggressive.LimitSafetyMargin = 0.15, 0.15, 0.30
+	aggressive.MaximumReduction = 0.40
+
+	return []Profile{
+		{Name: "conservative", Description: "P99 CPU and peak memory with wide margins; at most 10% reduction per change. For latency-critical or stateful services.", Policy: conservative},
+		{Name: "balanced", Description: "P95 CPU and P99 memory with moderate margins; at most 20% reduction per change. The default.", Policy: DefaultPolicy()},
+		{Name: "aggressive", Description: "P90 CPU and P99 memory with narrow margins; up to 40% reduction per change. For batch, development, and cost-sensitive workloads.", Policy: aggressive},
+	}
+}
+
+// ProfileByName returns a built-in policy.
+func ProfileByName(name string) (Policy, bool) {
+	for _, profile := range Profiles() {
+		if profile.Name == name {
+			return profile.Policy, true
+		}
+	}
+	return Policy{}, false
+}
+
+func normalizePolicy(policy Policy) Policy {
+	if policy.CPUPercentile == 0 {
+		policy.CPUPercentile = defaultCPUPercentile
+	}
+	if policy.MemoryPercentile == 0 {
+		policy.MemoryPercentile = defaultMemoryPercentile
+	}
+	return policy
+}
+
+func validPercentile(value float64) bool {
+	return value == 0.9 || value == 0.95 || value == 0.99 || value == 1
+}
+
+// at returns the statistic for a supported percentile.
+func (stats Percentiles) at(q float64) float64 {
+	switch q {
+	case 0.9:
+		return stats.P90
+	case 0.95:
+		return stats.P95
+	case 0.99:
+		return stats.P99
+	default:
+		return stats.Max
+	}
+}
+
+func percentileLabel(q float64) string {
+	if q == 1 {
+		return "peak"
+	}
+	return fmt.Sprintf("P%g", q*100)
+}
+
 type Input struct {
-	Cluster                   string             `json:"cluster,omitempty"`
-	Namespace                 string             `json:"namespace"`
-	Kind                      string             `json:"kind,omitempty"`
-	Workload                  string             `json:"workload"`
-	Container                 string             `json:"container"`
-	Criticality               string             `json:"criticality,omitempty"`
-	CPURequestsMilli          int64              `json:"cpuRequestMilli"`
-	MemoryRequestsBytes       int64              `json:"memoryRequestBytes"`
-	CPULimitMilli             int64              `json:"cpuLimitMilli,omitempty"`
-	MemoryLimitBytes          int64              `json:"memoryLimitBytes,omitempty"`
-	CPUSamplesMilli           []float64          `json:"cpuSamplesMilli"`
-	MemorySamplesBytes        []float64          `json:"memorySamplesBytes"`
-	SampleIntervalSeconds     int64              `json:"sampleIntervalSeconds,omitempty"`
-	ObservedContainerRestarts int64              `json:"observedContainerRestarts,omitempty"`
-	ObservedOOMKills          int64              `json:"observedOomKills,omitempty"`
-	Autoscaling               AutoscalingContext `json:"autoscaling,omitempty"`
-	Policy                    *Policy            `json:"policy,omitempty"`
+	Cluster                   string    `json:"cluster,omitempty"`
+	Namespace                 string    `json:"namespace"`
+	Kind                      string    `json:"kind,omitempty"`
+	Workload                  string    `json:"workload"`
+	Container                 string    `json:"container"`
+	Criticality               string    `json:"criticality,omitempty"`
+	CPURequestsMilli          int64     `json:"cpuRequestMilli"`
+	MemoryRequestsBytes       int64     `json:"memoryRequestBytes"`
+	CPULimitMilli             int64     `json:"cpuLimitMilli,omitempty"`
+	MemoryLimitBytes          int64     `json:"memoryLimitBytes,omitempty"`
+	CPUSamplesMilli           []float64 `json:"cpuSamplesMilli"`
+	MemorySamplesBytes        []float64 `json:"memorySamplesBytes"`
+	SampleIntervalSeconds     int64     `json:"sampleIntervalSeconds,omitempty"`
+	ObservedContainerRestarts int64     `json:"observedContainerRestarts,omitempty"`
+	ObservedOOMKills          int64     `json:"observedOomKills,omitempty"`
+	// ObservedCPUThrottlingRatio is the share of CFS scheduling periods in
+	// which the container was throttled, from 0 to 1. Usage samples average
+	// away sub-second bursts; throttling exposes them.
+	ObservedCPUThrottlingRatio float64 `json:"observedCpuThrottlingRatio,omitempty"`
+	// Replicas is the desired replica count, used only for cost estimates.
+	Replicas int32 `json:"replicas,omitempty"`
+	// DataQualityIssues are problems found by the metric source. Any issue
+	// blocks reductions, exactly as insufficient sample coverage does.
+	DataQualityIssues []string           `json:"dataQualityIssues,omitempty"`
+	Autoscaling       AutoscalingContext `json:"autoscaling,omitempty"`
+	Policy            *Policy            `json:"policy,omitempty"`
 }
 
 type Percentiles struct {
@@ -94,6 +192,7 @@ type Recommendation struct {
 	Kind                      string      `json:"kind,omitempty"`
 	Workload                  string      `json:"workload"`
 	Container                 string      `json:"container"`
+	Replicas                  int32       `json:"replicas,omitempty"`
 	CPURequestMilli           int64       `json:"cpuRequestMilli"`
 	MemoryRequestBytes        int64       `json:"memoryRequestBytes"`
 	CPULimitMilli             int64       `json:"cpuLimitMilli"`
@@ -108,6 +207,7 @@ type Recommendation struct {
 	ConfidenceScore           float64     `json:"confidenceScore"`
 	Risk                      string      `json:"risk"`
 	Burstable                 bool        `json:"burstable"`
+	CPUThrottlingRatio        float64     `json:"cpuThrottlingRatio,omitempty"`
 	DataQuality               DataQuality `json:"dataQuality"`
 	EstimatedCPUChangePercent float64     `json:"estimatedCpuChangePercent,omitempty"`
 	EstimatedMemoryChangePct  float64     `json:"estimatedMemoryChangePercent,omitempty"`
@@ -164,6 +264,9 @@ func validatePolicy(policy Policy) error {
 	if policy.MinimumSamples < 2 || policy.MinimumSamples > maxSamples || policy.HighConfidenceSamples < policy.MinimumSamples || policy.HighConfidenceSamples > maxSamples {
 		return errors.New("sample thresholds are invalid")
 	}
+	if !validPercentile(policy.CPUPercentile) || !validPercentile(policy.MemoryPercentile) {
+		return errors.New("CPU and memory percentiles must be 0.9, 0.95, 0.99, or 1")
+	}
 	return nil
 }
 
@@ -196,6 +299,20 @@ func validateInput(input Input, policy Policy) error {
 	}
 	if input.SampleIntervalSeconds < 0 || input.ObservedContainerRestarts < 0 || input.ObservedOOMKills < 0 {
 		return errors.New("sample interval and event counts cannot be negative")
+	}
+	if math.IsNaN(input.ObservedCPUThrottlingRatio) || input.ObservedCPUThrottlingRatio < 0 || input.ObservedCPUThrottlingRatio > 1 {
+		return errors.New("CPU throttling ratio must be between 0 and 1")
+	}
+	if input.Replicas < 0 || input.Replicas > 100_000 {
+		return errors.New("replicas must be between 0 and 100000")
+	}
+	if len(input.DataQualityIssues) > 32 {
+		return errors.New("at most 32 data-quality issues may be supplied")
+	}
+	for _, issue := range input.DataQualityIssues {
+		if strings.TrimSpace(issue) == "" || len(issue) > 256 {
+			return errors.New("data-quality issues must contain 1 to 256 characters")
+		}
 	}
 	return nil
 }
@@ -233,7 +350,7 @@ func changePercent(current, recommended int64) float64 {
 func Recommend(input Input) (Recommendation, error) {
 	policy := DefaultPolicy()
 	if input.Policy != nil {
-		policy = *input.Policy
+		policy = normalizePolicy(*input.Policy)
 	}
 	if err := validatePolicy(policy); err != nil {
 		return Recommendation{}, err
@@ -266,8 +383,12 @@ func Recommend(input Input) (Recommendation, error) {
 	if input.SampleIntervalSeconds == 0 {
 		quality.Issues = append(quality.Issues, "sample interval was not supplied; temporal coverage is unknown")
 	}
+	if len(input.DataQualityIssues) > 0 {
+		quality.Sufficient = false
+		quality.Issues = append(quality.Issues, input.DataQualityIssues...)
+	}
 	if !quality.Sufficient {
-		warnings = append(warnings, "requests were not reduced because sample or temporal coverage is insufficient")
+		warnings = append(warnings, "requests were not reduced because sample coverage, temporal coverage, or data quality is insufficient")
 	}
 	if len(input.CPUSamplesMilli) != len(input.MemorySamplesBytes) {
 		quality.Issues = append(quality.Issues, "CPU and memory sample counts differ")
@@ -279,7 +400,7 @@ func Recommend(input Input) (Recommendation, error) {
 		confidence = "medium"
 		confidenceScore = 0.50 + math.Min(0.29, float64(sampleCount-policy.MinimumSamples)/float64(max(1, policy.HighConfidenceSamples-policy.MinimumSamples))*0.29)
 	}
-	if sampleCount >= policy.HighConfidenceSamples && input.SampleIntervalSeconds > 0 {
+	if quality.Sufficient && sampleCount >= policy.HighConfidenceSamples {
 		confidence = "high"
 		confidenceScore = math.Min(0.99, 0.80+float64(sampleCount-policy.HighConfidenceSamples)/float64(policy.HighConfidenceSamples)*0.19)
 	}
@@ -299,10 +420,18 @@ func Recommend(input Input) (Recommendation, error) {
 		warnings = append(warnings, "observed OOM kills prevent memory request and limit reductions")
 	}
 
-	cpuRequest := roundedRecommendation(cpuStats.P95, policy.CPUSafetyMargin, policy.MinimumCPUMilli, policy.MaximumCPUMilli)
-	memoryRequest := roundedRecommendation(memoryStats.P99, policy.MemorySafetyMargin, policy.MinimumMemoryBytes, policy.MaximumMemoryBytes)
+	cpuRequest := roundedRecommendation(cpuStats.at(policy.CPUPercentile), policy.CPUSafetyMargin, policy.MinimumCPUMilli, policy.MaximumCPUMilli)
+	memoryRequest := roundedRecommendation(memoryStats.at(policy.MemoryPercentile), policy.MemorySafetyMargin, policy.MinimumMemoryBytes, policy.MaximumMemoryBytes)
+	// A throttled container is CPU-constrained even when its averaged usage
+	// looks low, so its CPU must not be reduced.
+	throttled := input.ObservedCPUThrottlingRatio >= throttlingThreshold
+	cpuMaximumReduction := maximumReduction
+	if throttled {
+		cpuMaximumReduction = 0
+		warnings = append(warnings, fmt.Sprintf("CPU was throttled in %.1f%% of scheduling periods; CPU was not reduced and the CPU limit was raised", input.ObservedCPUThrottlingRatio*100))
+	}
 	if input.CPURequestsMilli > 0 {
-		cpuRequest = max(cpuRequest, reductionFloor(input.CPURequestsMilli, maximumReduction))
+		cpuRequest = max(cpuRequest, reductionFloor(input.CPURequestsMilli, cpuMaximumReduction))
 	}
 	if input.MemoryRequestsBytes > 0 {
 		memoryRequest = max(memoryRequest, reductionFloor(input.MemoryRequestsBytes, memoryMaximumReduction))
@@ -336,15 +465,22 @@ func Recommend(input Input) (Recommendation, error) {
 	// throttling or OOM kills, so it is intentionally not done automatically.
 	cpuLimit := int64(0)
 	if input.CPULimitMilli > 0 {
-		cpuLimit = roundedRecommendation(cpuStats.P99, policy.LimitSafetyMargin, cpuRequest, policy.MaximumCPUMilli)
-		cpuLimit = max(cpuLimit, reductionFloor(input.CPULimitMilli, maximumReduction))
+		cpuLimit = roundedRecommendation(cpuStats.at(math.Max(0.99, policy.CPUPercentile)), policy.LimitSafetyMargin, cpuRequest, policy.MaximumCPUMilli)
+		cpuLimit = max(cpuLimit, reductionFloor(input.CPULimitMilli, cpuMaximumReduction))
+		if throttled {
+			raise := 1.25
+			if input.ObservedCPUThrottlingRatio >= severeThrottlingThreshold {
+				raise = 1.5
+			}
+			cpuLimit = max(cpuLimit, min(int64(math.Ceil(float64(input.CPULimitMilli)*raise)), policy.MaximumCPUMilli))
+		}
 		cpuLimit = max(cpuLimit, cpuRequest)
 	} else {
 		warnings = append(warnings, "CPU limit is absent and no new limit was introduced")
 	}
 	memoryLimit := int64(0)
 	if input.MemoryLimitBytes > 0 {
-		memoryLimit = roundedRecommendation(memoryStats.P99, policy.LimitSafetyMargin, memoryRequest, policy.MaximumMemoryBytes)
+		memoryLimit = roundedRecommendation(memoryStats.at(math.Max(0.99, policy.MemoryPercentile)), policy.LimitSafetyMargin, memoryRequest, policy.MaximumMemoryBytes)
 		memoryLimit = max(memoryLimit, reductionFloor(input.MemoryLimitBytes, memoryMaximumReduction))
 		memoryLimit = max(memoryLimit, memoryRequest)
 	} else {
@@ -352,7 +488,7 @@ func Recommend(input Input) (Recommendation, error) {
 	}
 
 	risk := "low"
-	if confidence != "high" || burstable || input.Autoscaling.HPAUtilizationBased {
+	if confidence != "high" || burstable || throttled || input.Autoscaling.HPAUtilizationBased {
 		risk = "medium"
 	}
 	if confidence == "low" || input.ObservedOOMKills > 0 || strings.EqualFold(input.Kind, "StatefulSet") || input.Criticality == "high" || input.Autoscaling.VPAControlsCPU || input.Autoscaling.VPAControlsMemory {
@@ -365,6 +501,7 @@ func Recommend(input Input) (Recommendation, error) {
 		Kind:                      input.Kind,
 		Workload:                  input.Workload,
 		Container:                 input.Container,
+		Replicas:                  input.Replicas,
 		CPURequestMilli:           cpuRequest,
 		MemoryRequestBytes:        memoryRequest,
 		CPULimitMilli:             cpuLimit,
@@ -379,10 +516,11 @@ func Recommend(input Input) (Recommendation, error) {
 		ConfidenceScore:           confidenceScore,
 		Risk:                      risk,
 		Burstable:                 burstable,
+		CPUThrottlingRatio:        math.Round(input.ObservedCPUThrottlingRatio*10_000) / 10_000,
 		DataQuality:               quality,
 		EstimatedCPUChangePercent: changePercent(input.CPURequestsMilli, cpuRequest),
 		EstimatedMemoryChangePct:  changePercent(input.MemoryRequestsBytes, memoryRequest),
-		Reason:                    "P95 CPU and P99 memory with policy safety margins, resource floors, and bounded reductions",
+		Reason:                    fmt.Sprintf("%s CPU and %s memory with policy safety margins, resource floors, and bounded reductions", percentileLabel(policy.CPUPercentile), percentileLabel(policy.MemoryPercentile)),
 		Warnings:                  warnings,
 		Applied:                   false,
 		Policy:                    policy,

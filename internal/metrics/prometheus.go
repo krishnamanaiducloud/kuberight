@@ -74,16 +74,16 @@ type Sample struct {
 // samples. MissingSamples is an estimate based on the inclusive query window;
 // it is never filled with synthetic zero-valued observations.
 type DataQuality struct {
-	Issues             []QualityIssue
-	ExpectedSamples    int
-	ReceivedSamples    int
-	AcceptedSamples    int
-	MissingSamples     int
-	StaleSamples       int
-	DuplicateSamples   int
-	AnomalousSamples   int
-	Coverage           float64
-	LastAcceptedSample *time.Time
+	Issues             []QualityIssue `json:"issues"`
+	ExpectedSamples    int            `json:"expectedSamples"`
+	ReceivedSamples    int            `json:"receivedSamples"`
+	AcceptedSamples    int            `json:"acceptedSamples"`
+	MissingSamples     int            `json:"missingSamples"`
+	StaleSamples       int            `json:"staleSamples"`
+	DuplicateSamples   int            `json:"duplicateSamples"`
+	AnomalousSamples   int            `json:"anomalousSamples"`
+	Coverage           float64        `json:"coverage"`
+	LastAcceptedSample *time.Time     `json:"lastAcceptedSample,omitempty"`
 }
 
 // Has reports whether the quality report contains issue.

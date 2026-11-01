@@ -58,6 +58,8 @@ var fixedTelemetryRoutes = map[string]struct{}{
 	"GET /api/v1/savings":   {},
 	"GET /api/v1/forecasts": {}, "GET /api/v1/autoscalers": {},
 	"GET /api/v1/approvals": {}, "GET /api/v1/gitops/changes": {},
+	"POST /api/v1/recommendations:generate": {}, "POST /api/v1/forecasts": {},
+	"GET /api/v1/efficiency": {},
 }
 
 func newAPIMetrics() *apiMetrics {
@@ -107,6 +109,12 @@ func telemetryRoute(request *http.Request) string {
 		identifier := strings.TrimPrefix(request.URL.Path, "/api/v1/recommendations/")
 		if identifier != "" && !strings.Contains(identifier, "/") {
 			return "GET /api/v1/recommendations/{id}"
+		}
+	}
+	if request.Method == http.MethodPost && strings.HasPrefix(request.URL.Path, "/api/v1/recommendations/") && strings.HasSuffix(request.URL.Path, "/review") {
+		identifier := strings.TrimSuffix(strings.TrimPrefix(request.URL.Path, "/api/v1/recommendations/"), "/review")
+		if identifier != "" && !strings.Contains(identifier, "/") {
+			return "POST /api/v1/recommendations/{id}/review"
 		}
 	}
 	if !strings.HasPrefix(request.URL.Path, "/api/") {
