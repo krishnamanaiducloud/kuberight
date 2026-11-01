@@ -15,6 +15,7 @@ import (
 	"github.com/kuberight/kuberight/internal/forecast"
 	"github.com/kuberight/kuberight/internal/httpapi"
 	"github.com/kuberight/kuberight/internal/metrics"
+	"github.com/kuberight/kuberight/internal/notify"
 	"github.com/kuberight/kuberight/internal/provider"
 	"github.com/kuberight/kuberight/internal/repository/postgres"
 	"github.com/kuberight/kuberight/internal/usage"
@@ -67,6 +68,18 @@ func main() {
 		}
 		dependencies.Forecaster = client
 	}
+	var webhook *notify.Webhook
+	if cfg.WebhookURL != "" {
+		var webhookErr error
+		webhook, webhookErr = notify.NewWebhook(notify.Options{
+			URL: cfg.WebhookURL, Secret: cfg.WebhookSecret, Format: cfg.WebhookFormat, AllowHTTP: cfg.AllowInsecureUpstreams, Logger: logger,
+		})
+		if webhookErr != nil {
+			logger.Error("webhook initialization failed", "error", webhookErr)
+			os.Exit(1)
+		}
+		dependencies.Notifier = webhook
+	}
 	if cfg.InventoryEnabled {
 		inventory, inventoryErr := provider.NewKubernetesProvider(cfg)
 		if inventoryErr != nil {
@@ -91,6 +104,11 @@ func main() {
 		defer cancel()
 		if err := server.Shutdown(shutdownContext); err != nil {
 			logger.Error("graceful shutdown failed", "error", err)
+		}
+		if webhook != nil {
+			if err := webhook.Close(shutdownContext); err != nil {
+				logger.Warn("pending webhook events were not delivered before shutdown", "error", err)
+			}
 		}
 		close(shutdownComplete)
 	}()

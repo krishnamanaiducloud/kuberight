@@ -72,6 +72,21 @@ type Config struct {
 	// RequireDistinctApprover rejects reviews by the identity that created
 	// the recommendation.
 	RequireDistinctApprover bool
+
+	// LatencyQuery is an optional PromQL template, in seconds, correlated with
+	// resource signals. It must use $namespace, $workload, or $container.
+	LatencyQuery string
+
+	// WebhookURL receives recommendation lifecycle events. WebhookSecret,
+	// when set, signs each body with HMAC-SHA256. WebhookFormat is json or
+	// slack.
+	WebhookURL    string
+	WebhookSecret string
+	WebhookFormat string
+
+	// ExportRecommendationMetrics adds per-container recommendation gauges to
+	// /metrics for Grafana and other Prometheus-compatible consumers.
+	ExportRecommendationMetrics bool
 }
 
 const (
@@ -134,6 +149,10 @@ func Load() (Config, error) {
 		MLURL:              strings.TrimSpace(os.Getenv("KUBERIGHT_ML_URL")),
 		MLAPIKey:           os.Getenv("KUBERIGHT_ML_API_KEY"),
 		CostCurrency:       strings.ToUpper(envOr("KUBERIGHT_COST_CURRENCY", "USD")),
+		LatencyQuery:       strings.TrimSpace(os.Getenv("KUBERIGHT_LATENCY_QUERY")),
+		WebhookURL:         strings.TrimSpace(os.Getenv("KUBERIGHT_WEBHOOK_URL")),
+		WebhookSecret:      os.Getenv("KUBERIGHT_WEBHOOK_SECRET"),
+		WebhookFormat:      strings.ToLower(envOr("KUBERIGHT_WEBHOOK_FORMAT", "json")),
 	}
 
 	var err error
@@ -147,6 +166,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.DatabaseMigrate, err = parseBool("KUBERIGHT_DATABASE_MIGRATE", true); err != nil {
+		return Config{}, err
+	}
+	if cfg.ExportRecommendationMetrics, err = parseBool("KUBERIGHT_EXPORT_RECOMMENDATION_METRICS", false); err != nil {
 		return Config{}, err
 	}
 	// Static mode has a single shared identity, so separation of duties is
@@ -290,6 +312,20 @@ func (c Config) Validate() error {
 	}
 	if (c.CostCPUCoreHour > 0) != (c.CostMemoryGiBHour > 0) {
 		return errors.New("KUBERIGHT_COST_CPU_CORE_HOUR and KUBERIGHT_COST_MEMORY_GIB_HOUR must be set together")
+	}
+	if c.LatencyQuery != "" {
+		if len(c.LatencyQuery) > 2048 || strings.ContainsAny(c.LatencyQuery, "\r\n") || !strings.Contains(c.LatencyQuery, "$") {
+			return errors.New("KUBERIGHT_LATENCY_QUERY must be one line of at most 2048 bytes using $namespace, $workload, or $container")
+		}
+	}
+	if err := validateUpstream("KUBERIGHT_WEBHOOK_URL", c.WebhookURL, c.AllowInsecureUpstreams, "KUBERIGHT_ALLOW_INSECURE_UPSTREAMS=true"); err != nil {
+		return err
+	}
+	if c.WebhookFormat != "" && c.WebhookFormat != "json" && c.WebhookFormat != "slack" {
+		return errors.New("KUBERIGHT_WEBHOOK_FORMAT must be json or slack")
+	}
+	if c.WebhookSecret != "" && len(c.WebhookSecret) < 16 {
+		return errors.New("KUBERIGHT_WEBHOOK_SECRET must contain at least 16 characters")
 	}
 	if c.CostCurrency != "" && !validCurrency(c.CostCurrency) {
 		return errors.New("KUBERIGHT_COST_CURRENCY must be a three-letter ISO 4217 code")

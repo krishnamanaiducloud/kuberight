@@ -65,6 +65,9 @@ func (inventory fakeInventory) Workload(_ context.Context, namespace, kind, name
 }
 
 type fakeUsage struct {
+	pods       map[string]usage.PodUsage
+	signals    *usage.Signals
+	rollouts   []usage.Event
 	namespaces map[string]usage.NamespaceUsage
 	history    usage.History
 	err        error
@@ -93,6 +96,20 @@ func (source *fakeUsage) NamespaceUsage(_ context.Context, namespaces []string, 
 		}
 	}
 	return result, source.err
+}
+func (source *fakeUsage) PodUsage(context.Context, string, time.Duration, time.Time) (map[string]usage.PodUsage, error) {
+	return source.pods, source.err
+}
+func (source *fakeUsage) Signals(_ context.Context, subject usage.Subject, _ usage.Window, _ usage.LatencyTemplate) (usage.Signals, error) {
+	if source.signals == nil {
+		return usage.Signals{}, usage.ErrNoData
+	}
+	signals := *source.signals
+	signals.Subject = subject
+	return signals, source.err
+}
+func (source *fakeUsage) Rollouts(context.Context, usage.Subject, time.Time, time.Time) ([]usage.Event, error) {
+	return source.rollouts, nil
 }
 func (source *fakeUsage) Ready(context.Context) error { return source.ready }
 

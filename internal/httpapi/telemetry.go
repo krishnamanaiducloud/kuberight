@@ -59,7 +59,8 @@ var fixedTelemetryRoutes = map[string]struct{}{
 	"GET /api/v1/forecasts": {}, "GET /api/v1/autoscalers": {},
 	"GET /api/v1/approvals": {}, "GET /api/v1/gitops/changes": {},
 	"POST /api/v1/recommendations:generate": {}, "POST /api/v1/forecasts": {},
-	"GET /api/v1/efficiency": {},
+	"GET /api/v1/efficiency": {}, "GET /api/v1/efficiency/workloads": {},
+	"GET /api/v1/capacity": {}, "GET /api/v1/metrics/signals": {},
 }
 
 func newAPIMetrics() *apiMetrics {

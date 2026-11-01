@@ -411,7 +411,10 @@ func (server *apiServer) dependencyStatuses(ctx context.Context) []dependencySta
 	}
 	statuses = append(statuses,
 		cost,
-		dependencyStatus{Name: "GitOps", Detail: "not implemented; apply approved recommendations through your own change process"},
+		dependencyStatus{Name: "GitOps", Configured: true, Healthy: true, Detail: "export approved recommendations as strategic-merge patches for Argo CD, Flux, or kubectl"},
+		server.optionalIntegration("Webhooks", server.notifier != nil, "recommendation events are delivered to the configured webhook", "KUBERIGHT_WEBHOOK_URL is not set"),
+		server.optionalIntegration("Latency correlation", server.config.LatencyQuery != "", "application latency is correlated with resource signals", "KUBERIGHT_LATENCY_QUERY is not set"),
+		server.optionalIntegration("Recommendation metrics", server.config.ExportRecommendationMetrics, "recommendations are exported on /metrics for Grafana and other OpenMetrics tools", "KUBERIGHT_EXPORT_RECOMMENDATION_METRICS is not enabled"),
 	)
 	return statuses
 }
@@ -513,4 +516,11 @@ func availabilityReason(available bool, reason string) string {
 		return ""
 	}
 	return reason
+}
+
+func (server *apiServer) optionalIntegration(name string, configured bool, ready, missing string) dependencyStatus {
+	if configured {
+		return dependencyStatus{Name: name, Configured: true, Healthy: true, Detail: ready}
+	}
+	return dependencyStatus{Name: name, Detail: missing}
 }

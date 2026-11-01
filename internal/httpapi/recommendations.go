@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/kuberight/kuberight/internal/config"
+	"github.com/kuberight/kuberight/internal/notify"
 	"github.com/kuberight/kuberight/internal/optimizer"
 	"github.com/kuberight/kuberight/internal/repository"
 	"github.com/kuberight/kuberight/internal/usage"
@@ -21,6 +23,9 @@ import (
 const (
 	maxSourceWarnings      = 5
 	maxSourceWarningLength = 256
+	// rolloutShiftThreshold is the relative CPU change around a rollout that
+	// makes pre-rollout usage unrepresentative.
+	rolloutShiftThreshold = 0.25
 )
 
 func (server *apiServer) repositoryFailure(w http.ResponseWriter, r *http.Request, operation string, err error) {
@@ -288,7 +293,29 @@ func (server *apiServer) generateRecommendation(w http.ResponseWriter, r *http.R
 	} else if !events.Available {
 		warnings = append(warnings, "restart and OOM history is unavailable because kube-state-metrics series were not found")
 	}
+	if events.ThrottlingAvailable && events.ThrottlingRatio == 0 {
+		warnings = append(warnings, "no CPU throttling was observed in the window")
+	}
+	// Usage recorded before a rollout that materially changed it describes
+	// code that no longer runs, so size from post-rollout samples instead.
+	rolloutIssues := []string{}
+	if rollouts, rolloutErr := server.usage.Rollouts(r.Context(), subject, history.Start, history.End); rolloutErr == nil {
+		if at, change, ok := rolloutShift(history.CPU, rollouts); ok && math.Abs(change) >= rolloutShiftThreshold {
+			minimumSamples := optimizer.DefaultPolicy().MinimumSamples
+			if policy != nil && policy.MinimumSamples > 0 {
+				minimumSamples = policy.MinimumSamples
+			}
+			cpuAfter, memoryAfter := history.CPU.Since(at), history.Memory.Since(at)
+			if len(cpuAfter.Points) >= minimumSamples && len(memoryAfter.Points) >= minimumSamples {
+				history.CPU, history.Memory = cpuAfter, memoryAfter
+				warnings = append(warnings, fmt.Sprintf("CPU changed %+.0f%% after the rollout at %s; only the %d post-rollout samples were used", change*100, at.Format(time.RFC3339), len(cpuAfter.Points)))
+			} else {
+				rolloutIssues = append(rolloutIssues, fmt.Sprintf("CPU changed %+.0f%% after the rollout at %s and too few post-rollout samples exist", change*100, at.Format(time.RFC3339)))
+			}
+		}
+	}
 	blockingCPU, informationalCPU := history.CPU.QualityIssues()
+	blockingCPU = append(blockingCPU, rolloutIssues...)
 	blockingMemory, informationalMemory := history.Memory.QualityIssues()
 	input := optimizer.Input{
 		Cluster: spec.Cluster, Namespace: spec.Namespace, Kind: spec.Kind, Workload: spec.Name, Container: container.Name,
@@ -397,6 +424,7 @@ func (server *apiServer) storeRecommendation(w http.ResponseWriter, r *http.Requ
 	status := http.StatusOK
 	if created {
 		server.metrics.observeRecommendation(record.Confidence, record.Risk)
+		server.notify(notify.RecommendationCreated, record, principal.Username, "")
 		status = http.StatusCreated
 	}
 	w.Header().Set("Location", "/api/v1/recommendations/"+record.ID)
@@ -487,6 +515,26 @@ func (server *apiServer) reviewRecommendation(w http.ResponseWriter, r *http.Req
 	case err != nil:
 		server.repositoryFailure(w, r, "review recommendation", err)
 	default:
+		eventType := notify.RecommendationApproved
+		if status == repository.ReviewRejected {
+			eventType = notify.RecommendationRejected
+		}
+		server.notify(eventType, reviewed, principal.Username, request.Comment)
 		respondJSON(w, http.StatusOK, reviewed)
 	}
+}
+
+// notify forwards a lifecycle event to the configured integration, if any.
+// Delivery is asynchronous and never fails the request.
+func (server *apiServer) notify(eventType string, record repository.RecommendationRecord, actor, comment string) {
+	if server.notifier == nil {
+		return
+	}
+	server.notifier.Notify(notify.Event{
+		Type: eventType, Timestamp: server.now().UTC(), Actor: actor, RecommendationID: record.ID,
+		Cluster: record.Cluster, Namespace: record.Namespace, Kind: record.Kind, Workload: record.Workload, Container: record.Container,
+		CurrentCPURequestMilli: record.CurrentCPURequestMilli, CPURequestMilli: record.CPURequestMilli,
+		CurrentMemoryRequestBytes: record.CurrentMemoryRequestBytes, MemoryRequestBytes: record.MemoryRequestBytes,
+		Risk: record.Risk, Confidence: record.Confidence, Comment: comment,
+	})
 }

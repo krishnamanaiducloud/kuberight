@@ -12,6 +12,7 @@ import (
 
 	"github.com/kuberight/kuberight/internal/config"
 	"github.com/kuberight/kuberight/internal/forecast"
+	"github.com/kuberight/kuberight/internal/notify"
 	"github.com/kuberight/kuberight/internal/optimizer"
 	"github.com/kuberight/kuberight/internal/repository"
 	"github.com/kuberight/kuberight/internal/usage"
@@ -57,6 +58,9 @@ type UsageSource interface {
 	History(context.Context, usage.Subject, usage.Window) (usage.History, error)
 	Events(context.Context, usage.Subject, usage.Window) (usage.Events, error)
 	NamespaceUsage(ctx context.Context, namespaces []string, window time.Duration, end time.Time) (map[string]usage.NamespaceUsage, error)
+	PodUsage(ctx context.Context, namespace string, window time.Duration, end time.Time) (map[string]usage.PodUsage, error)
+	Signals(ctx context.Context, subject usage.Subject, window usage.Window, latency usage.LatencyTemplate) (usage.Signals, error)
+	Rollouts(ctx context.Context, subject usage.Subject, start, end time.Time) ([]usage.Event, error)
 	Ready(context.Context) error
 }
 
@@ -72,6 +76,7 @@ type Dependencies struct {
 	Provider   CollectionProvider
 	Usage      UsageSource
 	Forecaster Forecaster
+	Notifier   notify.Notifier
 	Logger     *slog.Logger
 	Now        func() time.Time
 }
@@ -83,6 +88,7 @@ type apiServer struct {
 	provider   CollectionProvider
 	usage      UsageSource
 	forecaster Forecaster
+	notifier   notify.Notifier
 	logger     *slog.Logger
 	metrics    *apiMetrics
 	now        func() time.Time
@@ -132,6 +138,7 @@ func NewHandler(cfg config.Config, dependencies Dependencies) (http.Handler, err
 		provider:   dependencies.Provider,
 		usage:      dependencies.Usage,
 		forecaster: dependencies.Forecaster,
+		notifier:   dependencies.Notifier,
 		logger:     logger,
 		metrics:    newAPIMetrics(),
 		now:        now,
@@ -155,6 +162,9 @@ func NewHandler(cfg config.Config, dependencies Dependencies) (http.Handler, err
 	mux.HandleFunc("POST /api/v1/forecasts", server.createForecast)
 	mux.HandleFunc("GET /api/v1/savings", server.savings)
 	mux.HandleFunc("GET /api/v1/efficiency", server.efficiency)
+	mux.HandleFunc("GET /api/v1/efficiency/workloads", server.workloadEfficiency)
+	mux.HandleFunc("GET /api/v1/capacity", server.capacity)
+	mux.HandleFunc("GET /api/v1/metrics/signals", server.signals)
 	mux.HandleFunc("GET /api/v1/policies", server.policies)
 	mux.HandleFunc("GET /api/v1/audit", server.audit)
 	mux.HandleFunc("GET /api/v1/settings/integrations", server.integrations)
@@ -323,8 +333,9 @@ func resourceName(resource string) string {
 	return strings.ReplaceAll(resource, "/", "-")
 }
 
-func (server *apiServer) prometheusMetrics(w http.ResponseWriter, _ *http.Request) {
+func (server *apiServer) prometheusMetrics(w http.ResponseWriter, r *http.Request) {
 	server.metrics.render(w)
+	server.renderIntegrationMetrics(r.Context(), w)
 }
 
 func (server *apiServer) health(w http.ResponseWriter, _ *http.Request) {

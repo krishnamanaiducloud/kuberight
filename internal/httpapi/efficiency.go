@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"sort"
 	"time"
+
+	"github.com/kuberight/kuberight/internal/usage"
 )
 
 const maxEfficiencyWorkloads = 10_000
@@ -201,5 +203,142 @@ func (server *apiServer) efficiency(w http.ResponseWriter, r *http.Request) {
 		"items": items, "pagination": map[string]int{"page": 1, "pageSize": len(items), "total": len(items)},
 		"summary": summary,
 		"status":  Availability{Available: true, Source: "kubernetes-api+prometheus"},
+	})
+}
+
+// workloadEfficiencyRow compares a workload's per-pod request with the
+// average and peak usage of its own pods.
+type workloadEfficiencyRow struct {
+	Kind                      string   `json:"kind"`
+	Name                      string   `json:"name"`
+	Replicas                  int64    `json:"replicas"`
+	PodsObserved              int      `json:"podsObserved"`
+	ContainersWithoutRequests int      `json:"containersWithoutRequests"`
+	CPURequestPerPodMilli     int64    `json:"cpuRequestPerPodMilli"`
+	CPUAveragePerPodMilli     *float64 `json:"cpuAveragePerPodMilli,omitempty"`
+	CPUP95PerPodMilli         *float64 `json:"cpuP95PerPodMilli,omitempty"`
+	CPUEfficiency             *float64 `json:"cpuEfficiency,omitempty"`
+	CPUReclaimableMilli       *float64 `json:"cpuReclaimableMilli,omitempty"`
+	MemoryRequestPerPodBytes  int64    `json:"memoryRequestPerPodBytes"`
+	MemoryAveragePerPodBytes  *float64 `json:"memoryAveragePerPodBytes,omitempty"`
+	MemoryP95PerPodBytes      *float64 `json:"memoryP95PerPodBytes,omitempty"`
+	MemoryEfficiency          *float64 `json:"memoryEfficiency,omitempty"`
+	MemoryReclaimableBytes    *float64 `json:"memoryReclaimableBytes,omitempty"`
+	ReclaimableMonthlyCost    *float64 `json:"reclaimableMonthlyCost,omitempty"`
+}
+
+// workloadEfficiency ranks a namespace's workloads by reclaimable capacity.
+// Reclaimable = (per-pod request - busiest pod's P95 usage) x replicas, which
+// matches how recommendations size a single pod.
+func (server *apiServer) workloadEfficiency(w http.ResponseWriter, r *http.Request) {
+	namespace := r.URL.Query().Get("namespace")
+	if err := (usage.Subject{Namespace: namespace, Kind: "Deployment", Workload: "x", Container: "x"}).Validate(); err != nil {
+		respondError(w, r, http.StatusBadRequest, "invalid_request", "namespace must be a DNS-1123 label")
+		return
+	}
+	window, err := parseDuration(r.URL.Query().Get("window"), 24*time.Hour, time.Hour)
+	if err != nil {
+		respondError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if !server.authorize(w, r, AccessAttributes{Verb: "list", Resource: "efficiency", Namespace: namespace}) {
+		return
+	}
+	unavailable := func(reason string) {
+		respondJSON(w, http.StatusOK, map[string]any{
+			"items": []any{}, "pagination": map[string]int{"page": 1, "pageSize": 0, "total": 0},
+			"status": Availability{Available: false, Source: "efficiency", Reason: reason},
+		})
+	}
+	if server.provider == nil || server.usage == nil {
+		unavailable("workload efficiency requires the Kubernetes inventory and Prometheus")
+		return
+	}
+	inventory, err := server.provider.List(r.Context(), "workloads", CollectionQuery{Page: 1, PageSize: maxEfficiencyWorkloads, Namespace: namespace})
+	if err != nil {
+		server.logger.Error("workload inventory failed", "request_id", requestIDFromContext(r.Context()), "error", err)
+		respondError(w, r, http.StatusServiceUnavailable, "dependency_unavailable", "the Kubernetes inventory is unavailable")
+		return
+	}
+	if !inventory.Status.Available {
+		unavailable(inventory.Status.Reason)
+		return
+	}
+	pods, err := server.usage.PodUsage(r.Context(), namespace, window, server.now())
+	if err != nil {
+		server.usageFailure(w, r, err)
+		return
+	}
+	records, _ := inventory.Items.([]map[string]any)
+	// Longer names claim pods first so "api" never takes "api-v2" pods.
+	sort.SliceStable(records, func(left, right int) bool {
+		leftName, _ := records[left]["name"].(string)
+		rightName, _ := records[right]["name"].(string)
+		return len(leftName) > len(rightName)
+	})
+	claimed := map[string]bool{}
+	costed := server.config.CostConfigured()
+	items := make([]workloadEfficiencyRow, 0, len(records))
+	for _, record := range records {
+		kind, _ := record["kind"].(string)
+		name, _ := record["name"].(string)
+		matcher, matchErr := usage.PodMatcher(kind, name)
+		if matchErr != nil || record["namespace"] != namespace {
+			continue
+		}
+		row := workloadEfficiencyRow{
+			Kind: kind, Name: name, Replicas: numeric(record["desiredReplicas"]),
+			CPURequestPerPodMilli: numeric(record["cpuRequestMilli"]), MemoryRequestPerPodBytes: numeric(record["memoryRequestBytes"]),
+		}
+		containers, _ := record["containers"].([]map[string]any)
+		for _, container := range containers {
+			if numeric(container["cpuRequestMilli"]) == 0 || numeric(container["memoryRequestBytes"]) == 0 {
+				row.ContainersWithoutRequests++
+			}
+		}
+		var cpuAverage, cpuPeak, memoryAverage, memoryPeak float64
+		for pod, podUsage := range pods {
+			if claimed[pod] || !matcher.MatchString(pod) {
+				continue
+			}
+			claimed[pod] = true
+			row.PodsObserved++
+			cpuAverage += podUsage.CPUAverageMilli
+			memoryAverage += podUsage.MemoryAverageBytes
+			cpuPeak = math.Max(cpuPeak, podUsage.CPUP95Milli)
+			memoryPeak = math.Max(memoryPeak, podUsage.MemoryP95Bytes)
+		}
+		if row.PodsObserved > 0 {
+			observed := float64(row.PodsObserved)
+			row.CPUAveragePerPodMilli, row.CPUP95PerPodMilli = pointer(roundMilli(cpuAverage/observed)), pointer(roundMilli(cpuPeak))
+			row.MemoryAveragePerPodBytes, row.MemoryP95PerPodBytes = pointer(math.Round(memoryAverage/observed)), pointer(math.Round(memoryPeak))
+			row.CPUEfficiency = ratio(cpuAverage/observed, row.CPURequestPerPodMilli)
+			row.MemoryEfficiency = ratio(memoryAverage/observed, row.MemoryRequestPerPodBytes)
+			replicas := float64(max(row.Replicas, 1))
+			cpuReclaimable := math.Max(0, float64(row.CPURequestPerPodMilli)-cpuPeak) * replicas
+			memoryReclaimable := math.Max(0, float64(row.MemoryRequestPerPodBytes)-memoryPeak) * replicas
+			row.CPUReclaimableMilli, row.MemoryReclaimableBytes = pointer(roundMilli(cpuReclaimable)), pointer(math.Round(memoryReclaimable))
+			if costed {
+				row.ReclaimableMonthlyCost = pointer(roundCents(server.monthlyCost(int64(cpuReclaimable), int64(memoryReclaimable), 1)))
+			}
+		}
+		items = append(items, row)
+	}
+	sort.SliceStable(items, func(left, right int) bool {
+		value := func(row workloadEfficiencyRow) float64 {
+			if row.CPUReclaimableMilli == nil {
+				return -1
+			}
+			return *row.CPUReclaimableMilli
+		}
+		return value(items[left]) > value(items[right])
+	})
+	summary := map[string]any{"window": window.String(), "podsUnmatched": len(pods) - len(claimed)}
+	if costed {
+		summary["currency"] = server.config.CostCurrency
+	}
+	respondJSON(w, http.StatusOK, map[string]any{
+		"items": items, "pagination": map[string]int{"page": 1, "pageSize": len(items), "total": len(items)},
+		"summary": summary, "status": Availability{Available: true, Source: "kubernetes-api+prometheus"},
 	})
 }

@@ -3,6 +3,7 @@ package usage
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -115,4 +116,66 @@ func (source *Source) instantVector(ctx context.Context, expression string, at t
 		values[key] = max(series.Samples[len(series.Samples)-1].Value, 0)
 	}
 	return values, nil
+}
+
+// PodUsage is one pod's usage over a window. CPU is millicores, memory bytes.
+type PodUsage = NamespaceUsage
+
+// PodExpressions mirror NamespaceExpressions, aggregated by pod within one
+// namespace so per-pod requests can be compared with per-pod usage.
+func PodExpressions(namespace string, window time.Duration) [4]string {
+	selector := `container!="",container!="POD",namespace=` + strconv.Quote(namespace)
+	step := subqueryStep(window)
+	subquery := "[" + promDuration(window) + ":" + promDuration(step) + "]"
+	cpu := "sum by (pod) (rate(container_cpu_usage_seconds_total{" + selector + "}[" + rateWindow(step) + "]))"
+	memory := "sum by (pod) (container_memory_working_set_bytes{" + selector + "})"
+	return [4]string{
+		"avg_over_time((" + cpu + ")" + subquery + ") * 1000",
+		"quantile_over_time(0.95, (" + cpu + ")" + subquery + ") * 1000",
+		"avg_over_time((" + memory + ")" + subquery + ")",
+		"quantile_over_time(0.95, (" + memory + ")" + subquery + ")",
+	}
+}
+
+// PodUsage reads per-pod usage in one namespace.
+func (source *Source) PodUsage(ctx context.Context, namespace string, window time.Duration, end time.Time) (map[string]PodUsage, error) {
+	if len(namespace) > 63 || !dnsLabel.MatchString(namespace) {
+		return nil, fmt.Errorf("%w: namespace must be a DNS-1123 label", ErrInvalidSubject)
+	}
+	if end.IsZero() {
+		end = source.now()
+	}
+	end = end.UTC().Truncate(time.Second)
+	result := map[string]PodUsage{}
+	for index, expression := range PodExpressions(namespace, window) {
+		values, err := source.instantVector(ctx, expression, end, "pod")
+		if err != nil {
+			return nil, fmt.Errorf("pod usage query %d: %w", index+1, err)
+		}
+		for pod, value := range values {
+			usage := result[pod]
+			switch index {
+			case 0:
+				usage.CPUAverageMilli = value
+			case 1:
+				usage.CPUP95Milli = value
+			case 2:
+				usage.MemoryAverageBytes = value
+			default:
+				usage.MemoryP95Bytes = value
+			}
+			result[pod] = usage
+		}
+	}
+	return result, nil
+}
+
+// PodMatcher reports whether a pod name belongs to a workload, using the
+// same controller naming rules as usage queries.
+func PodMatcher(kind, workload string) (*regexp.Regexp, error) {
+	suffix, ok := podSuffixes[kind]
+	if !ok {
+		return nil, fmt.Errorf("%w: unsupported kind %q", ErrInvalidSubject, kind)
+	}
+	return regexp.Compile("^" + regexp.QuoteMeta(workload) + suffix + "$")
 }
