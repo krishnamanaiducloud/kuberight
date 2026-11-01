@@ -10,23 +10,23 @@ type OverviewResponse = ApiRecord & {
   mode?: string
   inventory?: { available: boolean; reason?: string; source?: string }
   generatedAt?: string
-  recommendations?: { total?: number; source?: string }
+  recommendations?: { total?: number; pending?: number; approved?: number; rejected?: number; source?: string }
   estimatedMonthlySavings?: number
   currency?: string
-  dependencies?: Array<{ name: string; healthy: boolean; detail?: string }>
+  dependencies?: Array<{ name: string; healthy: boolean; configured?: boolean; critical?: boolean; detail?: string }>
 }
 
 const metricCards = [
   { key: 'clusters', label: 'Connected clusters', icon: <LanOutlined /> },
   { key: 'workloads', label: 'Observed workloads', icon: <CheckCircleOutline /> },
-  { key: 'recommendations', label: 'Open recommendations', icon: <ShieldOutlined /> },
+  { key: 'pending', label: 'Awaiting review', icon: <ShieldOutlined /> },
 ] as const
 
 export function Overview() {
   const query = useQuery({ queryKey: ['overview'], queryFn: ({ signal }) => api.get<OverviewResponse>('/api/v1/overview', { signal }), retry: 1, refetchInterval: 60_000 })
   const value = query.data
   const metricValue = (key: typeof metricCards[number]['key']): number | undefined => {
-    const candidate = key === 'recommendations' ? value?.recommendations?.total : value?.[key]
+    const candidate = key === 'pending' ? value?.recommendations?.pending : value?.[key]
     return typeof candidate === 'number' ? candidate : undefined
   }
   return (
@@ -63,7 +63,7 @@ export function Overview() {
             {query.isLoading ? <LinearProgress /> : !value?.dependencies?.length ? <Typography color="text.secondary">No dependency status has been reported.</Typography> : value.dependencies.map((dependency) => (
               <Stack key={dependency.name} direction="row" justifyContent="space-between" alignItems="center" sx={{ py: 1.25, borderBottom: '1px solid', borderColor: 'divider' }}>
                 <Box><Typography sx={{ fontWeight: 700 }}>{dependency.name}</Typography><Typography variant="caption" color="text.secondary">{dependency.detail ?? 'No detail supplied'}</Typography></Box>
-                <Chip size="small" label={dependency.healthy ? 'Healthy' : 'Unavailable'} color={dependency.healthy ? 'success' : 'warning'} variant="outlined" />
+                <Chip size="small" label={dependency.healthy ? 'Healthy' : dependency.configured === false ? 'Not configured' : 'Unavailable'} color={dependency.healthy ? 'success' : dependency.configured === false ? 'default' : 'warning'} variant="outlined" />
               </Stack>
             ))}
           </CardContent>
@@ -72,7 +72,7 @@ export function Overview() {
           <CardContent>
             <Typography variant="overline">SAFETY ENVELOPE</Typography>
             <Typography variant="h5" sx={{ mt: 1 }}>Observe → Recommend → Approve</Typography>
-            <Typography color="text.secondary" sx={{ my: 2 }}>The default mode generates explainable proposals and never mutates workloads. This preview has no apply capability.</Typography>
+            <Typography color="text.secondary" sx={{ my: 2 }}>Recommendations are explainable proposals. Reviewers approve or reject them; approved changes are applied through your own change process. KubeRight never mutates workloads.</Typography>
             <Chip label={value?.mode ? `${value.mode} mode` : 'Mode unconfirmed'} icon={<ShieldOutlined />} color="warning" variant="outlined" />
           </CardContent>
         </Card>
