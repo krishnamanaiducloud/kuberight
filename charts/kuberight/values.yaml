@@ -11,8 +11,8 @@ namespace:
   labels: {}
   annotations: {}
 
-# Recommendation, idempotency, and audit state is process-local. Keep one
-# replica until the API has a shared durable store.
+# Without database.enabled, recommendation, idempotency, and audit state is
+# process-local and the chart refuses more than one replica.
 replicaCount: 1
 
 image:
@@ -33,6 +33,49 @@ inventory:
   resync: 10m
   qps: 10
   burst: 20
+
+# External PostgreSQL for durable, shared recommendation, review, and audit
+# state. The chart never deploys a database. The Secret key must contain a
+# postgres:// connection string; prefer sslmode=verify-full.
+database:
+  enabled: false
+  existingSecret: ""
+  key: url
+  # Apply embedded, checksummed schema migrations at startup under an
+  # advisory lock. When false, startup fails unless the schema is current.
+  migrate: true
+  maxConns: 10
+
+# Prometheus with cAdvisor container metrics (and optionally
+# kube-state-metrics for restart and OOM history).
+prometheus:
+  url: ""
+  # Permit an in-cluster http:// URL. Prefer HTTPS.
+  allowHTTP: false
+  timeout: 10s
+
+# Usage lookback and resolution for generated recommendations.
+recommendations:
+  window: 168h
+  step: 5m
+
+# Usage lookback and resolution sent to the forecasting service.
+forecasting:
+  window: 336h
+  step: 1h
+
+approvals:
+  # Reject reviews by the identity that created the recommendation. Empty
+  # means automatic: enabled with Kubernetes authentication and disabled in
+  # static-token mode, which has only one identity.
+  requireDistinctApprover: ""
+
+# Operator-supplied unit prices for request-based savings estimates. Leave
+# both empty to disable estimates; KubeRight never invents prices.
+cost:
+  cpuCoreHour: ""
+  memoryGiBHour: ""
+  currency: USD
 
 serviceAccount:
   create: true
@@ -142,7 +185,7 @@ podDisruptionBudget:
   maxUnavailable: ""
 
 autoscaling:
-  # Horizontal scaling is unsupported while API state is process-local.
+  # Requires database.enabled; the in-process store is not shared.
   enabled: false
   minReplicas: 1
   maxReplicas: 1
@@ -196,6 +239,11 @@ metrics:
 
 ml:
   enabled: false
+  # Optional shared API key. The same Secret is mounted into the Go API and
+  # the forecasting service.
+  apiKey:
+    existingSecret: ""
+    key: api-key
   # Persisted models use a pod-local filesystem in the supplied chart.
   replicaCount: 1
   image:

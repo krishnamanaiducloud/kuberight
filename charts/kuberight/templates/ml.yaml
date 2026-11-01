@@ -56,6 +56,13 @@ spec:
               value: "8081"
             - name: KUBERIGHT_ML_LISTEN_ADDR
               value: ":8081"
+            {{- with .Values.ml.apiKey.existingSecret }}
+            - name: KUBERIGHT_ML_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . | quote }}
+                  key: {{ $.Values.ml.apiKey.key | quote }}
+            {{- end }}
             {{- with .Values.ml.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

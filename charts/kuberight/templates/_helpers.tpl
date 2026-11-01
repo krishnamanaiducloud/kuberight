@@ -113,4 +113,16 @@ app.kubernetes.io/component: ml
 {{- if and .Values.podDisruptionBudget.minAvailable .Values.podDisruptionBudget.maxUnavailable -}}
 {{- fail "set only one of podDisruptionBudget.minAvailable or podDisruptionBudget.maxUnavailable" -}}
 {{- end -}}
+{{- if and (or (gt (int .Values.replicaCount) 1) .Values.autoscaling.enabled) (not .Values.database.enabled) -}}
+{{- fail "replicaCount > 1 or autoscaling.enabled requires database.enabled; the in-process store is not shared between replicas" -}}
+{{- end -}}
+{{- if and .Values.database.enabled (not .Values.database.existingSecret) -}}
+{{- fail "database.existingSecret is required when database.enabled=true" -}}
+{{- end -}}
+{{- if and .Values.ml.enabled .Values.ml.apiKey.existingSecret (not .Values.ml.apiKey.key) -}}
+{{- fail "ml.apiKey.key is required when ml.apiKey.existingSecret is set" -}}
+{{- end -}}
+{{- if ne (empty .Values.cost.cpuCoreHour) (empty .Values.cost.memoryGiBHour) -}}
+{{- fail "cost.cpuCoreHour and cost.memoryGiBHour must be set together" -}}
+{{- end -}}
 {{- end }}

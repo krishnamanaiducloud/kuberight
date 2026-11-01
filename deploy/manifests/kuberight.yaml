@@ -271,6 +271,14 @@ spec:
               value: "20"
             - name: KUBERIGHT_INVENTORY_NAMESPACE
               value: "kuberight"
+            - name: KUBERIGHT_RECOMMENDATION_WINDOW
+              value: "168h"
+            - name: KUBERIGHT_RECOMMENDATION_STEP
+              value: "5m"
+            - name: KUBERIGHT_FORECAST_WINDOW
+              value: "336h"
+            - name: KUBERIGHT_FORECAST_STEP
+              value: "1h"
           startupProbe:
             httpGet:
               path: /healthz

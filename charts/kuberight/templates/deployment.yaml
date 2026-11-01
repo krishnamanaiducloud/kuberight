@@ -93,6 +93,57 @@ spec:
             {{- if .Values.ml.enabled }}
             - name: KUBERIGHT_ML_URL
               value: {{ printf "http://%s-ml:%v" (include "kuberight.fullname" .) .Values.ml.service.port | quote }}
+            # In-cluster service traffic; ingress to the ML pods is restricted by NetworkPolicy.
+            - name: KUBERIGHT_ML_ALLOW_HTTP
+              value: "true"
+            {{- with .Values.ml.apiKey.existingSecret }}
+            - name: KUBERIGHT_ML_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . | quote }}
+                  key: {{ $.Values.ml.apiKey.key | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.database.enabled }}
+            - name: KUBERIGHT_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret | quote }}
+                  key: {{ .Values.database.key | quote }}
+            - name: KUBERIGHT_DATABASE_MIGRATE
+              value: {{ .Values.database.migrate | quote }}
+            - name: KUBERIGHT_DATABASE_MAX_CONNS
+              value: {{ .Values.database.maxConns | quote }}
+            {{- end }}
+            {{- with .Values.prometheus.url }}
+            - name: KUBERIGHT_PROMETHEUS_URL
+              value: {{ . | quote }}
+            - name: KUBERIGHT_PROMETHEUS_TIMEOUT
+              value: {{ $.Values.prometheus.timeout | quote }}
+            {{- if $.Values.prometheus.allowHTTP }}
+            - name: KUBERIGHT_ALLOW_INSECURE_UPSTREAMS
+              value: "true"
+            {{- end }}
+            {{- end }}
+            - name: KUBERIGHT_RECOMMENDATION_WINDOW
+              value: {{ .Values.recommendations.window | quote }}
+            - name: KUBERIGHT_RECOMMENDATION_STEP
+              value: {{ .Values.recommendations.step | quote }}
+            - name: KUBERIGHT_FORECAST_WINDOW
+              value: {{ .Values.forecasting.window | quote }}
+            - name: KUBERIGHT_FORECAST_STEP
+              value: {{ .Values.forecasting.step | quote }}
+            {{- if ne (toString .Values.approvals.requireDistinctApprover) "" }}
+            - name: KUBERIGHT_REQUIRE_DISTINCT_APPROVER
+              value: {{ .Values.approvals.requireDistinctApprover | quote }}
+            {{- end }}
+            {{- if .Values.cost.cpuCoreHour }}
+            - name: KUBERIGHT_COST_CPU_CORE_HOUR
+              value: {{ .Values.cost.cpuCoreHour | quote }}
+            - name: KUBERIGHT_COST_MEMORY_GIB_HOUR
+              value: {{ .Values.cost.memoryGiBHour | quote }}
+            - name: KUBERIGHT_COST_CURRENCY
+              value: {{ .Values.cost.currency | quote }}
             {{- end }}
             {{- with .Values.secretEnv }}
             {{- toYaml . | nindent 12 }}

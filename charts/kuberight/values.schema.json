@@ -119,6 +119,13 @@
     "ml": {
       "type": "object",
       "properties": {
+        "apiKey": {
+          "type": "object",
+          "properties": {
+            "existingSecret": { "type": "string" },
+            "key": { "type": "string" }
+          }
+        },
         "autoscaling": {
           "type": "object",
           "properties": {
@@ -145,6 +152,56 @@
             }
           ]
         }
+      }
+    },
+    "database": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "existingSecret": { "type": "string" },
+        "key": { "type": "string", "minLength": 1 },
+        "migrate": { "type": "boolean" },
+        "maxConns": { "type": "integer", "minimum": 1, "maximum": 100 }
+      },
+      "if": { "properties": { "enabled": { "const": true } }, "required": ["enabled"] },
+      "then": { "properties": { "existingSecret": { "minLength": 1 } } }
+    },
+    "prometheus": {
+      "type": "object",
+      "properties": {
+        "url": { "type": "string", "pattern": "^$|^https?://[^/?#@]+(/[^?#]*)?$" },
+        "allowHTTP": { "type": "boolean" },
+        "timeout": { "type": "string", "pattern": "^[0-9]+(ms|s|m)$" }
+      }
+    },
+    "recommendations": {
+      "type": "object",
+      "properties": {
+        "window": { "type": "string", "pattern": "^[0-9]+(m|h)$" },
+        "step": { "type": "string", "pattern": "^[0-9]+(s|m|h)$" }
+      }
+    },
+    "forecasting": {
+      "type": "object",
+      "properties": {
+        "window": { "type": "string", "pattern": "^[0-9]+(m|h)$" },
+        "step": { "type": "string", "pattern": "^[0-9]+(s|m|h)$" }
+      }
+    },
+    "approvals": {
+      "type": "object",
+      "properties": {
+        "requireDistinctApprover": {
+          "oneOf": [{ "type": "boolean" }, { "type": "string", "maxLength": 0 }]
+        }
+      }
+    },
+    "cost": {
+      "type": "object",
+      "properties": {
+        "cpuCoreHour": { "oneOf": [{ "type": "number", "exclusiveMinimum": 0, "maximum": 1000 }, { "type": "string", "pattern": "^$|^[0-9]{1,4}([.][0-9]+)?$" }] },
+        "memoryGiBHour": { "oneOf": [{ "type": "number", "exclusiveMinimum": 0, "maximum": 1000 }, { "type": "string", "pattern": "^$|^[0-9]{1,4}([.][0-9]+)?$" }] },
+        "currency": { "type": "string", "pattern": "^[A-Z]{3}$" }
       }
     },
     "terminationGracePeriodSeconds": { "type": "integer", "minimum": 0 },
