@@ -82,7 +82,9 @@ func loadMigrations(source fs.FS) ([]Migration, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read migration %q: %w", entry.Name(), err)
 		}
-		sql := strings.TrimSpace(string(contents))
+		// Normalize line endings so a checkout with CRLF files produces the same
+		// checksums as the Linux build that migrated the database.
+		sql := strings.TrimSpace(strings.ReplaceAll(string(contents), "\r\n", "\n"))
 		if sql == "" {
 			return nil, fmt.Errorf("migration %q is empty", entry.Name())
 		}

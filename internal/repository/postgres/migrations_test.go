@@ -100,3 +100,22 @@ func TestMigrationLoaderRejectsMissingPairAndVersionGaps(t *testing.T) {
 func normalizeSQL(sql string) string {
 	return strings.Join(strings.Fields(strings.ToLower(sql)), " ")
 }
+
+func TestMigrationChecksumsIgnoreLineEndings(t *testing.T) {
+	load := func(up string) Migration {
+		t.Helper()
+		migrations, err := loadMigrations(fstest.MapFS{
+			"migrations/000001_initial.up.sql":   {Data: []byte(up)},
+			"migrations/000001_initial.down.sql": {Data: []byte("DROP TABLE t;\n")},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return migrations[0]
+	}
+	unix := load("CREATE TABLE t (\n    id text\n);\n")
+	windows := load("CREATE TABLE t (\r\n    id text\r\n);\r\n")
+	if unix.UpChecksum != windows.UpChecksum || unix.UpSQL != windows.UpSQL {
+		t.Fatal("CRLF and LF checkouts must produce identical migrations")
+	}
+}
