@@ -1,6 +1,8 @@
 # syntax=docker/dockerfile:1.7
 
-FROM ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac AS runtime-libs
+FROM ubuntu/python:3.12-24.04_stable@sha256:6d204bacbd6717f2723461aa2323ea623eccac6ffc4c3e5b35ef7e8af93c63c9 AS runtime-base
+
+FROM ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852 AS runtime-libs
 RUN mkdir -p /opt/runtime-libs \
         /opt/runtime-metadata/usr/share/doc/libstdc++6 \
         /opt/runtime-metadata/var/lib/dpkg/status.d && \
@@ -11,6 +13,15 @@ RUN mkdir -p /opt/runtime-libs \
     dpkg-query --status libstdc++6 > /opt/runtime-metadata/var/lib/dpkg/status.d/libstdc++6 && \
     test -f /usr/share/doc/libstdc++6/copyright && \
     cp /usr/share/doc/libstdc++6/copyright /opt/runtime-metadata/usr/share/doc/libstdc++6/copyright
+# The chiselled base records its packages only in chisel's manifest, which image scanners do not
+# read, so they cannot match Python, OpenSSL and the other Ubuntu packages against Ubuntu's
+# security data. Write dpkg status records for them from that manifest.
+COPY --from=runtime-base / /opt/runtime-base/
+COPY chisel-dpkg-status.sh /tmp/chisel-dpkg-status.sh
+RUN apt-get -o Acquire::Retries=5 update && \
+    apt-get -o Acquire::Retries=5 install --yes --no-install-recommends jq zstd && \
+    sh /tmp/chisel-dpkg-status.sh /opt/runtime-base /opt/runtime-metadata/var/lib/dpkg/status.d && \
+    rm -rf /var/lib/apt/lists/* /opt/runtime-base
 
 FROM python:3.12.15-slim-bookworm@sha256:6a0e06f5ba0b373d051aabd3fffb9b873f27f9a2a3a14bcbe37dee6f0e3bbc70 AS build
 WORKDIR /build
@@ -18,7 +29,7 @@ COPY requirements.lock ./
 RUN python -m pip install --no-cache-dir --require-hashes --only-binary=:all: --target /opt/python -r requirements.lock && \
     PYTHONPATH=/opt/python python -c "import fastapi, joblib, numpy, pydantic, scipy, sklearn, uvicorn"
 
-FROM ubuntu/python:3.12-24.04_stable@sha256:e7f3e3c521b5d63316b49024157c4e41ec30494bf70499d178a5cdcdb6918c40
+FROM runtime-base
 ARG VERSION=dev
 ARG VCS_REF=unknown
 ARG BUILD_DATE=unknown
