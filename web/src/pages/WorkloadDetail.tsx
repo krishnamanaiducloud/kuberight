@@ -7,6 +7,7 @@ import {
 } from '@mui/material'
 import ArrowBackIcon from '@mui/icons-material/ArrowBack'
 import AutoFixHighOutlined from '@mui/icons-material/AutoFixHighOutlined'
+import InsightsOutlined from '@mui/icons-material/InsightsOutlined'
 import PlaylistPlayOutlined from '@mui/icons-material/PlaylistPlayOutlined'
 import { api, type ApiRecord, type CollectionEnvelope, type RecommendationRecord, type Subject, type WorkloadRecord } from '../api'
 import { AnalyzeDialog } from '../components/AnalyzeDialog'
@@ -153,9 +154,15 @@ export function WorkloadDetail() {
             <Tabs value={activeContainer} onChange={(_, next) => updateView('container', next)} variant="scrollable" allowScrollButtonsMobile aria-label="Container usage">
               {containers.map((item) => <Tab key={item.name} value={item.name} label={item.name} />)}
             </Tabs>
-            <TextField select size="small" label="Window" value={usageWindow} onChange={(event) => updateView('window', event.target.value)} sx={{ minWidth: 140 }}>
-              {usageWindows.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}
-            </TextField>
+            <Stack direction="row" gap={1} alignItems="center">
+              <Button size="small" variant="outlined" startIcon={<InsightsOutlined />} component={RouterLink}
+                to={`/correlation?${new URLSearchParams({ ...subject(activeContainer), window: usageWindow === '6h' ? '24h' : usageWindow })}`}>
+                Correlation analysis
+              </Button>
+              <TextField select size="small" label="Window" value={usageWindow} onChange={(event) => updateView('window', event.target.value)} sx={{ minWidth: 140 }}>
+                {usageWindows.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}
+              </TextField>
+            </Stack>
           </Stack>
           <SignalsPanel subject={subject(activeContainer)} usageWindow={usageWindow} />
         </Box>

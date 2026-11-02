@@ -132,6 +132,125 @@ export type RecommendationRecord = {
   reviewedBy?: string
   reviewedAt?: string
   reviewComment?: string
+  /** Absent on recommendations stored before the assessment existed. */
+  assessment?: Assessment
+}
+
+export type AssessmentStatus = 'recommend' | 'hold' | 'insufficient_data' | 'unsupported'
+export type CheckStatus = 'pass' | 'fail' | 'adjusted' | 'unknown' | 'not_applicable'
+export type Quantities = { cpuRequest: string; cpuLimit?: string; memoryRequest: string; memoryLimit?: string }
+export type MarginBreakdown = { base: number; variability: number; burst: number; uncertainty: number; criticality: number; total: number }
+export type WindowCheck = { window: string; samples: number; cpuOverRequest?: number; memoryOverRequest?: number; memoryOverLimit?: number; passed: boolean; detail?: string }
+export type HPAImpact = {
+  targetUtilization: number
+  currentUtilization: number
+  projectedUtilization: number
+  currentReplicas: number
+  currentDesiredReplicas: number
+  projectedReplicas: number
+  unboundedReplicas: number
+  minReplicas: number
+  maxReplicas: number
+  approximate?: boolean
+  detail: string
+}
+
+export type Assessment = {
+  status: AssessmentStatus
+  statusReasons: string[]
+  riskScore: number
+  current: Quantities
+  recommended: Quantities
+  safetyMargins: { cpu: MarginBreakdown; memory: MarginBreakdown }
+  seasonality?: { periodSteps: number; strength: number; detected: boolean }
+  validation: WindowCheck[]
+  outOfSample: { performed: boolean; trainSamples: number; testSamples: number; cpuOverRequest?: number; cpuOverLimit?: number; memoryOverRequest?: number; memoryOverLimit?: number; passed: boolean; detail: string }
+  qos: { current: string; recommended: string; protected: boolean; approximate?: boolean }
+  checks: Array<{ name: string; status: CheckStatus; detail: string }>
+  autoscaling: { hpa?: HPAImpact; keda?: string; vpa?: string }
+  workload?: { replicas: number; podCurrentCpuMilli: number; podRecommendedCpuMilli: number; podCurrentMemoryBytes: number; podRecommendedMemoryBytes: number; totalCurrentCpuMilli: number; totalRecommendedCpuMilli: number; totalCurrentMemoryBytes: number; totalRecommendedMemoryBytes: number; approximate?: boolean }
+  forecast?: { source: 'ml' | 'trend'; horizon: string; cpuMilli: number; cpuUpperMilli?: number; memoryBytes: number; memoryUpperBytes?: number; intervalLevel?: number; empiricalCoverage?: number; calibrated: boolean; usedForSizing: boolean }
+  expectedSavings: { cpuMilli: number; memoryBytes: number }
+  validFor: string
+  validForSeconds: number
+  explanation: string[]
+}
+
+export type CorrelationPair = {
+  x: string
+  y: string
+  r: number
+  spearman: number
+  n: number
+  effectiveN: number
+  lower: number
+  upper: number
+  pValue: number
+  significant: boolean
+  strength: 'strong' | 'moderate' | 'weak' | 'negligible'
+  direction: 'positive' | 'negative' | 'none'
+  bestLagSteps: number
+  bestLagSeconds: number
+  bestLagR: number
+  leads?: string
+  summary: string
+}
+
+export type CorrelationEvent = { timestamp: string; kind: string; count?: number; detail?: string }
+
+export type CorrelationReport = {
+  start: string
+  end: string
+  stepSeconds: number
+  points: number
+  correlationStart: string
+  coverage: Record<string, number>
+  pairs: CorrelationPair[]
+  changePoints: Array<{ series: string; timestamp: string; meanBefore: number; meanAfter: number; relativeChange: number; score: number; nearestEvent?: CorrelationEvent }>
+  events: CorrelationEvent[]
+  eventImpacts: Array<{ event: CorrelationEvent; series: string; before: number; after: number; beforeSamples: number; afterSamples: number; relativeChange: number; material: boolean }>
+  seasonality: Record<string, { periodSteps: number; strength: number; detected: boolean }>
+  findings: Array<{ severity: 'info' | 'warning' | 'critical'; title: string; detail: string; evidence: string }>
+  caveats: string[]
+}
+
+export type ForecastScore = { samples: number; mae: number; rmse: number; smape: number; mape?: number | null; coverage: number; meanIntervalWidth: number; baselineMAE: number; skill?: number | null }
+
+export type ForecastEvaluation = {
+  available: boolean
+  reason?: string
+  resource?: string
+  unit?: string
+  nominalCoverage?: number
+  calibrated: boolean
+  overall?: ForecastScore
+  origins?: Array<{ originIndex: number; model: string; calibrated: boolean; score: ForecastScore }>
+  points?: Array<{ timestamp: string; actual: number; predicted: number; lower: number; upper: number; baseline: number }>
+}
+
+export type Verification = {
+  recommendationId: string
+  status: 'unavailable' | 'not_applied' | 'pending' | 'verified' | 'regressed'
+  applied: boolean
+  appliedAt?: string
+  appliedAtSource?: string
+  postChangeWindow?: string
+  checks: Array<{ name: string; before?: number; after?: number; regressed: boolean; detail: string }>
+  reasons: string[]
+  checkedAt: string
+}
+
+export type CorrelationResponse = {
+  status: ApiStatus
+  signals?: SignalsResponse['signals']
+  extra?: { cpuTotal?: UsageSeries; requestRate?: UsageSeries; nodePressure?: UsageSeries; warnings: string[] }
+  current?: ContainerSpec
+  report?: CorrelationReport
+  forecast?: ForecastEvaluation
+  recommendation?: RecommendationRecord
+  verification?: Verification
+  warnings?: string[]
+  configured?: { latency: boolean; requestRate: boolean }
 }
 
 export type ContainerSpec = {

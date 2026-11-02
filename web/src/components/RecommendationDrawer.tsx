@@ -11,6 +11,7 @@ import { formatBytes, formatDate, formatMillicores, kubectlCommand, yamlPatch } 
 import { ResourceTable } from './ResourceTable'
 import { BacktestTable, CpuBehaviorChips, TrendChips } from './Backtest'
 import { RecommendationEvidence } from './RecommendationEvidence'
+import { AssessmentPanel, AssessmentStatusChip } from './AssessmentPanel'
 import { recommendationEvidenceState } from './recommendationEvidenceState'
 
 const riskColor = { low: 'success', medium: 'warning', high: 'error' } as const
@@ -26,6 +27,8 @@ function ReviewPanel({ record }: { record: RecommendationRecord }) {
   const client = useQueryClient()
   const [comment, setComment] = useState('')
   const evidence = recommendationEvidenceState(record)
+  // Hold, insufficient-data, and unsupported advice can be rejected but not approved.
+  const verdictBlocks = record.assessment !== undefined && record.assessment.status !== 'recommend'
   const mutation = useMutation({
     mutationFn: (decision: 'approve' | 'reject') => api.post<RecommendationRecord>(`/api/v1/recommendations/${record.id}/review`, { decision, comment }),
     onSuccess: (updated) => {
@@ -41,9 +44,10 @@ function ReviewPanel({ record }: { record: RecommendationRecord }) {
       <Typography variant="body2" color="text.secondary">Approval records a decision for your change process. KubeRight never applies the change.</Typography>
       <TextField size="small" multiline minRows={2} label="Comment" helperText="Required when rejecting" value={comment} onChange={(event) => setComment(event.target.value)} inputProps={{ maxLength: 1024 }} />
       {!evidence.canApprove && <Alert severity="error">Approval is disabled: {evidence.detail}</Alert>}
+      {evidence.canApprove && verdictBlocks && <Alert severity="warning">Approval is disabled: the assessment status is {record.assessment!.status.replace('_', ' ')}. {record.assessment!.statusReasons.join(' ')}</Alert>}
       {error && <Alert severity={errorSeverity}>{error}</Alert>}
       <Stack direction="row" gap={1}>
-        <Button variant="contained" color="success" disabled={mutation.isPending || !evidence.canApprove} onClick={() => mutation.mutate('approve')}>Approve</Button>
+        <Button variant="contained" color="success" disabled={mutation.isPending || !evidence.canApprove || verdictBlocks} onClick={() => mutation.mutate('approve')}>Approve</Button>
         <Button variant="outlined" color="error" disabled={mutation.isPending || comment.trim() === ''} onClick={() => mutation.mutate('reject')}>Reject</Button>
         {mutation.isPending && <CircularProgress size={22} sx={{ alignSelf: 'center' }} />}
       </Stack>
@@ -101,6 +105,7 @@ export function RecommendationDrawer({ id, onClose }: { id: string | undefined; 
               <Typography variant="h5" sx={{ wordBreak: 'break-word' }}>{record.workload} / {record.container}</Typography>
               <Typography color="text.secondary">{[record.cluster, record.namespace, record.kind].filter(Boolean).join(' · ')}{record.replicas ? ` · ${record.replicas} replica${record.replicas === 1 ? '' : 's'}` : ''}</Typography>
               <Stack direction="row" gap={1} flexWrap="wrap" sx={{ mt: 1.5 }}>
+                {record.assessment && <AssessmentStatusChip status={record.assessment.status} />}
                 <Chip size="small" label={`Review: ${record.reviewStatus}`} color={reviewColor[record.reviewStatus]} variant="outlined" />
                 <Chip size="small" label={`Risk: ${record.risk}`} color={riskColor[record.risk]} variant="outlined" />
                 <Chip size="small" label={`Confidence: ${record.confidence} (${Math.round(record.confidenceScore * 100)}%)`} variant="outlined" />
@@ -109,6 +114,7 @@ export function RecommendationDrawer({ id, onClose }: { id: string | undefined; 
               </Stack>
             </Box>
             <RecommendationEvidence record={record} />
+            {record.assessment && <AssessmentPanel assessment={record.assessment} />}
             <ResourceTable record={record} />
             <CpuBehaviorChips throttling={record.cpuThrottlingRatio} throttlingPeak={record.cpuThrottlingPeakRatio} pinned={record.cpuLimitPinned} spikes={record.spikes} />
             <TrendChips trends={record.trends} />

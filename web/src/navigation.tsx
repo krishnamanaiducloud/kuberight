@@ -18,6 +18,8 @@ import { Hotspots } from './pages/Hotspots'
 import { Efficiency } from './pages/Efficiency'
 import { Workloads } from './pages/Workloads'
 import { Approvals } from './pages/Approvals'
+import { Correlation } from './pages/Correlation'
+import InsightsOutlined from '@mui/icons-material/InsightsOutlined'
 import { Forecasting } from './pages/Forecasting'
 import { Integrations } from './pages/Integrations'
 import { Recommendations } from './pages/Recommendations'
@@ -46,6 +48,7 @@ export const navigation: NavItem[] = [
   { label: 'Namespaces', path: '/namespaces', endpoint: '/api/v1/namespaces', description: 'Namespace inventory confirmed by the Kubernetes API', icon: <FolderOutlined /> },
   { label: 'Workloads', path: '/workloads', endpoint: '/api/v1/workloads', description: 'Deployments, StatefulSets, DaemonSets, ReplicaSets, Jobs, and CronJobs. Select a workload for its containers, usage, and recommendations.', icon: <WorkspacesOutlined />, render: (item) => <Workloads title={item.label} description={item.description} /> },
   { label: 'Utilization', path: '/utilization', endpoint: '/api/v1/metrics/history', description: 'CPU and memory usage from Prometheus against current requests and limits', icon: <QueryStatsOutlined />, render: (item) => <Utilization title={item.label} description={item.description} /> },
+  { label: 'Correlation analysis', path: '/correlation', endpoint: '/api/v1/correlation', description: 'How CPU, memory, throttling, latency, traffic, and replicas move together, with rollout and scaling events, forecast accuracy, and the evidence behind each recommendation. Correlation is association, not causation.', icon: <InsightsOutlined />, render: (item) => <Correlation title={item.label} description={item.description} /> },
   { label: 'CPU recommendations', path: '/recommendations/cpu', endpoint: '/api/v1/recommendations', description: 'Explainable CPU requests and limits. Select a row for details and review.', icon: <MemoryOutlined />, columnKeys: cpuRecommendationColumns, render: (item) => <Recommendations title={item.label} description={item.description} columnKeys={item.columnKeys!} /> },
   { label: 'Memory recommendations', path: '/recommendations/memory', endpoint: '/api/v1/recommendations', description: 'Memory sizing with OOM and peak safeguards. Select a row for details and review.', icon: <MemoryOutlined />, columnKeys: memoryRecommendationColumns, render: (item) => <Recommendations title={item.label} description={item.description} columnKeys={item.columnKeys!} /> },
   { label: 'Approvals', path: '/approvals', endpoint: '/api/v1/approvals', description: 'Review queue. Approval records a decision; KubeRight never applies changes.', icon: <ApprovalOutlined />, render: (item) => <Approvals title={item.label} description={item.description} /> },
