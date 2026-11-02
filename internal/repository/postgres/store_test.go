@@ -145,6 +145,35 @@ func TestSchemaRejectsIncompleteReview(t *testing.T) {
 	}
 }
 
+func TestSchemaMakesAuditHistoryAppendOnly(t *testing.T) {
+	store := openMigrated(t)
+	ctx := context.Background()
+	if err := store.AppendAuditEvent(ctx, repository.AuditEvent{
+		Actor: "alice", Action: "recommendation.create", Resource: "recommendations/test",
+		Outcome: "success", RequestID: "req-append-only",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for name, statement := range map[string]string{
+		"update":   "UPDATE audit_events SET actor = 'mallory'",
+		"delete":   "DELETE FROM audit_events",
+		"truncate": "TRUNCATE audit_events",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := store.Pool().Exec(ctx, statement); err == nil {
+				t.Fatalf("audit schema accepted %s", name)
+			}
+		})
+	}
+	var count int
+	if err := store.Pool().QueryRow(ctx, "SELECT count(*) FROM audit_events").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("audit event count = %d, want 1", count)
+	}
+}
+
 func TestOpenRejectsInvalidConnectionString(t *testing.T) {
 	if _, err := Open(context.Background(), "postgres://%zz", Options{}); err == nil {
 		t.Fatal("Open() accepted an invalid connection string")

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -103,7 +104,7 @@ func TestQueryRangeMarksAQueryWithNoMatchingSeriesAsNoData(t *testing.T) {
 	}
 }
 
-func TestQueryRangeMarksStaleMarkersAndTrailingGap(t *testing.T) {
+func TestQueryRangeMarksNaNAnomalousAndTrailingGapStale(t *testing.T) {
 	start := time.Date(2026, time.October, 21, 12, 0, 0, 0, time.UTC)
 	raw := fmt.Sprintf(`{"metric":{"pod":"stale"},"values":[%s,%s,%s]}`,
 		prometheusValue(start, "1"),
@@ -120,11 +121,32 @@ func TestQueryRangeMarksStaleMarkersAndTrailingGap(t *testing.T) {
 	if !series.Quality.Has(IssueStale) || !series.Quality.Has(IssueSparse) {
 		t.Fatalf("issues = %v", series.Quality.Issues)
 	}
-	if series.Quality.StaleSamples != 1 || series.Quality.AcceptedSamples != 2 || series.Quality.MissingSamples != 3 {
+	if series.Quality.StaleSamples != 0 || series.Quality.AnomalousSamples != 1 || series.Quality.AcceptedSamples != 2 || series.Quality.MissingSamples != 3 {
 		t.Fatalf("quality = %#v", series.Quality)
 	}
 	if len(series.Samples) != 2 {
 		t.Fatalf("stale marker was exposed as a usable sample: %#v", series.Samples)
+	}
+}
+
+func TestQueryRangeTreatsNaNAsAnomalousNotStale(t *testing.T) {
+	start := time.Date(2026, time.October, 21, 12, 0, 0, 0, time.UTC)
+	raw := fmt.Sprintf(`{"metric":{"pod":"nan"},"values":[%s,%s]}`,
+		prometheusValue(start, "1"),
+		prometheusValue(start.Add(time.Minute), "NaN"),
+	)
+	series := queryOneSeries(t, raw, RangeQuery{
+		Expression: "up",
+		Start:      start,
+		End:        start.Add(time.Minute),
+		Step:       time.Minute,
+		StaleAfter: 10 * time.Minute,
+	})
+	if !series.Quality.Has(IssueAnomalous) || series.Quality.Has(IssueStale) {
+		t.Fatalf("issues = %v", series.Quality.Issues)
+	}
+	if series.Quality.AnomalousSamples != 1 || series.Quality.StaleSamples != 0 {
+		t.Fatalf("quality = %#v", series.Quality)
 	}
 }
 
@@ -234,6 +256,18 @@ func TestNewPrometheusClientRejectsUnsafeEndpoints(t *testing.T) {
 	}
 }
 
+func TestNewPrometheusClientRejectsUnsafeConcurrencyBounds(t *testing.T) {
+	for _, maxInFlight := range []int{-1, maximumMaxInFlight + 1} {
+		_, err := NewPrometheusClient(PrometheusOptions{
+			Endpoint:    "https://prometheus.example",
+			MaxInFlight: maxInFlight,
+		})
+		if !errors.Is(err, ErrInvalidOptions) {
+			t.Fatalf("MaxInFlight %d error = %v", maxInFlight, err)
+		}
+	}
+}
+
 func TestQueryCannotOverrideConfiguredOriginOrEndpoint(t *testing.T) {
 	start := time.Date(2026, time.October, 21, 12, 0, 0, 0, time.UTC)
 	expression := `up{url="https://169.254.169.254/latest/meta-data?x=1&start=0"}`
@@ -332,6 +366,121 @@ func TestQueryRangeEnforcesResourceBounds(t *testing.T) {
 			t.Fatalf("error = %v", err)
 		}
 	})
+
+	t.Run("overflow safe points", func(t *testing.T) {
+		client := mustPrometheusClient(t, PrometheusOptions{
+			Endpoint:  "https://prometheus.example",
+			MaxRange:  time.Duration(1<<63 - 1),
+			MaxPoints: int(^uint(0) >> 1),
+		})
+		start := time.Unix(0, 0).UTC()
+		query := RangeQuery{
+			Expression: "up",
+			Start:      start,
+			End:        start.Add(time.Duration(1<<63 - 1)),
+			Step:       time.Nanosecond,
+		}
+		if _, err := client.QueryRange(context.Background(), query); !errors.Is(err, ErrInvalidQuery) {
+			t.Fatalf("error = %v", err)
+		}
+	})
+
+	t.Run("unrepresentable range", func(t *testing.T) {
+		client := mustPrometheusClient(t, PrometheusOptions{
+			Endpoint: "https://prometheus.example",
+			MaxRange: time.Duration(1<<63 - 1),
+		})
+		query := RangeQuery{
+			Expression: "up",
+			Start:      time.Date(1, time.January, 1, 0, 0, 0, 0, time.UTC),
+			End:        time.Date(9999, time.December, 31, 0, 0, 0, 0, time.UTC),
+			Step:       time.Hour,
+		}
+		if _, err := client.QueryRange(context.Background(), query); !errors.Is(err, ErrInvalidQuery) {
+			t.Fatalf("error = %v", err)
+		}
+	})
+}
+
+func TestQueryRangeEnforcesTimestampGridWithoutInflatingCoverage(t *testing.T) {
+	start := time.Date(2026, time.October, 21, 12, 0, 0, 0, time.UTC)
+	raw := fmt.Sprintf(`{"metric":{"pod":"oversampled"},"values":[%s,[%f,"1"],[%f,"3"],[%f,"4"]]}`,
+		prometheusValue(start, "1"),
+		float64(start.Unix())+0.0005,
+		float64(start.Unix())+30,
+		float64(start.Unix())+90,
+	)
+	series := queryOneSeries(t, raw, RangeQuery{
+		Expression: "up",
+		Start:      start,
+		End:        start.Add(2 * time.Minute),
+		Step:       time.Minute,
+		StaleAfter: 10 * time.Minute,
+	})
+	if len(series.Samples) != 1 || series.Quality.AcceptedSamples != 1 {
+		t.Fatalf("samples = %#v; quality = %#v", series.Samples, series.Quality)
+	}
+	if series.Quality.Coverage != 1.0/3.0 || series.Quality.MissingSamples != 2 {
+		t.Fatalf("quality = %#v", series.Quality)
+	}
+	if series.Quality.DuplicateSamples != 1 || series.Quality.AnomalousSamples != 2 {
+		t.Fatalf("quality = %#v", series.Quality)
+	}
+}
+
+func TestPrometheusClientBoundsConcurrentQueriesAndCancelsWaiters(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-release
+		fmt.Fprint(writer, `{"status":"success","data":{"resultType":"matrix","result":[]}}`)
+	}))
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(release) })
+		server.Close()
+	})
+	client := mustPrometheusClient(t, PrometheusOptions{
+		Endpoint:    server.URL,
+		AllowHTTP:   true,
+		MaxInFlight: 1,
+	})
+	firstResult := make(chan error, 1)
+	go func() {
+		_, err := client.QueryRange(context.Background(), validRangeQuery())
+		firstResult <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first query did not reach the upstream")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_, err := client.QueryRange(ctx, validRangeQuery())
+	if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrUpstream) {
+		t.Fatalf("waiting query error = %v", err)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("upstream requests = %d, want 1", got)
+	}
+
+	releaseOnce.Do(func() { close(release) })
+	select {
+	case err := <-firstResult:
+		if err != nil {
+			t.Fatalf("first query error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("first query did not finish")
+	}
 }
 
 func TestQueryRangeReturnsSanitizedUpstreamErrors(t *testing.T) {
@@ -350,6 +499,36 @@ func TestQueryRangeReturnsSanitizedUpstreamErrors(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 	if strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), query.Expression) {
+		t.Fatalf("error leaked request data: %q", err)
+	}
+}
+
+func TestQueryRangeDoesNotExposeURLOrCredentialsThroughErrorChain(t *testing.T) {
+	const secret = "credential-do-not-expose"
+	transport := roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		return nil, &url.Error{
+			Op:  "Get",
+			URL: request.URL.String() + "&authorization=" + secret,
+			Err: errors.New("transport failed with " + secret),
+		}
+	})
+	client := mustPrometheusClient(t, PrometheusOptions{
+		Endpoint: "https://prometheus.example",
+		HTTPClient: &http.Client{
+			Transport: transport,
+		},
+	})
+	query := validRangeQuery()
+	query.Expression = `up{credential="` + secret + `"}`
+	_, err := client.QueryRange(context.Background(), query)
+	if !errors.Is(err, ErrUpstream) {
+		t.Fatalf("error = %v", err)
+	}
+	var urlError *url.Error
+	if errors.As(err, &urlError) {
+		t.Fatalf("sanitized error exposed *url.Error: %#v", urlError)
+	}
+	if strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), query.Expression) || strings.Contains(err.Error(), "prometheus.example") {
 		t.Fatalf("error leaked request data: %q", err)
 	}
 }
@@ -387,6 +566,67 @@ func TestQueryRangeRejectsMalformedPayloads(t *testing.T) {
 		if err == nil {
 			t.Fatalf("body %q was accepted", body)
 		}
+	}
+}
+
+func TestQueryRangeRejectsNativeHistogramResponses(t *testing.T) {
+	query := validRangeQuery()
+	histogram := fmt.Sprintf(`[%d,{"count":"1","sum":"2","buckets":[]}]`, query.Start.Unix())
+	tests := map[string]string{
+		"histogram only": `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{},"histograms":[` + histogram + `]}]}}`,
+		"mixed":          `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{},"values":[],"histograms":[` + histogram + `]}]}}`,
+	}
+	for name, body := range tests {
+		t.Run(name, func(t *testing.T) {
+			client, closeServer := clientReturning(t, body, PrometheusOptions{})
+			defer closeServer()
+			if _, err := client.QueryRange(context.Background(), query); !errors.Is(err, ErrProtocol) {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+}
+
+func TestQueryRangeRejectsInvalidSuccessStructures(t *testing.T) {
+	tests := map[string]string{
+		"missing status":       `{"data":{"resultType":"matrix","result":[]}}`,
+		"missing data":         `{"status":"success"}`,
+		"null data":            `{"status":"success","data":null}`,
+		"missing result type":  `{"status":"success","data":{"result":[]}}`,
+		"missing result":       `{"status":"success","data":{"resultType":"matrix"}}`,
+		"null result":          `{"status":"success","data":{"resultType":"matrix","result":null}}`,
+		"object result":        `{"status":"success","data":{"resultType":"matrix","result":{}}}`,
+		"null series":          `{"status":"success","data":{"resultType":"matrix","result":[null]}}`,
+		"missing metric":       `{"status":"success","data":{"resultType":"matrix","result":[{"values":[]}]}}`,
+		"null metric":          `{"status":"success","data":{"resultType":"matrix","result":[{"metric":null,"values":[]}]}}`,
+		"non-string label":     `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"pod":1},"values":[]}]}}`,
+		"missing values":       `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{}}]}}`,
+		"null values":          `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{},"values":null}]}}`,
+		"object values":        `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{},"values":{}}]}}`,
+		"null warnings":        `{"status":"success","warnings":null,"data":{"resultType":"matrix","result":[]}}`,
+		"invalid warnings":     `{"status":"success","warnings":[1],"data":{"resultType":"matrix","result":[]}}`,
+		"duplicate object key": `{"status":"success","status":"error","data":{"resultType":"matrix","result":[]}}`,
+	}
+	for name, body := range tests {
+		t.Run(name, func(t *testing.T) {
+			client, closeServer := clientReturning(t, body, PrometheusOptions{})
+			defer closeServer()
+			if _, err := client.QueryRange(context.Background(), validRangeQuery()); !errors.Is(err, ErrProtocol) {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+}
+
+func TestQueryRangeRejectsDuplicateSeriesLabelSets(t *testing.T) {
+	body := `{"status":"success","data":{"resultType":"matrix","result":[` +
+		`{"metric":{"namespace":"shop","pod":"api"},"values":[]},` +
+		`{"metric":{"pod":"api","namespace":"shop"},"values":[]}` +
+		`]}}`
+	client, closeServer := clientReturning(t, body, PrometheusOptions{})
+	defer closeServer()
+	if _, err := client.QueryRange(context.Background(), validRangeQuery()); !errors.Is(err, ErrProtocol) {
+		t.Fatalf("error = %v", err)
 	}
 }
 
@@ -432,4 +672,10 @@ func validRangeQuery() RangeQuery {
 
 func prometheusValue(timestamp time.Time, value string) string {
 	return fmt.Sprintf(`[%d,%q]`, timestamp.Unix(), value)
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (function roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return function(request)
 }

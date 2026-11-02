@@ -26,15 +26,19 @@ type ContainerSpec struct {
 
 // WorkloadSpec is the live configuration needed to generate a recommendation.
 type WorkloadSpec struct {
-	Cluster             string          `json:"cluster"`
-	Namespace           string          `json:"namespace"`
-	Kind                string          `json:"kind"`
-	Name                string          `json:"name"`
-	Replicas            int32           `json:"replicas"`
-	Containers          []ContainerSpec `json:"containers"`
-	HPAUtilizationBased bool            `json:"hpaUtilizationBased"`
-	KEDAEnabled         bool            `json:"kedaEnabled"`
-	Warnings            []string        `json:"warnings"`
+	Cluster               string          `json:"cluster"`
+	Namespace             string          `json:"namespace"`
+	Kind                  string          `json:"kind"`
+	Name                  string          `json:"name"`
+	UID                   string          `json:"uid,omitempty"`
+	Generation            int64           `json:"generation,omitempty"`
+	ResourceVersion       string          `json:"resourceVersion,omitempty"`
+	SourceSpecFingerprint string          `json:"sourceSpecFingerprint,omitempty"`
+	Replicas              int32           `json:"replicas"`
+	Containers            []ContainerSpec `json:"containers"`
+	HPAUtilizationBased   bool            `json:"hpaUtilizationBased"`
+	KEDAEnabled           bool            `json:"kedaEnabled"`
+	Warnings              []string        `json:"warnings"`
 }
 
 // Container returns the named container.

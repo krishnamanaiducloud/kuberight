@@ -10,7 +10,7 @@
 | `nameOverride`, `fullnameOverride` | `""` | Override generated resource names. |
 | `namespace.create` | `false` | Render a Namespace resource; Helm users normally use `--create-namespace`. |
 | `namespace.labels`, `namespace.annotations` | `{}` | Metadata for the optional Namespace. |
-| `replicaCount` | `1` | Singleton primary deployment. More than one replica is unsupported because recommendation, idempotency, and audit records are process-local. |
+| `replicaCount` | `1` | Primary API replicas. Values above one require `database.enabled=true`; otherwise the chart fails rendering. |
 | `image.repository` | `mohankrishna999/kuberight` | Primary image repository. |
 | `image.tag` | `""` | Empty selects `Chart.appVersion`; this does not prove that tag exists. |
 | `image.digest` | `""` | Preferred immutable `sha256:...` digest; takes precedence over tag. |
@@ -29,13 +29,13 @@
 | Value | Default | Meaning |
 | --- | --- | --- |
 | `serviceAccount.create` | `true` | Create the workload ServiceAccount. |
-| `serviceAccount.name` | `""` | Existing or overridden ServiceAccount name. |
+| `serviceAccount.name` | `""` | Existing or overridden ServiceAccount name. Required when `serviceAccount.create=false`; the chart refuses to use the namespace default service account implicitly. |
 | `serviceAccount.automountServiceAccountToken` | `true` | Required for Kubernetes auth or inventory. |
 | `serviceAccount.annotations` | `{}` | ServiceAccount metadata, including cloud-specific annotations if needed. |
 | `rbac.create` | `true` | Render chart-managed RBAC. |
 | `rbac.scope` | `namespace` | `namespace` or `cluster` inventory permissions. |
 | `rbac.authReviews` | `true` | Grant the service account cluster-scoped TokenReview/SAR creation. |
-| `rbac.monitoring.enabled` | `true` | Grant list-only access to the workload and autoscaler resources queried by inventory. Cluster scope also lists nodes and namespaces. |
+| `rbac.monitoring.enabled` | `true` | Grant list-only access to pods, workload controllers, and autoscalers queried by inventory. Pod owner references provide exact hotspot attribution; cluster scope also lists nodes and namespaces. |
 | `rbac.extraRules` | `[]` | Additional Role/ClusterRole rules; review carefully. |
 | `auth.mode` | `kubernetes` | `kubernetes` or development-only `static`. |
 | `auth.staticToken.existingSecret` | `""` | Required Secret name in static mode. |
@@ -61,6 +61,36 @@ The chart's RBAC authorizes the workload. API callers separately need permission
 
 TLS is not implemented in the Go listener; terminate it at the Route, Ingress, gateway, or service mesh.
 
+## Persistence, analysis, and integrations
+
+| Value | Default | Meaning |
+| --- | --- | --- |
+| `database.enabled` | `false` | Use external PostgreSQL for shared recommendations, idempotency, reviews, and audit events. The chart does not deploy a database. |
+| `database.existingSecret`, `database.key` | `""`, `url` | Serving credential Secret and key containing a `postgres://` URL. Prefer certificate verification and a role restricted to application DML. |
+| `database.migrate` | `true` | Render a bounded `pre-install,pre-upgrade` hook Job that runs the embedded migrations. Serving pods always set migration off and verify the schema. |
+| `database.migrationJob.existingSecret`, `.key` | `""`, `url` | Optional separate DDL credential. Empty reuses the serving Secret; production installations should normally separate these roles. |
+| `database.migrationJob.activeDeadlineSeconds` | `300` | Hard Kubernetes deadline for the migration Job. The migration command also has a two-minute process context. |
+| `database.migrationJob.backoffLimit` | `3` | Failed Job retries. Migrations are checksummed, transactional per version, and serialized by a PostgreSQL advisory lock. |
+| `database.migrationJob.annotations` | `{}` | Additional hook Job annotations; Helm's required hook annotations take precedence. |
+| `database.maxConns` | `10` | Maximum PostgreSQL pool connections per serving replica. Size the database for the HPA maximum. |
+| `prometheus.url` | `""` | Prometheus base URL with cAdvisor-compatible container metrics. |
+| `prometheus.allowHTTP` | `false` | Permit cleartext `http://` for an operator-controlled network. HTTPS is preferred. |
+| `prometheus.timeout` | `10s` | Per-query client timeout. |
+| `prometheus.maxInFlight` | `8` | Global Prometheus request limit per API pod across concurrent feature requests. |
+| `recommendations.window`, `.step` | `168h`, `5m` | Default lookback and resolution for generated recommendations. |
+| `forecasting.window`, `.step` | `336h`, `1h` | Default Prometheus input window and resolution sent to the optional forecasting service. |
+| `approvals.requireDistinctApprover` | `""` | Empty selects secure automatic behavior: true for Kubernetes auth and false for single-identity static auth. |
+| `cost.cpuCoreHour`, `cost.memoryGiBHour` | `""`, `""` | Operator-supplied request unit prices. Both must be set together; these are not billing data. |
+| `cost.currency` | `USD` | Display currency code for configured-price estimates. |
+| `latencyQuery` | `""` | One-line PromQL template in seconds using `$namespace`, `$workload`, or `$container` for signal correlation. |
+| `webhook.existingSecret` | `""` | Secret containing the webhook URL and optional signing key. Delivery uses a volatile bounded in-memory queue. |
+| `webhook.urlKey`, `.signingSecretKey`, `.format` | `url`, `""`, `json` | Secret keys and `json` or `slack` payload format. |
+| `exportRecommendationMetrics` | `false` | Expose per-container recommendation/review/resource gauges. Disabled by default because `/metrics` is public. |
+
+The migration hook applies every pending embedded migration and fails on changed checksums or a database newer than the image. Each serving pod verifies the exact schema before accepting traffic. Setting `database.migrate=false` skips the hook; an operator must run the same image's `migrate` command before installation or upgrade. Helm rollback does not run down migrations, and an older binary will reject a newer schema.
+
+Migration 3 adds a trigger that rejects update, delete, and truncate operations against `audit_events`. This protects against accidental application mutation, but a privileged PostgreSQL administrator can alter database objects; it is not WORM storage.
+
 ## Availability, security, and scheduling
 
 | Value | Default | Meaning |
@@ -76,8 +106,8 @@ TLS is not implemented in the Go listener; terminate it at the Route, Ingress, g
 | `terminationGracePeriodSeconds` | `30` | Pod shutdown grace period. |
 | `podDisruptionBudget.enabled` | `true` | Render a primary PDB. |
 | `podDisruptionBudget.minAvailable` | `1` | Minimum available replicas; mutually exclusive with `maxUnavailable`. With the singleton default, this protects against voluntary disruption but does not provide redundancy. |
-| `autoscaling.enabled` | `false` | Render a CPU/memory HPA for the primary deployment. Enabling it is unsupported while API state is process-local. |
-| `autoscaling.minReplicas`, `maxReplicas` | `1`, `1` | Safe no-scale HPA range. Increasing it is unsupported until an external shared store exists. |
+| `autoscaling.enabled` | `false` | Render a CPU/memory HPA for the primary deployment. Requires `database.enabled=true`. |
+| `autoscaling.minReplicas`, `maxReplicas` | `1`, `1` | API HPA bounds. Account for `database.maxConns` per replica and downstream query load before increasing them. |
 | `autoscaling.targetCPUUtilizationPercentage` | `70` | CPU target; memory target and behavior are optional. |
 | `topologySpreadConstraints.enabled` | `true` | Spread replicas using the configured key/skew/policy. |
 | `nodeSelector`, `tolerations`, `affinity` | empty | Primary scheduling controls. |
@@ -108,9 +138,9 @@ The production profile leaves both monitoring CRs disabled, so it does not requi
 
 ## Optional ML service
 
-`ml.enabled` defaults to `false`. `ml.image` follows the same repository/tag/digest/pull-policy rules as the primary image. `ml.replicaCount` defaults to `1`, and `ml.autoscaling.enabled` defaults to `false` with a `1`/`1` range. Multiple ML replicas and ML autoscaling are unsupported because the supplied deployment stores models on each pod's ephemeral local filesystem. Resources, pod labels/annotations, pod and container security contexts, scheduling controls, image pull secrets, PDB, Service port, and NetworkPolicy are independently configurable under `ml.*`.
+`ml.enabled` defaults to `false`. `ml.image` follows the same repository/tag/digest/pull-policy rules as the primary image. The Go API calls the service for `POST /api/v1/forecasts` when ML and Prometheus are configured. `ml.replicaCount` defaults to `1`, and `ml.autoscaling.enabled` defaults to `false` with a `1`/`1` range. The chart rejects multiple ML replicas and ML autoscaling because the supplied deployment stores models on each pod's ephemeral local filesystem. Resources, pod labels/annotations, pod and container security contexts, scheduling controls, image pull secrets, PDB, Service port, and NetworkPolicy are independently configurable under `ml.*`.
 
-`ml.extraEnv` is the only chart-level process configuration hook; use it to set bounded ML settings or `KUBERIGHT_ML_API_KEY` from a Secret. The pod has a 256 MiB `/tmp` `emptyDir` and no supplied persistent-model volume. Enabling ML does not connect it to the Go API.
+Use `ml.apiKey.existingSecret` and `ml.apiKey.key` to share an API key between the Go and ML pods. `ml.extraEnv` supplies other bounded ML settings. The pod has a 256 MiB `/tmp` `emptyDir` and no supplied persistent/shared model volume.
 
 ## Profiles
 
@@ -123,4 +153,6 @@ helm template kuberight charts/kuberight -n kuberight \
 
 Always combine the selected profile with environment-specific immutable digests, secrets, TLS, monitoring labels, and network rules.
 
-Every supplied profile keeps the API and ML services at one replica and leaves both HPAs disabled. This preserves coherent process-local state; it does not provide high availability. Horizontal scaling requires external shared persistence for recommendation, idempotency, audit, and ML model state, which this preview does not implement.
+The default, development, OpenShift, and cluster-wide profiles keep the API at one replica unless combined with another overlay. `profiles/production.yaml` is different: it requires the pre-created `kuberight-database` Secret, enables external PostgreSQL, starts two API replicas, allows an HPA range of 2-6, uses `maxUnavailable: 1`, and spreads across zones with `DoNotSchedule`. It is only a production-shaped baseline. Supply a separate migration credential where possible, size PostgreSQL for the maximum pool count, verify at least two eligible topology domains, and add environment-specific backup/restore, TLS, ingress, egress, monitoring, and capacity settings.
+
+Every profile keeps the ML service at one replica with its HPA disabled. PostgreSQL makes API records shareable; it does not make pod-local ML model files or webhook queues durable.

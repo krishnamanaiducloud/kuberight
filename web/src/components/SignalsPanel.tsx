@@ -6,7 +6,7 @@ import InfoOutlined from '@mui/icons-material/InfoOutlined'
 import WarningAmberOutlined from '@mui/icons-material/WarningAmberOutlined'
 import { api, ApiError, type SignalEvent, type SignalsResponse, type Subject, type UsageSeries } from '../api'
 import { seriesColors, statusColors } from '../chartColors'
-import { formatBytes, formatDate, formatMillicores } from '../format'
+import { formatBytes, formatDate, formatMillicores, spikeLabel } from '../format'
 import { LineChart, type ChartMarker, type ChartReference } from './LineChart'
 
 const eventStyle: Record<SignalEvent['kind'], { tone: ChartMarker['tone']; label: string }> = {
@@ -103,6 +103,7 @@ export function SignalsPanel({ subject, usageWindow }: { subject: Subject; usage
             <Chip size="small" variant="outlined" label={`${label}: r = ${data.correlations![key]!.toFixed(2)}`} color={Math.abs(data.correlations![key]!) >= 0.5 ? 'warning' : 'default'} />
           </Tooltip>
         ))}
+        {data.spikes && spikeLabel(data.spikes) && <Chip size="small" variant="outlined" color={data.spikes.classification === 'rare' ? 'default' : 'warning'} label={spikeLabel(data.spikes)} />}
         {!data.latencyConfigured && <Typography variant="caption" color="text.secondary">Set KUBERIGHT_LATENCY_QUERY to correlate application latency.</Typography>}
         <Box sx={{ flexGrow: 1 }} />
         <Stack direction="row" gap={1.5} aria-label="Event legend">

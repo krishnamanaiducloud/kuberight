@@ -20,6 +20,20 @@ export const theme = createTheme({
   },
   shape: { borderRadius: 12 },
   components: {
+    MuiCssBaseline: {
+      styleOverrides: {
+        body: { scrollbarColor: '#496675 #07111c' },
+        '::selection': { backgroundColor: 'rgba(102,217,196,.28)' },
+        '@media (prefers-reduced-motion: reduce)': {
+          '*, *::before, *::after': { scrollBehavior: 'auto !important', transitionDuration: '0.01ms !important', animationDuration: '0.01ms !important', animationIterationCount: '1 !important' },
+        },
+      },
+    },
+    MuiButtonBase: {
+      styleOverrides: {
+        root: { '&.Mui-focusVisible': { outline: '3px solid rgba(157,243,225,.72)', outlineOffset: 2 } },
+      },
+    },
     MuiCard: {
       styleOverrides: {
         root: {
@@ -29,6 +43,6 @@ export const theme = createTheme({
       },
     },
     MuiButton: { defaultProps: { disableElevation: true } },
-    MuiTableCell: { styleOverrides: { root: { borderColor: 'rgba(148,188,196,.12)' } } },
+    MuiTableCell: { styleOverrides: { root: { borderColor: 'rgba(148,188,196,.12)' }, head: { color: '#cde0e5' } } },
   },
 })

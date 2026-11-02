@@ -9,14 +9,23 @@ import ContentCopyIcon from '@mui/icons-material/ContentCopy'
 import { api, ApiError, type RecommendationRecord } from '../api'
 import { formatBytes, formatDate, formatMillicores, kubectlCommand, yamlPatch } from '../format'
 import { ResourceTable } from './ResourceTable'
-import { BacktestTable, TrendChips } from './Backtest'
+import { BacktestTable, CpuBehaviorChips, TrendChips } from './Backtest'
+import { RecommendationEvidence } from './RecommendationEvidence'
+import { recommendationEvidenceState } from './recommendationEvidenceState'
 
 const riskColor = { low: 'success', medium: 'warning', high: 'error' } as const
 const reviewColor = { pending: 'warning', approved: 'success', rejected: 'default' } as const
 
+const riskGuidance = {
+  low: { severity: 'success', text: 'Low modeled risk. Confirm policy, ownership, and rollout timing before applying.' },
+  medium: { severity: 'warning', text: 'Material safeguard or workload uncertainty exists. Validate under representative load before applying.' },
+  high: { severity: 'error', text: 'High-risk recommendation. Validate in a canary or non-production environment before approval.' },
+} as const
+
 function ReviewPanel({ record }: { record: RecommendationRecord }) {
   const client = useQueryClient()
   const [comment, setComment] = useState('')
+  const evidence = recommendationEvidenceState(record)
   const mutation = useMutation({
     mutationFn: (decision: 'approve' | 'reject') => api.post<RecommendationRecord>(`/api/v1/recommendations/${record.id}/review`, { decision, comment }),
     onSuccess: (updated) => {
@@ -26,13 +35,15 @@ function ReviewPanel({ record }: { record: RecommendationRecord }) {
     },
   })
   const error = mutation.error instanceof ApiError ? mutation.error.message : mutation.error ? 'The review could not be saved.' : undefined
+  const errorSeverity = mutation.error instanceof ApiError && [409, 503].includes(mutation.error.status) ? 'warning' : 'error'
   return (
     <Stack gap={1.5}>
       <Typography variant="body2" color="text.secondary">Approval records a decision for your change process. KubeRight never applies the change.</Typography>
       <TextField size="small" multiline minRows={2} label="Comment" helperText="Required when rejecting" value={comment} onChange={(event) => setComment(event.target.value)} inputProps={{ maxLength: 1024 }} />
-      {error && <Alert severity="error">{error}</Alert>}
+      {!evidence.canApprove && <Alert severity="error">Approval is disabled: {evidence.detail}</Alert>}
+      {error && <Alert severity={errorSeverity}>{error}</Alert>}
       <Stack direction="row" gap={1}>
-        <Button variant="contained" color="success" disabled={mutation.isPending} onClick={() => mutation.mutate('approve')}>Approve</Button>
+        <Button variant="contained" color="success" disabled={mutation.isPending || !evidence.canApprove} onClick={() => mutation.mutate('approve')}>Approve</Button>
         <Button variant="outlined" color="error" disabled={mutation.isPending || comment.trim() === ''} onClick={() => mutation.mutate('reject')}>Reject</Button>
         {mutation.isPending && <CircularProgress size={22} sx={{ alignSelf: 'center' }} />}
       </Stack>
@@ -75,9 +86,9 @@ export function RecommendationDrawer({ id, onClose }: { id: string | undefined; 
   })
   const record = query.data
   return (
-    <Drawer anchor="right" open={Boolean(id)} onClose={onClose} PaperProps={{ sx: { width: { xs: '100%', sm: 560 }, bgcolor: 'background.paper' } }}>
+    <Drawer anchor="right" open={Boolean(id)} onClose={onClose} PaperProps={{ 'aria-labelledby': 'recommendation-title', sx: { width: { xs: '100%', sm: 600 }, bgcolor: 'background.paper' } }}>
       <Stack direction="row" alignItems="center" sx={{ p: 2, pb: 1 }}>
-        <Typography variant="h6" sx={{ flexGrow: 1 }}>Recommendation</Typography>
+        <Typography id="recommendation-title" variant="h6" sx={{ flexGrow: 1 }}>Recommendation decision</Typography>
         <IconButton aria-label="Close recommendation" onClick={onClose}><CloseIcon /></IconButton>
       </Stack>
       <Divider />
@@ -94,17 +105,22 @@ export function RecommendationDrawer({ id, onClose }: { id: string | undefined; 
                 <Chip size="small" label={`Risk: ${record.risk}`} color={riskColor[record.risk]} variant="outlined" />
                 <Chip size="small" label={`Confidence: ${record.confidence} (${Math.round(record.confidenceScore * 100)}%)`} variant="outlined" />
                 <Chip size="small" label={record.source === 'prometheus' ? 'From Prometheus' : 'Caller samples'} variant="outlined" />
-                {record.burstable && <Chip size="small" label="Bursty CPU" color="warning" variant="outlined" />}
-                {(record.cpuThrottlingRatio ?? 0) >= 0.05 && <Chip size="small" label={`CPU throttled ${((record.cpuThrottlingRatio ?? 0) * 100).toFixed(1)}%`} color="warning" variant="outlined" />}
+                {record.burstable && (!record.spikes || record.spikes.classification === 'none') && <Chip size="small" label="Bursty CPU" color="warning" variant="outlined" />}
               </Stack>
             </Box>
+            <RecommendationEvidence record={record} />
             <ResourceTable record={record} />
+            <CpuBehaviorChips throttling={record.cpuThrottlingRatio} throttlingPeak={record.cpuThrottlingPeakRatio} pinned={record.cpuLimitPinned} spikes={record.spikes} />
             <TrendChips trends={record.trends} />
             {record.backtest && <BacktestTable backtest={record.backtest} />}
-            <Typography variant="body2" color="text.secondary">{record.reason}</Typography>
+            <Box>
+              <Typography variant="subtitle2">Why these values</Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>{record.reason}</Typography>
+              <Alert severity={riskGuidance[record.risk].severity} variant="outlined" sx={{ mt: 1 }}>{riskGuidance[record.risk].text}</Alert>
+            </Box>
 
             <Box>
-              <Typography variant="subtitle2" sx={{ mb: 0.5 }}>Observed usage</Typography>
+              <Typography variant="subtitle2" sx={{ mb: 0.5 }}>Evidence used</Typography>
               <Table size="small" aria-label="Usage percentiles">
                 <TableHead><TableRow><TableCell /><TableCell align="right">P50</TableCell><TableCell align="right">P95</TableCell><TableCell align="right">P99</TableCell><TableCell align="right">Max</TableCell></TableRow></TableHead>
                 <TableBody>
@@ -115,6 +131,10 @@ export function RecommendationDrawer({ id, onClose }: { id: string | undefined; 
               <Typography variant="caption" color="text.secondary">
                 {record.dataQuality.cpuSampleCount} CPU and {record.dataQuality.memorySampleCount} memory samples; {record.dataQuality.minimumRequired} required for reductions.
               </Typography>
+              <Stack direction="row" gap={1} flexWrap="wrap" sx={{ mt: 1 }}>
+                <Chip size="small" color={record.dataQuality.sufficient ? 'success' : 'warning'} variant="outlined" label={record.dataQuality.sufficient ? 'Sample threshold met' : 'Sample threshold not met'} />
+                <Chip size="small" variant="outlined" label={record.source === 'prometheus' ? 'Metrics: Prometheus' : 'Metrics: caller supplied'} />
+              </Stack>
             </Box>
 
             {((record.dataQuality.issues ?? []).length > 0 || (record.warnings ?? []).length > 0) && (
@@ -123,6 +143,15 @@ export function RecommendationDrawer({ id, onClose }: { id: string | undefined; 
                 {(record.warnings ?? []).map((warning) => <Alert key={`w-${warning}`} severity="info" variant="outlined">{warning}</Alert>)}
               </Stack>
             )}
+
+            <Box sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 2, bgcolor: 'rgba(255,255,255,.015)' }}>
+              <Typography variant="subtitle2" sx={{ mb: 1 }}>Audit record</Typography>
+              <Box component="dl" sx={{ display: 'grid', gridTemplateColumns: 'max-content minmax(0, 1fr)', columnGap: 2, rowGap: 0.75, m: 0, '& dt': { color: 'text.secondary' }, '& dd': { m: 0, overflowWrap: 'anywhere' } }}>
+                <Typography component="dt" variant="caption">Generator</Typography><Typography component="dd" variant="caption">{record.createdBy || 'Not reported'}</Typography>
+                <Typography component="dt" variant="caption">Evidence source</Typography><Typography component="dd" variant="caption">{record.source === 'prometheus' ? 'Prometheus and live Kubernetes inventory' : 'Caller-supplied samples'}</Typography>
+                <Typography component="dt" variant="caption">Record ID</Typography><Typography component="dd" variant="caption" sx={{ fontFamily: 'monospace' }}>{record.id}</Typography>
+              </Box>
+            </Box>
 
             <Divider />
             {record.reviewStatus === 'pending' ? <ReviewPanel record={record} /> : (
@@ -134,7 +163,6 @@ export function RecommendationDrawer({ id, onClose }: { id: string | undefined; 
                 {record.reviewStatus === 'approved' && <ApplyCommand record={record} />}
               </Stack>
             )}
-            <Typography variant="caption" color="text.secondary">Created {formatDate(record.createdAt)}{record.createdBy ? ` by ${record.createdBy}` : ''} · {record.id}</Typography>
           </Stack>
         )}
       </Box>

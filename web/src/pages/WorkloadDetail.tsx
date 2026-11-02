@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Link as RouterLink, useParams } from 'react-router-dom'
+import { Link as RouterLink, useParams, useSearchParams } from 'react-router-dom'
 import {
   Alert, Box, Button, Card, CardContent, Chip, MenuItem, Skeleton, Stack, Tab, Table, TableBody, TableCell,
   TableContainer, TableHead, TableRow, Tabs, TextField, Typography,
@@ -8,10 +8,12 @@ import {
 import ArrowBackIcon from '@mui/icons-material/ArrowBack'
 import AutoFixHighOutlined from '@mui/icons-material/AutoFixHighOutlined'
 import PlaylistPlayOutlined from '@mui/icons-material/PlaylistPlayOutlined'
-import { api, ApiError, type ApiRecord, type CollectionEnvelope, type RecommendationRecord, type Subject, type WorkloadRecord } from '../api'
+import { api, type ApiRecord, type CollectionEnvelope, type RecommendationRecord, type Subject, type WorkloadRecord } from '../api'
 import { AnalyzeDialog } from '../components/AnalyzeDialog'
 import { GenerateDialog } from '../components/GenerateDialog'
 import { RecommendationDrawer } from '../components/RecommendationDrawer'
+import { EvidenceStatusChip } from '../components/RecommendationEvidence'
+import { RequestAlert } from '../components/RequestAlert'
 import { SignalsPanel } from '../components/SignalsPanel'
 import { formatBytes, formatDate, formatMillicores, formatPercent } from '../format'
 import { usageWindows } from '../usageWindows'
@@ -19,6 +21,7 @@ import { usageWindows } from '../usageWindows'
 type WorkloadDetailRecord = WorkloadRecord & { desiredReplicas?: number; readyReplicas?: number; health?: string; cluster?: string }
 
 const reviewColor = { pending: 'warning', approved: 'success', rejected: 'default' } as const
+const riskColor = { low: 'success', medium: 'warning', high: 'error' } as const
 
 function delta(current: number, next: number) {
   return current > 0 ? formatPercent(((next - current) / current) * 100) : 'new'
@@ -27,8 +30,10 @@ function delta(current: number, next: number) {
 /** Everything about one workload: containers, latest advice, usage, history. */
 export function WorkloadDetail() {
   const { namespace = '', kind = '', name = '' } = useParams()
-  const [usageWindow, setUsageWindow] = useState('24h')
-  const [container, setContainer] = useState<string>()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const requestedWindow = searchParams.get('window') ?? '24h'
+  const usageWindow = usageWindows.some((option) => option.value === requestedWindow) ? requestedWindow : '24h'
+  const container = searchParams.get('container') ?? undefined
   const [generateFor, setGenerateFor] = useState<Subject>()
   const [analyzeOpen, setAnalyzeOpen] = useState(false)
   const [selected, setSelected] = useState<string>()
@@ -55,12 +60,19 @@ export function WorkloadDetail() {
   }, [recommendations])
 
   const containers = workload?.containers ?? []
-  const activeContainer = container ?? containers[0]?.name
+  const activeContainer = containers.some((item) => item.name === container) ? container : containers[0]?.name
   const subject = (containerName: string): Subject => ({ namespace, kind, workload: name, container: containerName })
+  const updateView = (key: 'container' | 'window', value: string) => {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current)
+      next.set(key, value)
+      return next
+    }, { replace: true })
+  }
 
   return (
     <Box sx={{ p: { xs: 2, md: 4 }, maxWidth: 1500, mx: 'auto' }}>
-      <Button component={RouterLink} to="/workloads" startIcon={<ArrowBackIcon />} size="small" sx={{ mb: 1 }}>Workloads</Button>
+      <Button component={RouterLink} to={`/workloads?namespace=${encodeURIComponent(namespace)}`} startIcon={<ArrowBackIcon />} size="small" sx={{ mb: 1 }}>Workloads</Button>
       <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" gap={2} sx={{ mb: 3 }}>
         <Box sx={{ minWidth: 0 }}>
           <Typography variant="overline" color="primary.main">{kind.toUpperCase()}</Typography>
@@ -78,7 +90,9 @@ export function WorkloadDetail() {
         </Stack>
       </Stack>
 
-      {workloadQuery.error && <Alert severity="error" sx={{ mb: 2 }}>{workloadQuery.error instanceof ApiError ? workloadQuery.error.message : 'The workload could not be loaded.'}</Alert>}
+      {workloadQuery.error && <Box sx={{ mb: 2 }}><RequestAlert error={workloadQuery.error} resource="this workload" namespaceScoped onRetry={() => void workloadQuery.refetch()} /></Box>}
+      {autoscalers.error && <Box sx={{ mb: 2 }}><RequestAlert error={autoscalers.error} resource="autoscaler context" namespaceScoped onRetry={() => void autoscalers.refetch()} /></Box>}
+      {history.error && <Box sx={{ mb: 2 }}><RequestAlert error={history.error} resource="recommendation history" namespaceScoped onRetry={() => void history.refetch()} /></Box>}
       {workloadQuery.data && !workload && <Alert severity="warning" sx={{ mb: 2 }}>This workload was not found in the inventory. It may have been deleted, or it is outside the configured scope.</Alert>}
 
       <Card sx={{ mb: 2 }}>
@@ -113,6 +127,8 @@ export function WorkloadDetail() {
                             <Stack direction="row" gap={1} alignItems="center" flexWrap="wrap">
                               <Typography variant="body2">CPU {formatMillicores(advice.cpuRequestMilli)} ({delta(advice.currentCpuRequestMilli, advice.cpuRequestMilli)})</Typography>
                               <Typography variant="body2">· Memory {formatBytes(advice.memoryRequestBytes)} ({delta(advice.currentMemoryRequestBytes, advice.memoryRequestBytes)})</Typography>
+                              <EvidenceStatusChip record={advice} />
+                              <Chip size="small" variant="outlined" label={`${advice.risk} risk`} color={riskColor[advice.risk]} />
                               <Chip size="small" variant="outlined" label={advice.reviewStatus} color={reviewColor[advice.reviewStatus]} />
                             </Stack>
                           ) : <Typography variant="body2" color="text.secondary">None yet</Typography>}
@@ -134,10 +150,10 @@ export function WorkloadDetail() {
       {activeContainer && (
         <Box sx={{ mb: 2 }}>
           <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ sm: 'center' }} gap={1} sx={{ mb: 1.5 }}>
-            <Tabs value={activeContainer} onChange={(_, next) => setContainer(next)} variant="scrollable" allowScrollButtonsMobile aria-label="Container usage">
+            <Tabs value={activeContainer} onChange={(_, next) => updateView('container', next)} variant="scrollable" allowScrollButtonsMobile aria-label="Container usage">
               {containers.map((item) => <Tab key={item.name} value={item.name} label={item.name} />)}
             </Tabs>
-            <TextField select size="small" label="Window" value={usageWindow} onChange={(event) => setUsageWindow(event.target.value)} sx={{ minWidth: 140 }}>
+            <TextField select size="small" label="Window" value={usageWindow} onChange={(event) => updateView('window', event.target.value)} sx={{ minWidth: 140 }}>
               {usageWindows.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}
             </TextField>
           </Stack>
@@ -158,6 +174,7 @@ export function WorkloadDetail() {
                     <TableCell sx={{ fontWeight: 800 }} align="right">CPU request</TableCell>
                     <TableCell sx={{ fontWeight: 800 }} align="right">Memory request</TableCell>
                     <TableCell sx={{ fontWeight: 800 }}>Risk</TableCell>
+                    <TableCell sx={{ fontWeight: 800 }}>Evidence</TableCell>
                     <TableCell sx={{ fontWeight: 800 }}>Review</TableCell>
                   </TableRow>
                 </TableHead>
@@ -168,7 +185,8 @@ export function WorkloadDetail() {
                       <TableCell>{item.container}</TableCell>
                       <TableCell align="right">{formatMillicores(item.cpuRequestMilli)} ({delta(item.currentCpuRequestMilli, item.cpuRequestMilli)})</TableCell>
                       <TableCell align="right">{formatBytes(item.memoryRequestBytes)} ({delta(item.currentMemoryRequestBytes, item.memoryRequestBytes)})</TableCell>
-                      <TableCell>{item.risk}</TableCell>
+                      <TableCell><Chip size="small" variant="outlined" label={item.risk} color={riskColor[item.risk]} /></TableCell>
+                      <TableCell><EvidenceStatusChip record={item} /></TableCell>
                       <TableCell><Chip size="small" variant="outlined" label={item.reviewStatus} color={reviewColor[item.reviewStatus]} /></TableCell>
                     </TableRow>
                   ))}

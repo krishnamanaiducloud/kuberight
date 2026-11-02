@@ -11,6 +11,7 @@ export function Workloads({ title, description }: { title: string; description: 
       description={description}
       endpoint="/api/v1/workloads"
       columnKeys={columns}
+      namespaceScope="required"
       onRowClick={(item) => navigate(`/workloads/${encodeURIComponent(String(item.namespace))}/${encodeURIComponent(String(item.kind))}/${encodeURIComponent(String(item.name))}`)}
     />
   )

@@ -56,8 +56,8 @@ func (server *apiServer) renderIntegrationMetrics(ctx context.Context, w io.Writ
 				{record.CurrentCPULimitMilli, record.CPULimitMilli},
 				{record.CurrentMemoryLimitBytes, record.MemoryLimitBytes},
 			}[gaugeIndex]
-			labels := fmt.Sprintf("namespace=\"%s\",kind=\"%s\",workload=\"%s\",container=\"%s\"",
-				prometheusLabel(record.Namespace), prometheusLabel(record.Kind), prometheusLabel(record.Workload), prometheusLabel(record.Container))
+			labels := fmt.Sprintf("cluster=\"%s\",namespace=\"%s\",kind=\"%s\",workload=\"%s\",container=\"%s\"",
+				prometheusLabel(record.Cluster), prometheusLabel(record.Namespace), prometheusLabel(record.Kind), prometheusLabel(record.Workload), prometheusLabel(record.Container))
 			for index, state := range []string{"current", "recommended"} {
 				if values[index] > 0 {
 					_, _ = fmt.Fprintf(w, "%s{%s,state=\"%s\"} %d\n", item.name, labels, state, values[index])
@@ -69,8 +69,8 @@ func (server *apiServer) renderIntegrationMetrics(ctx context.Context, w io.Writ
 	_, _ = fmt.Fprintln(w, "# TYPE kuberight_recommendation_info gauge")
 	for _, key := range keys {
 		record := latest[key]
-		_, _ = fmt.Fprintf(w, "kuberight_recommendation_info{namespace=\"%s\",kind=\"%s\",workload=\"%s\",container=\"%s\",review_status=\"%s\",risk=\"%s\",confidence=\"%s\",source=\"%s\"} 1\n",
-			prometheusLabel(record.Namespace), prometheusLabel(record.Kind), prometheusLabel(record.Workload), prometheusLabel(record.Container),
+		_, _ = fmt.Fprintf(w, "kuberight_recommendation_info{cluster=\"%s\",namespace=\"%s\",kind=\"%s\",workload=\"%s\",container=\"%s\",review_status=\"%s\",risk=\"%s\",confidence=\"%s\",source=\"%s\"} 1\n",
+			prometheusLabel(record.Cluster), prometheusLabel(record.Namespace), prometheusLabel(record.Kind), prometheusLabel(record.Workload), prometheusLabel(record.Container),
 			prometheusLabel(record.ReviewStatus), prometheusLabel(record.Risk), prometheusLabel(record.Confidence), prometheusLabel(record.Source))
 	}
 	if server.config.CostConfigured() {
@@ -80,8 +80,8 @@ func (server *apiServer) renderIntegrationMetrics(ctx context.Context, w io.Writ
 			record := latest[key]
 			replicas := max(record.Replicas, 1)
 			savings := server.monthlyCost(record.CurrentCPURequestMilli, record.CurrentMemoryRequestBytes, replicas) - server.monthlyCost(record.CPURequestMilli, record.MemoryRequestBytes, replicas)
-			_, _ = fmt.Fprintf(w, "kuberight_recommendation_monthly_savings{namespace=\"%s\",kind=\"%s\",workload=\"%s\",container=\"%s\",currency=\"%s\"} %s\n",
-				prometheusLabel(record.Namespace), prometheusLabel(record.Kind), prometheusLabel(record.Workload), prometheusLabel(record.Container),
+			_, _ = fmt.Fprintf(w, "kuberight_recommendation_monthly_savings{cluster=\"%s\",namespace=\"%s\",kind=\"%s\",workload=\"%s\",container=\"%s\",currency=\"%s\"} %s\n",
+				prometheusLabel(record.Cluster), prometheusLabel(record.Namespace), prometheusLabel(record.Kind), prometheusLabel(record.Workload), prometheusLabel(record.Container),
 				prometheusLabel(server.config.CostCurrency), strconv.FormatFloat(roundCents(savings), 'f', -1, 64))
 		}
 	}

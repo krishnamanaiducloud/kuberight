@@ -245,7 +245,7 @@ func (provider *KubernetesProvider) workloads(ctx context.Context, requestedName
 		successfulSources++
 		for index := range deployments {
 			item := &deployments[index]
-			records = append(records, workloadRecord(provider.clusterID, "Deployment", item.Namespace, item.Name, int32Value(item.Spec.Replicas), item.Status.ReadyReplicas, item.Spec.Template.Spec.Containers))
+			records = append(records, workloadRecord(provider.clusterID, "Deployment", item.ObjectMeta, int32Value(item.Spec.Replicas), item.Status.ReadyReplicas, item.Spec.Template.Spec.Containers, item.Spec))
 		}
 	}
 	statefulSets, err := listAll(ctx, func(ctx context.Context, options metav1.ListOptions) ([]appsv1.StatefulSet, string, error) {
@@ -261,7 +261,7 @@ func (provider *KubernetesProvider) workloads(ctx context.Context, requestedName
 		successfulSources++
 		for index := range statefulSets {
 			item := &statefulSets[index]
-			records = append(records, workloadRecord(provider.clusterID, "StatefulSet", item.Namespace, item.Name, int32Value(item.Spec.Replicas), item.Status.ReadyReplicas, item.Spec.Template.Spec.Containers))
+			records = append(records, workloadRecord(provider.clusterID, "StatefulSet", item.ObjectMeta, int32Value(item.Spec.Replicas), item.Status.ReadyReplicas, item.Spec.Template.Spec.Containers, item.Spec))
 		}
 	}
 	daemonSets, err := listAll(ctx, func(ctx context.Context, options metav1.ListOptions) ([]appsv1.DaemonSet, string, error) {
@@ -277,7 +277,7 @@ func (provider *KubernetesProvider) workloads(ctx context.Context, requestedName
 		successfulSources++
 		for index := range daemonSets {
 			item := &daemonSets[index]
-			records = append(records, workloadRecord(provider.clusterID, "DaemonSet", item.Namespace, item.Name, item.Status.DesiredNumberScheduled, item.Status.NumberReady, item.Spec.Template.Spec.Containers))
+			records = append(records, workloadRecord(provider.clusterID, "DaemonSet", item.ObjectMeta, item.Status.DesiredNumberScheduled, item.Status.NumberReady, item.Spec.Template.Spec.Containers, item.Spec))
 		}
 	}
 	replicaSets, err := listAll(ctx, func(ctx context.Context, options metav1.ListOptions) ([]appsv1.ReplicaSet, string, error) {
@@ -296,7 +296,7 @@ func (provider *KubernetesProvider) workloads(ctx context.Context, requestedName
 			if ownedByController(item.OwnerReferences) {
 				continue
 			}
-			records = append(records, workloadRecord(provider.clusterID, "ReplicaSet", item.Namespace, item.Name, int32Value(item.Spec.Replicas), item.Status.ReadyReplicas, item.Spec.Template.Spec.Containers))
+			records = append(records, workloadRecord(provider.clusterID, "ReplicaSet", item.ObjectMeta, int32Value(item.Spec.Replicas), item.Status.ReadyReplicas, item.Spec.Template.Spec.Containers, item.Spec))
 		}
 	}
 	jobs, err := listAll(ctx, func(ctx context.Context, options metav1.ListOptions) ([]batchv1.Job, string, error) {
@@ -312,7 +312,7 @@ func (provider *KubernetesProvider) workloads(ctx context.Context, requestedName
 		successfulSources++
 		for index := range jobs {
 			item := &jobs[index]
-			records = append(records, workloadRecord(provider.clusterID, "Job", item.Namespace, item.Name, int32Value(item.Spec.Parallelism), item.Status.Active, item.Spec.Template.Spec.Containers))
+			records = append(records, workloadRecord(provider.clusterID, "Job", item.ObjectMeta, int32Value(item.Spec.Parallelism), item.Status.Active, item.Spec.Template.Spec.Containers, item.Spec))
 		}
 	}
 	cronJobs, err := listAll(ctx, func(ctx context.Context, options metav1.ListOptions) ([]batchv1.CronJob, string, error) {
@@ -328,7 +328,7 @@ func (provider *KubernetesProvider) workloads(ctx context.Context, requestedName
 		successfulSources++
 		for index := range cronJobs {
 			item := &cronJobs[index]
-			record := workloadRecord(provider.clusterID, "CronJob", item.Namespace, item.Name, int32Value(item.Spec.JobTemplate.Spec.Parallelism), int32(len(item.Status.Active)), item.Spec.JobTemplate.Spec.Template.Spec.Containers)
+			record := workloadRecord(provider.clusterID, "CronJob", item.ObjectMeta, int32Value(item.Spec.JobTemplate.Spec.Parallelism), int32(len(item.Status.Active)), item.Spec.JobTemplate.Spec.Template.Spec.Containers, item.Spec)
 			record["schedule"] = item.Spec.Schedule
 			records = append(records, record)
 		}
@@ -339,7 +339,7 @@ func (provider *KubernetesProvider) workloads(ctx context.Context, requestedName
 	return records, warnings, nil
 }
 
-func workloadRecord(clusterID, kind, namespace, name string, desired, ready int32, containers []corev1.Container) map[string]any {
+func workloadRecord(clusterID, kind string, identity metav1.ObjectMeta, desired, ready int32, containers []corev1.Container, sourceSpec any) map[string]any {
 	cpuRequests, cpuLimits, memoryRequests, memoryLimits := int64(0), int64(0), int64(0), int64(0)
 	containerRecords := make([]map[string]any, 0, len(containers))
 	for _, container := range containers {
@@ -356,13 +356,18 @@ func workloadRecord(clusterID, kind, namespace, name string, desired, ready int3
 			"memoryRequestBytes": requestMemory, "memoryLimitBytes": limitMemory,
 		})
 	}
-	return map[string]any{
-		"id": namespace + "/" + kind + "/" + name, "cluster": clusterID, "namespace": namespace,
-		"kind": kind, "name": name, "desiredReplicas": desired, "readyReplicas": ready,
+	record := map[string]any{
+		"id": identity.Namespace + "/" + kind + "/" + identity.Name, "cluster": clusterID, "namespace": identity.Namespace,
+		"kind": kind, "name": identity.Name, "uid": string(identity.UID), "generation": identity.Generation, "resourceVersion": identity.ResourceVersion,
+		"desiredReplicas": desired, "readyReplicas": ready,
 		"health": health(desired == 0 || ready >= desired), "cpuRequestMilli": cpuRequests,
 		"cpuLimitMilli": cpuLimits, "memoryRequestBytes": memoryRequests,
 		"memoryLimitBytes": memoryLimits, "containers": containerRecords,
 	}
+	if fingerprint, err := fingerprintWorkloadSpec(sourceSpec); err == nil {
+		record["sourceSpecFingerprint"] = fingerprint
+	}
+	return record
 }
 
 func (provider *KubernetesProvider) autoscalers(ctx context.Context, requestedNamespace string) ([]map[string]any, []string, error) {

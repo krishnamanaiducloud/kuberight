@@ -26,6 +26,10 @@ const (
 	// rolloutShiftThreshold is the relative CPU change around a rollout that
 	// makes pre-rollout usage unrepresentative.
 	rolloutShiftThreshold = 0.25
+	// Live advice is deliberately short-lived. Approval rechecks workload
+	// identity and spec as well, so this bounds metric staleness independently
+	// of Kubernetes configuration changes.
+	recommendationValidity = 24 * time.Hour
 )
 
 func (server *apiServer) repositoryFailure(w http.ResponseWriter, r *http.Request, operation string, err error) {
@@ -278,7 +282,10 @@ func (server *apiServer) generateRecommendation(w http.ResponseWriter, r *http.R
 	if !ok {
 		return
 	}
-	queryWindow := usage.Window{Duration: window, Step: step, End: server.now()}
+	// Use a second-aligned endpoint everywhere: Prometheus range parameters,
+	// provenance timestamps, expiry, and the query fingerprint must describe
+	// exactly the same observation window.
+	queryWindow := usage.Window{Duration: window, Step: step, End: server.now().UTC().Truncate(time.Second)}
 	history, err := server.usage.History(r.Context(), subject, queryWindow)
 	if err != nil {
 		server.usageFailure(w, r, err)
@@ -323,12 +330,14 @@ func (server *apiServer) generateRecommendation(w http.ResponseWriter, r *http.R
 		CPURequestsMilli: container.CPURequestMilli, MemoryRequestsBytes: container.MemoryRequestBytes,
 		CPULimitMilli: container.CPULimitMilli, MemoryLimitBytes: container.MemoryLimitBytes,
 		CPUSamplesMilli: history.CPU.Values(), MemorySamplesBytes: history.Memory.Values(),
-		SampleIntervalSeconds:      int64(step / time.Second),
-		ObservedContainerRestarts:  events.Restarts,
-		ObservedOOMKills:           events.OOMKills,
-		ObservedCPUThrottlingRatio: events.ThrottlingRatio,
-		Replicas:                   spec.Replicas,
-		DataQualityIssues:          append(blockingCPU, blockingMemory...),
+		SampleIntervalSeconds:          int64(step / time.Second),
+		ObservedContainerRestarts:      events.Restarts,
+		ObservedOOMKills:               events.OOMKills,
+		ObservedCPUThrottlingRatio:     events.ThrottlingRatio,
+		ObservedCPUThrottlingPeakRatio: events.ThrottlingPeakRatio,
+		SamplesStartTime:               firstSampleTime(history.CPU),
+		Replicas:                       spec.Replicas,
+		DataQualityIssues:              append(blockingCPU, blockingMemory...),
 		Autoscaling: optimizer.AutoscalingContext{
 			HPAUtilizationBased: spec.HPAUtilizationBased,
 			VPAControlsCPU:      container.VPAControlsCPU,
@@ -336,6 +345,16 @@ func (server *apiServer) generateRecommendation(w http.ResponseWriter, r *http.R
 			KEDAEnabled:         spec.KEDAEnabled,
 		},
 		Policy: policy,
+		Provenance: optimizer.Provenance{
+			WorkloadUID:             spec.UID,
+			WorkloadGeneration:      spec.Generation,
+			WorkloadResourceVersion: spec.ResourceVersion,
+			SourceSpecFingerprint:   spec.SourceSpecFingerprint,
+			ObservationStart:        observationStart(history, queryWindow),
+			ObservationEnd:          timePointer(queryWindow.End),
+			QueryFingerprint:        usage.RecommendationQueryFingerprint(subject, queryWindow),
+			ExpiresAt:               timePointer(queryWindow.End.Add(recommendationValidity)),
+		},
 	}
 	recommendation, err := optimizer.Recommend(input)
 	if err != nil {
@@ -494,6 +513,18 @@ func (server *apiServer) reviewRecommendation(w http.ResponseWriter, r *http.Req
 		respondError(w, r, http.StatusForbidden, "separation_of_duties", "a recommendation must be reviewed by an identity other than the one that created it")
 		return
 	}
+	if status == repository.ReviewApproved {
+		staleReason, freshnessErr := server.recommendationStaleness(r.Context(), record)
+		if freshnessErr != nil {
+			server.logger.Warn("recommendation freshness check failed", "request_id", requestIDFromContext(r.Context()), "recommendation_id", id, "error", freshnessErr)
+			respondError(w, r, http.StatusServiceUnavailable, "freshness_check_unavailable", "the live workload could not be verified; retry before approving")
+			return
+		}
+		if staleReason != "" {
+			respondError(w, r, http.StatusConflict, "recommendation_stale", staleReason+"; generate a new recommendation")
+			return
+		}
+	}
 	var reviewed repository.RecommendationRecord
 	err = server.repository.InTransaction(r.Context(), func(ctx context.Context, tx repository.Transaction) error {
 		var reviewErr error
@@ -524,6 +555,48 @@ func (server *apiServer) reviewRecommendation(w http.ResponseWriter, r *http.Req
 	}
 }
 
+// recommendationStaleness validates live, Prometheus-backed advice immediately
+// before approval. Caller-supplied calculations remain manually reviewable,
+// but cannot silently claim that KubeRight verified their workload identity.
+func (server *apiServer) recommendationStaleness(ctx context.Context, record repository.RecommendationRecord) (string, error) {
+	if record.Source != repository.SourcePrometheus {
+		return "", nil
+	}
+	provenance := record.Provenance
+	if provenance.ExpiresAt == nil || provenance.WorkloadUID == "" || provenance.WorkloadGeneration <= 0 || provenance.SourceSpecFingerprint == "" {
+		return "recommendation lacks verifiable live-workload provenance", nil
+	}
+	if record.Expired(server.now().UTC()) {
+		return "recommendation observation window has expired", nil
+	}
+	resolver, ok := server.provider.(WorkloadResolver)
+	if server.provider == nil || !ok {
+		return "", errors.New("Kubernetes workload resolver is not configured")
+	}
+	spec, err := resolver.Workload(ctx, record.Namespace, record.Kind, record.Workload)
+	if errors.Is(err, ErrWorkloadNotFound) || errors.Is(err, ErrWorkloadOutOfScope) {
+		return "workload no longer resolves to the observed object", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if spec.Cluster != record.Cluster || spec.UID != provenance.WorkloadUID {
+		return "workload was recreated or moved to a different cluster", nil
+	}
+	if spec.Generation != provenance.WorkloadGeneration || spec.SourceSpecFingerprint != provenance.SourceSpecFingerprint {
+		return "workload specification changed after analysis", nil
+	}
+	container, found := spec.Container(record.Container)
+	if !found {
+		return "container no longer exists in the workload", nil
+	}
+	if container.CPURequestMilli != record.CurrentCPURequestMilli || container.MemoryRequestBytes != record.CurrentMemoryRequestBytes ||
+		container.CPULimitMilli != record.CurrentCPULimitMilli || container.MemoryLimitBytes != record.CurrentMemoryLimitBytes {
+		return "container resources changed after analysis", nil
+	}
+	return "", nil
+}
+
 // notify forwards a lifecycle event to the configured integration, if any.
 // Delivery is asynchronous and never fails the request.
 func (server *apiServer) notify(eventType string, record repository.RecommendationRecord, actor, comment string) {
@@ -537,4 +610,29 @@ func (server *apiServer) notify(eventType string, record repository.Recommendati
 		CurrentMemoryRequestBytes: record.CurrentMemoryRequestBytes, MemoryRequestBytes: record.MemoryRequestBytes,
 		Risk: record.Risk, Confidence: record.Confidence, Comment: comment,
 	})
+}
+
+// firstSampleTime anchors samples in time so recurring spikes can be
+// reported as an hour of day.
+func firstSampleTime(series usage.Series) *time.Time {
+	if len(series.Points) == 0 {
+		return nil
+	}
+	start := series.Points[0].Timestamp
+	return &start
+}
+
+func timePointer(value time.Time) *time.Time {
+	utc := value.UTC()
+	return &utc
+}
+
+func observationStart(history usage.History, window usage.Window) *time.Time {
+	start := window.End.Add(-window.Duration)
+	for _, series := range []usage.Series{history.CPU, history.Memory} {
+		if len(series.Points) > 0 && series.Points[0].Timestamp.After(start) {
+			start = series.Points[0].Timestamp
+		}
+	}
+	return timePointer(start)
 }

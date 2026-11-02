@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/kuberight/kuberight/internal/repository"
 )
@@ -70,8 +71,8 @@ func pack(nodes []NodeCapacity, daemon podDemand, pods []podDemand) packingResul
 	return result
 }
 
-func recommendationKey(namespace, kind, workload, container string) string {
-	return strings.Join([]string{namespace, kind, workload, container}, "\x00")
+func recommendationKey(cluster, namespace, kind, workload, container string) string {
+	return strings.Join([]string{cluster, namespace, kind, workload, container}, "\x00")
 }
 
 // latestRecommendations returns the newest non-rejected recommendation for
@@ -85,7 +86,7 @@ func (server *apiServer) latestRecommendations(ctx context.Context) (map[string]
 		}
 		for _, record := range result.Items {
 			if record.ReviewStatus != repository.ReviewRejected {
-				latest[recommendationKey(record.Namespace, record.Kind, record.Workload, record.Container)] = record
+				latest[recommendationKey(record.Cluster, record.Namespace, record.Kind, record.Workload, record.Container)] = record
 			}
 		}
 		if page*savingsPageSize >= result.Total {
@@ -93,6 +94,32 @@ func (server *apiServer) latestRecommendations(ctx context.Context) (map[string]
 		}
 	}
 	return latest, nil
+}
+
+// capacityAdviceMatches refuses to simulate speculative, stale, or
+// cross-cluster advice. Capacity results can influence node removals, so they
+// require the same live-object binding used by approval.
+func capacityAdviceMatches(advice repository.RecommendationRecord, workload, container map[string]any, now time.Time) bool {
+	provenance := advice.Provenance
+	if advice.Source != repository.SourcePrometheus || advice.ReviewStatus != repository.ReviewApproved ||
+		provenance.ExpiresAt == nil || advice.Expired(now) || provenance.WorkloadUID == "" ||
+		provenance.WorkloadGeneration <= 0 || provenance.SourceSpecFingerprint == "" ||
+		provenance.ObservationStart == nil || provenance.ObservationEnd == nil || provenance.QueryFingerprint == "" ||
+		provenance.PolicyFingerprint == "" || provenance.OptimizerVersion == "" {
+		return false
+	}
+	cluster, _ := workload["cluster"].(string)
+	uid, _ := workload["uid"].(string)
+	specFingerprint, _ := workload["sourceSpecFingerprint"].(string)
+	if advice.Cluster != cluster || provenance.WorkloadUID != uid ||
+		provenance.WorkloadGeneration != numeric(workload["generation"]) ||
+		provenance.SourceSpecFingerprint != specFingerprint {
+		return false
+	}
+	return advice.CurrentCPURequestMilli == numeric(container["cpuRequestMilli"]) &&
+		advice.CurrentMemoryRequestBytes == numeric(container["memoryRequestBytes"]) &&
+		advice.CurrentCPULimitMilli == numeric(container["cpuLimitMilli"]) &&
+		advice.CurrentMemoryLimitBytes == numeric(container["memoryLimitBytes"])
 }
 
 func realization(autoscaling NodeAutoscaling) string {
@@ -152,6 +179,7 @@ func (server *apiServer) capacity(w http.ResponseWriter, r *http.Request) {
 	var currentDaemon, recommendedDaemon podDemand
 	applied := 0
 	for _, record := range records {
+		clusterID, _ := record["cluster"].(string)
 		namespace, _ := record["namespace"].(string)
 		kind, _ := record["kind"].(string)
 		name, _ := record["name"].(string)
@@ -162,7 +190,7 @@ func (server *apiServer) capacity(w http.ResponseWriter, r *http.Request) {
 			cpu, memory := numeric(container["cpuRequestMilli"]), numeric(container["memoryRequestBytes"])
 			current.cpuMilli += cpu
 			current.memoryBytes += memory
-			if advice, found := latest[recommendationKey(namespace, kind, name, containerName)]; found {
+			if advice, found := latest[recommendationKey(clusterID, namespace, kind, name, containerName)]; found && capacityAdviceMatches(advice, record, container, server.now().UTC()) {
 				cpu, memory = advice.CPURequestMilli, advice.MemoryRequestBytes
 				applied++
 			}
@@ -209,7 +237,7 @@ func (server *apiServer) capacity(w http.ResponseWriter, r *http.Request) {
 		"assumptions": []string{
 			"Pods are packed by requests with first-fit-decreasing onto existing node shapes, largest first.",
 			"Affinity, taints, topology spread, PodDisruptionBudgets, and pods not owned by a supported controller are ignored.",
-			fmt.Sprintf("Recommended requests use the newest non-rejected recommendation for %d containers; others keep their current requests.", applied),
+			fmt.Sprintf("Recommended requests use the newest approved, unexpired, live-workload-matched recommendation for %d containers; others keep their current requests.", applied),
 		},
 	}
 	if cluster.Nodes != nil {

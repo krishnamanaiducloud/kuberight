@@ -1,0 +1,18 @@
+title = "KubeRight secret scanning configuration"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+
+  [[rules.allowlists]]
+  description = "Known synthetic unit-test credential committed before fixtures were generated at runtime"
+  condition = "AND"
+  regexTarget = "secret"
+  paths = [
+    '''^internal/(forecast/client_test|notify/webhook_test)\.go$''',
+  ]
+  regexes = [
+    '''^0123456789abcdef$''',
+  ]

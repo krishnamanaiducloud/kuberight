@@ -1,4 +1,4 @@
-import type { RecommendationRecord } from './api'
+import type { RecommendationRecord, SpikeProfile } from './api'
 
 const binaryUnits = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
 
@@ -148,4 +148,18 @@ export function downloadText(filename: string, content: string, type = 'applicat
 
 export function formatRatio(value: number | undefined): string {
   return value === undefined ? '—' : `${Math.round(value * 100)}%`
+}
+
+/** A one-line description of a spike profile, or undefined when none. */
+export function spikeLabel(spikes: SpikeProfile): string | undefined {
+  switch (spikes.classification) {
+    case 'recurring':
+      return `Spikes recur daily${spikes.recurringHourUtc !== undefined ? ` ~${String(spikes.recurringHourUtc).padStart(2, '0')}:00 UTC` : ''}, ${spikes.peakToMedian}× median`
+    case 'frequent':
+      return `Frequent spikes: ${spikes.spikesPerDay}/day, ~${spikes.medianDurationMinutes} min, ${spikes.peakToMedian}× median`
+    case 'rare':
+      return `Rare spikes: ${spikes.count}, up to ${spikes.peakToMedian}× median`
+    default:
+      return undefined
+  }
 }

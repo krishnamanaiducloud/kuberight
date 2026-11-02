@@ -12,6 +12,8 @@ import (
 	"github.com/kuberight/kuberight/internal/config"
 	"github.com/kuberight/kuberight/internal/metrics"
 	"github.com/kuberight/kuberight/internal/notify"
+	"github.com/kuberight/kuberight/internal/optimizer"
+	"github.com/kuberight/kuberight/internal/repository"
 	"github.com/kuberight/kuberight/internal/usage"
 )
 
@@ -204,8 +206,8 @@ func (inventory capacityInventory) Capacity(context.Context) (ClusterCapacity, e
 
 func TestCapacityShowsNodeImpactAndKarpenterRealization(t *testing.T) {
 	records := []map[string]any{
-		{"namespace": "shop", "kind": "Deployment", "name": "api", "desiredReplicas": int32(6),
-			"containers": []map[string]any{{"name": "app", "cpuRequestMilli": int64(1500), "memoryRequestBytes": int64(1 << 30)}}},
+		{"cluster": "local", "namespace": "shop", "kind": "Deployment", "name": "api", "uid": "uid-api", "generation": int64(7), "sourceSpecFingerprint": strings.Repeat("a", 64), "desiredReplicas": int32(6),
+			"containers": []map[string]any{{"name": "app", "cpuRequestMilli": int64(1500), "memoryRequestBytes": int64(1 << 30), "cpuLimitMilli": int64(0), "memoryLimitBytes": int64(0)}}},
 	}
 	cluster := ClusterCapacity{
 		Nodes: []NodeCapacity{
@@ -216,9 +218,20 @@ func TestCapacityShowsNodeImpactAndKarpenterRealization(t *testing.T) {
 		Autoscaling: NodeAutoscaling{Karpenter: true, NodePools: []NodePool{{Name: "default", ConsolidationPolicy: "WhenEmptyOrUnderutilized"}}},
 	}
 	api := newTestAPI(t, nil, Dependencies{Provider: capacityInventory{inventoryRecords: inventoryRecords{records: records}, cluster: cluster}})
-	recommendation := `{"namespace":"shop","kind":"Deployment","workload":"api","container":"app","cpuRequestMilli":1500,"memoryRequestBytes":1073741824,"cpuSamplesMilli":` + repeatedSamples(600, 500) + `,"memorySamplesBytes":` + repeatedSamples(600, 300000000) + `,"sampleIntervalSeconds":300,"policy":{"cpuSafetyMargin":0.3,"memorySafetyMargin":0.25,"limitSafetyMargin":0.5,"minimumCpuMilli":50,"minimumMemoryBytes":67108864,"maximumCpuMilli":1000000000,"maximumMemoryBytes":2305843009213693951,"maximumReduction":0.5,"minimumSamples":30,"highConfidenceSamples":500}}`
-	if response, _ := api.do(t, http.MethodPost, "/api/v1/recommendations", "alice", recommendation); response.Code != http.StatusCreated {
-		t.Fatalf("seed status=%d", response.Code)
+	observationStart, observationEnd, expiry := fixedNow.Add(-24*time.Hour), fixedNow.Add(-time.Minute), fixedNow.Add(time.Hour)
+	recommendation := optimizer.Recommendation{
+		Cluster: "local", Namespace: "shop", Kind: "Deployment", Workload: "api", Container: "app", Confidence: "high", Risk: "low",
+		CurrentCPURequestMilli: 1500, CurrentMemoryRequestBytes: 1 << 30, CPURequestMilli: 750, MemoryRequestBytes: 1 << 30,
+		Provenance: optimizer.Provenance{WorkloadUID: "uid-api", WorkloadGeneration: 7, SourceSpecFingerprint: strings.Repeat("a", 64),
+			ObservationStart: &observationStart, ObservationEnd: &observationEnd, ExpiresAt: &expiry,
+			QueryFingerprint: strings.Repeat("b", 64), PolicyFingerprint: strings.Repeat("c", 64), OptimizerVersion: optimizer.AlgorithmVersion},
+	}
+	created, _, err := api.store.CreateRecommendation(context.Background(), recommendation, repository.CreateOptions{Source: repository.SourcePrometheus, CreatedBy: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := api.store.ReviewRecommendation(context.Background(), created.ID, repository.ReviewDecision{Status: repository.ReviewApproved, Reviewer: "bob", At: fixedNow}); err != nil {
+		t.Fatal(err)
 	}
 	response, body := api.do(t, http.MethodGet, "/api/v1/capacity", "alice", "")
 	if response.Code != http.StatusOK {
@@ -235,6 +248,46 @@ func TestCapacityShowsNodeImpactAndKarpenterRealization(t *testing.T) {
 	}
 	if _, unavailable := newTestAPI(t, nil, Dependencies{}).do(t, http.MethodGet, "/api/v1/capacity", "alice", ""); unavailable["status"].(map[string]any)["available"] != false {
 		t.Fatalf("unconfigured capacity=%v", unavailable)
+	}
+}
+
+func TestCapacityAdviceMustBeApprovedFreshAndIdentityMatched(t *testing.T) {
+	start, end, expiry := fixedNow.Add(-24*time.Hour), fixedNow.Add(-time.Minute), fixedNow.Add(time.Hour)
+	base := repository.RecommendationRecord{
+		Recommendation: optimizer.Recommendation{
+			Cluster: "local", CurrentCPURequestMilli: 500, CurrentMemoryRequestBytes: 256 << 20,
+			Provenance: optimizer.Provenance{
+				WorkloadUID: "uid-api", WorkloadGeneration: 4, SourceSpecFingerprint: strings.Repeat("a", 64),
+				ObservationStart: &start, ObservationEnd: &end, ExpiresAt: &expiry,
+				QueryFingerprint: strings.Repeat("b", 64), PolicyFingerprint: strings.Repeat("c", 64), OptimizerVersion: optimizer.AlgorithmVersion,
+			},
+		},
+		Source: repository.SourcePrometheus, ReviewStatus: repository.ReviewApproved,
+	}
+	workload := map[string]any{"cluster": "local", "uid": "uid-api", "generation": int64(4), "sourceSpecFingerprint": strings.Repeat("a", 64)}
+	container := map[string]any{"cpuRequestMilli": int64(500), "memoryRequestBytes": int64(256 << 20), "cpuLimitMilli": int64(0), "memoryLimitBytes": int64(0)}
+	if !capacityAdviceMatches(base, workload, container, fixedNow) {
+		t.Fatal("valid capacity advice was rejected")
+	}
+	tests := map[string]func(*repository.RecommendationRecord){
+		"pending":       func(record *repository.RecommendationRecord) { record.ReviewStatus = repository.ReviewPending },
+		"manual source": func(record *repository.RecommendationRecord) { record.Source = repository.SourceRequest },
+		"wrong cluster": func(record *repository.RecommendationRecord) { record.Cluster = "other" },
+		"wrong uid":     func(record *repository.RecommendationRecord) { record.Provenance.WorkloadUID = "recreated" },
+		"old spec":      func(record *repository.RecommendationRecord) { record.Provenance.WorkloadGeneration = 3 },
+		"expired": func(record *repository.RecommendationRecord) {
+			expired := fixedNow.Add(-time.Second)
+			record.Provenance.ExpiresAt = &expired
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			record := base
+			mutate(&record)
+			if capacityAdviceMatches(record, workload, container, fixedNow) {
+				t.Fatal("unsafe capacity advice was accepted")
+			}
+		})
 	}
 }
 
@@ -280,10 +333,10 @@ func TestMetricsExportRecommendationsWhenEnabled(t *testing.T) {
 	createRecommendation(t, enabled, "alice")
 	body := scrape(enabled)
 	for _, want := range []string{
-		`kuberight_recommendation_cpu_request_millicores{namespace="shop",kind="",workload="api",container="app",state="current"} 500`,
-		`kuberight_recommendation_memory_request_bytes{namespace="shop",kind="",workload="api",container="app",state="current"} 536870912`,
-		`kuberight_recommendation_info{namespace="shop",kind="",workload="api",container="app",review_status="pending",risk="high",confidence="low",source="request"} 1`,
-		`kuberight_recommendation_monthly_savings{namespace="shop"`,
+		`kuberight_recommendation_cpu_request_millicores{cluster="",namespace="shop",kind="",workload="api",container="app",state="current"} 500`,
+		`kuberight_recommendation_memory_request_bytes{cluster="",namespace="shop",kind="",workload="api",container="app",state="current"} 536870912`,
+		`kuberight_recommendation_info{cluster="",namespace="shop",kind="",workload="api",container="app",review_status="pending",risk="high",confidence="low",source="request"} 1`,
+		`kuberight_recommendation_monthly_savings{cluster="",namespace="shop"`,
 		`kuberight_webhook_events_total{outcome="delivered"} 4`,
 	} {
 		if !strings.Contains(body, want) {
@@ -292,5 +345,105 @@ func TestMetricsExportRecommendationsWhenEnabled(t *testing.T) {
 	}
 	if strings.Contains(body, "kuberight_recommendation_cpu_limit_millicores{") {
 		t.Fatal("unset limits must be absent, not zero")
+	}
+}
+
+type hotspotInventory struct {
+	inventoryRecords
+	owners []PodOwner
+}
+
+func (inventory hotspotInventory) PodOwners(context.Context, []string) ([]PodOwner, error) {
+	return append([]PodOwner(nil), inventory.owners...), nil
+}
+
+func TestHotspotsRankThrottledPinnedAndSpikyContainers(t *testing.T) {
+	ratio := func(value float64) *float64 { return &value }
+	records := []map[string]any{
+		{"namespace": "shop", "kind": "Deployment", "name": "api", "desiredReplicas": int32(2),
+			"containers": []map[string]any{{"name": "app", "cpuRequestMilli": int64(500), "cpuLimitMilli": int64(1000)}}},
+		{"namespace": "shop", "kind": "Deployment", "name": "worker", "desiredReplicas": int32(1),
+			"containers": []map[string]any{{"name": "job", "cpuRequestMilli": int64(200), "cpuLimitMilli": int64(0)}}},
+		{"namespace": "shop", "kind": "Deployment", "name": "quiet", "desiredReplicas": int32(1),
+			"containers": []map[string]any{{"name": "app", "cpuRequestMilli": int64(200)}}},
+	}
+	source := healthyUsage(10)
+	source.hotspots = []usage.ContainerHotspot{
+		{Namespace: "shop", Pod: "api-7d9f8c6b5-aaaaa", Container: "app", ThrottlingRatio: ratio(0.03), ThrottlingPeakRatio: ratio(0.6), CPUPeakMilli: ratio(990), SpikeRatio: ratio(2)},
+		{Namespace: "shop", Pod: "api-7d9f8c6b5-bbbbb", Container: "app", ThrottlingRatio: ratio(0.08), ThrottlingPeakRatio: ratio(0.2)},
+		{Namespace: "shop", Pod: "worker-6c8d7b9f4-ccccc", Container: "job", SpikeRatio: ratio(6.5), CPUMedianMilli: ratio(100), CPUPeakMilli: ratio(650)},
+		{Namespace: "shop", Pod: "quiet-5b7c9d8e6-ddddd", Container: "app", SpikeRatio: ratio(1.2), CPUPeakMilli: ratio(150)},
+		{Namespace: "shop", Pod: "orphan-pod", Container: "x", SpikeRatio: ratio(9)},
+	}
+	owners := []PodOwner{
+		{Namespace: "shop", Pod: "api-7d9f8c6b5-aaaaa", Kind: "Deployment", Workload: "api"},
+		{Namespace: "shop", Pod: "api-7d9f8c6b5-bbbbb", Kind: "Deployment", Workload: "api"},
+		{Namespace: "shop", Pod: "worker-6c8d7b9f4-ccccc", Kind: "Deployment", Workload: "worker"},
+		{Namespace: "shop", Pod: "quiet-5b7c9d8e6-ddddd", Kind: "Deployment", Workload: "quiet"},
+	}
+	api := newTestAPI(t, nil, Dependencies{Provider: hotspotInventory{inventoryRecords: inventoryRecords{records: records}, owners: owners}, Usage: source})
+	response, body := api.do(t, http.MethodGet, "/api/v1/hotspots?namespace=shop&window=72h", "alice", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	items := body["items"].([]any)
+	if len(items) != 2 {
+		t.Fatalf("items=%v, want api and worker only", items)
+	}
+	api1 := items[0].(map[string]any)
+	// The worst pod wins: 8% average from one pod, 60% peak from the other.
+	if api1["workload"] != "api" || api1["severity"] != "critical" || api1["pods"].(float64) != 2 || api1["throttlingRatio"].(float64) != 0.08 || api1["throttlingPeakRatio"].(float64) != 0.6 || api1["pinnedAtLimit"] != true {
+		t.Fatalf("api=%v", api1)
+	}
+	if !strings.Contains(api1["advice"].(string), "Raise or remove the CPU limit") {
+		t.Fatalf("advice=%v", api1["advice"])
+	}
+	worker := items[1].(map[string]any)
+	if worker["workload"] != "worker" || worker["severity"] != "info" || !strings.Contains(strings.Join(toStrings(worker["issues"]), "|"), "peaks exceed the request by 225%") {
+		t.Fatalf("worker=%v", worker)
+	}
+	summary := body["summary"].(map[string]any)
+	if summary["throttled"].(float64) != 1 || summary["spiky"].(float64) != 1 || summary["pinned"].(float64) != 1 || summary["podsUnmatched"].(float64) != 1 {
+		t.Fatalf("summary=%v", summary)
+	}
+	if _, unavailable := newTestAPI(t, nil, Dependencies{}).do(t, http.MethodGet, "/api/v1/hotspots", "alice", ""); unavailable["status"].(map[string]any)["available"] != false {
+		t.Fatalf("unconfigured=%v", unavailable)
+	}
+}
+
+func TestGeneratePassesPeakThrottlingAndSpikeTiming(t *testing.T) {
+	source := healthyUsage(600)
+	source.events = usage.Events{Available: true, ThrottlingAvailable: true, ThrottlingRatio: 0.01, ThrottlingPeakRatio: 0.4}
+	api := newTestAPI(t, nil, Dependencies{Provider: fakeInventory{spec: checkoutSpec()}, Usage: source})
+	response, body := api.do(t, http.MethodPost, "/api/v1/recommendations:generate", "alice", `{"namespace":"shop","kind":"Deployment","workload":"checkout","container":"api","dryRun":true}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	recommendation := body["recommendation"].(map[string]any)
+	if recommendation["cpuThrottlingPeakRatio"].(float64) != 0.4 || recommendation["cpuRequestMilli"].(float64) != 1000 {
+		t.Fatalf("peak throttling was not applied: %v", recommendation)
+	}
+	if _, ok := recommendation["spikes"].(map[string]any)["classification"]; !ok {
+		t.Fatalf("spike profile missing: %v", recommendation["spikes"])
+	}
+}
+
+func TestSignalsReportRecurringSpikes(t *testing.T) {
+	start := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	cpu := linearSeries("cpu", start, 5*time.Minute, 4*288, func(index int) float64 {
+		if index%288 >= 9*12 && index%288 < 9*12+3 {
+			return 900
+		}
+		return 200 + float64(index%4)
+	})
+	insights := buildInsights(usage.Signals{CPU: *cpu, Memory: *cpu}, nil, correlations{}, 300)
+	found := false
+	for _, insight := range insights {
+		if insight.Title == "CPU spikes recur on a schedule" && strings.Contains(insight.Detail, "09:00 UTC") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("insights=%#v", insights)
 	}
 }

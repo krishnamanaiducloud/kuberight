@@ -2,6 +2,9 @@ package provider
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 
 	"github.com/kuberight/kuberight/internal/httpapi"
@@ -30,10 +33,12 @@ func (provider *KubernetesProvider) Workload(ctx context.Context, namespace, kin
 	}
 	options := metav1.ListOptions{FieldSelector: fields.OneTermEqualSelector("metadata.name", name).String()}
 	var (
-		replicas   int32
-		containers []corev1.Container
-		found      bool
-		err        error
+		replicas           int32
+		containers         []corev1.Container
+		identity           metav1.ObjectMeta
+		workloadObjectSpec any
+		found              bool
+		err                error
 	)
 	switch kind {
 	case "Deployment":
@@ -43,6 +48,7 @@ func (provider *KubernetesProvider) Workload(ctx context.Context, namespace, kin
 			for index := range list.Items {
 				if item := &list.Items[index]; item.Name == name {
 					replicas, containers, found = defaultReplicas(item.Spec.Replicas), item.Spec.Template.Spec.Containers, true
+					identity, workloadObjectSpec = item.ObjectMeta, item.Spec
 				}
 			}
 		}
@@ -53,6 +59,7 @@ func (provider *KubernetesProvider) Workload(ctx context.Context, namespace, kin
 			for index := range list.Items {
 				if item := &list.Items[index]; item.Name == name {
 					replicas, containers, found = defaultReplicas(item.Spec.Replicas), item.Spec.Template.Spec.Containers, true
+					identity, workloadObjectSpec = item.ObjectMeta, item.Spec
 				}
 			}
 		}
@@ -63,6 +70,7 @@ func (provider *KubernetesProvider) Workload(ctx context.Context, namespace, kin
 			for index := range list.Items {
 				if item := &list.Items[index]; item.Name == name {
 					replicas, containers, found = item.Status.DesiredNumberScheduled, item.Spec.Template.Spec.Containers, true
+					identity, workloadObjectSpec = item.ObjectMeta, item.Spec
 				}
 			}
 		}
@@ -73,6 +81,7 @@ func (provider *KubernetesProvider) Workload(ctx context.Context, namespace, kin
 			for index := range list.Items {
 				if item := &list.Items[index]; item.Name == name {
 					replicas, containers, found = defaultReplicas(item.Spec.Replicas), item.Spec.Template.Spec.Containers, true
+					identity, workloadObjectSpec = item.ObjectMeta, item.Spec
 				}
 			}
 		}
@@ -83,6 +92,7 @@ func (provider *KubernetesProvider) Workload(ctx context.Context, namespace, kin
 			for index := range list.Items {
 				if item := &list.Items[index]; item.Name == name {
 					replicas, containers, found = defaultReplicas(item.Spec.Parallelism), item.Spec.Template.Spec.Containers, true
+					identity, workloadObjectSpec = item.ObjectMeta, item.Spec
 				}
 			}
 		}
@@ -93,6 +103,7 @@ func (provider *KubernetesProvider) Workload(ctx context.Context, namespace, kin
 			for index := range list.Items {
 				if item := &list.Items[index]; item.Name == name {
 					replicas, containers, found = defaultReplicas(item.Spec.JobTemplate.Spec.Parallelism), item.Spec.JobTemplate.Spec.Template.Spec.Containers, true
+					identity, workloadObjectSpec = item.ObjectMeta, item.Spec
 				}
 			}
 		}
@@ -105,9 +116,14 @@ func (provider *KubernetesProvider) Workload(ctx context.Context, namespace, kin
 	if !found {
 		return httpapi.WorkloadSpec{}, httpapi.ErrWorkloadNotFound
 	}
+	specFingerprint, err := fingerprintWorkloadSpec(workloadObjectSpec)
+	if err != nil {
+		return httpapi.WorkloadSpec{}, fmt.Errorf("fingerprint %s spec: %w", kind, errInventoryUnavailable)
+	}
 
 	spec := httpapi.WorkloadSpec{
-		Cluster: provider.clusterID, Namespace: namespace, Kind: kind, Name: name, Replicas: replicas,
+		Cluster: provider.clusterID, Namespace: namespace, Kind: kind, Name: name,
+		UID: string(identity.UID), Generation: identity.Generation, ResourceVersion: identity.ResourceVersion, SourceSpecFingerprint: specFingerprint, Replicas: replicas,
 		Containers: make([]httpapi.ContainerSpec, 0, len(containers)), Warnings: []string{},
 	}
 	for _, container := range containers {
@@ -123,6 +139,15 @@ func (provider *KubernetesProvider) Workload(ctx context.Context, namespace, kin
 	provider.applyKEDA(ctx, &spec)
 	provider.applyVPA(ctx, &spec)
 	return spec, nil
+}
+
+func fingerprintWorkloadSpec(spec any) (string, error) {
+	payload, err := json.Marshal(spec)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(payload)
+	return hex.EncodeToString(digest[:]), nil
 }
 
 func defaultReplicas(value *int32) int32 {

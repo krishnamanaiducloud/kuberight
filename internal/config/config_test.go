@@ -56,21 +56,22 @@ func TestValidateIntegrationSettings(t *testing.T) {
 		mutate func(*Config)
 		valid  bool
 	}{
-		"defaults":                 {func(*Config) {}, true},
-		"https ml":                 {func(c *Config) { c.MLURL = "https://ml.example:8443" }, true},
-		"http ml without opt-in":   {func(c *Config) { c.MLURL = "http://kuberight-ml:8081" }, false},
-		"http ml with opt-in":      {func(c *Config) { c.MLURL = "http://kuberight-ml:8081"; c.MLAllowHTTP = true }, true},
-		"ml credentials in url":    {func(c *Config) { c.MLURL = "https://user:pw@ml" }, false},
-		"short ml key":             {func(c *Config) { c.MLAPIKey = "short" }, false},
-		"postgres url":             {func(c *Config) { c.DatabaseURL = "postgres://kuberight@db:5432/kuberight?sslmode=verify-full" }, true},
-		"non postgres url":         {func(c *Config) { c.DatabaseURL = "mysql://db/kuberight" }, false},
-		"too many connections":     {func(c *Config) { c.DatabaseMaxConns = 101 }, false},
-		"one price only":           {func(c *Config) { c.CostCPUCoreHour = 0.03 }, false},
-		"both prices":              {func(c *Config) { c.CostCPUCoreHour, c.CostMemoryGiBHour = 0.03, 0.004 }, true},
-		"lowercase currency":       {func(c *Config) { c.CostCurrency = "usd" }, false},
-		"step longer than window":  {func(c *Config) { c.RecommendationWindow, c.RecommendationStep = time.Hour, 2*time.Hour }, false},
-		"too many points":          {func(c *Config) { c.RecommendationWindow, c.RecommendationStep = 30*24*time.Hour, 15*time.Second }, false},
-		"custom forecast sampling": {func(c *Config) { c.ForecastWindow, c.ForecastStep = 7*24*time.Hour, 30*time.Minute }, true},
+		"defaults":                    {func(*Config) {}, true},
+		"https ml":                    {func(c *Config) { c.MLURL = "https://ml.example:8443" }, true},
+		"http ml without opt-in":      {func(c *Config) { c.MLURL = "http://kuberight-ml:8081" }, false},
+		"http ml with opt-in":         {func(c *Config) { c.MLURL = "http://kuberight-ml:8081"; c.MLAllowHTTP = true }, true},
+		"ml credentials in url":       {func(c *Config) { c.MLURL = "https://user:pw@ml" }, false},
+		"short ml key":                {func(c *Config) { c.MLAPIKey = "short" }, false},
+		"postgres url":                {func(c *Config) { c.DatabaseURL = "postgres://kuberight@db:5432/kuberight?sslmode=verify-full" }, true},
+		"non postgres url":            {func(c *Config) { c.DatabaseURL = "mysql://db/kuberight" }, false},
+		"too many connections":        {func(c *Config) { c.DatabaseMaxConns = 101 }, false},
+		"too much metric parallelism": {func(c *Config) { c.PrometheusMaxInFlight = 1025 }, false},
+		"one price only":              {func(c *Config) { c.CostCPUCoreHour = 0.03 }, false},
+		"both prices":                 {func(c *Config) { c.CostCPUCoreHour, c.CostMemoryGiBHour = 0.03, 0.004 }, true},
+		"lowercase currency":          {func(c *Config) { c.CostCurrency = "usd" }, false},
+		"step longer than window":     {func(c *Config) { c.RecommendationWindow, c.RecommendationStep = time.Hour, 2*time.Hour }, false},
+		"too many points":             {func(c *Config) { c.RecommendationWindow, c.RecommendationStep = 30*24*time.Hour, 15*time.Second }, false},
+		"custom forecast sampling":    {func(c *Config) { c.ForecastWindow, c.ForecastStep = 7*24*time.Hour, 30*time.Minute }, true},
 	}
 	for name, test := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -93,7 +94,7 @@ func TestLoadAppliesIntegrationDefaults(t *testing.T) {
 	if cfg.RequireDistinctApprover {
 		t.Fatal("static mode has one identity, so distinct approvers must default off")
 	}
-	if !cfg.DatabaseMigrate || cfg.DatabaseMaxConns != 10 || cfg.RecommendationWindow != DefaultRecommendationWindow || cfg.ForecastStep != DefaultForecastStep || cfg.CostCurrency != "USD" || cfg.CostConfigured() {
+	if cfg.DatabaseMigrate || cfg.DatabaseMaxConns != 10 || cfg.PrometheusMaxInFlight != 8 || cfg.RecommendationWindow != DefaultRecommendationWindow || cfg.ForecastStep != DefaultForecastStep || cfg.CostCurrency != "USD" || cfg.CostConfigured() {
 		t.Fatalf("unexpected defaults: %#v", cfg)
 	}
 	t.Setenv("KUBERIGHT_AUTH_MODE", "kubernetes")

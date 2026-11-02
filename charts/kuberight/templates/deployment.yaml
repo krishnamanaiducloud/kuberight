@@ -111,7 +111,9 @@ spec:
                   name: {{ .Values.database.existingSecret | quote }}
                   key: {{ .Values.database.key | quote }}
             - name: KUBERIGHT_DATABASE_MIGRATE
-              value: {{ .Values.database.migrate | quote }}
+              # Schema changes are owned by the bounded migration Job. Every
+              # serving replica verifies the exact embedded schema read-only.
+              value: "false"
             - name: KUBERIGHT_DATABASE_MAX_CONNS
               value: {{ .Values.database.maxConns | quote }}
             {{- end }}
@@ -120,6 +122,8 @@ spec:
               value: {{ . | quote }}
             - name: KUBERIGHT_PROMETHEUS_TIMEOUT
               value: {{ $.Values.prometheus.timeout | quote }}
+            - name: KUBERIGHT_PROMETHEUS_MAX_IN_FLIGHT
+              value: {{ $.Values.prometheus.maxInFlight | quote }}
             {{- if $.Values.prometheus.allowHTTP }}
             - name: KUBERIGHT_ALLOW_INSECURE_UPSTREAMS
               value: "true"

@@ -42,6 +42,7 @@ type Config struct {
 	ClusterID              string
 	PrometheusURL          string
 	PrometheusTimeout      time.Duration
+	PrometheusMaxInFlight  int
 	AllowInsecureUpstreams bool
 
 	// DatabaseURL is a secret PostgreSQL connection string. Empty selects
@@ -118,6 +119,9 @@ func (c Config) Normalized() Config {
 	if c.PrometheusTimeout == 0 {
 		c.PrometheusTimeout = 10 * time.Second
 	}
+	if c.PrometheusMaxInFlight == 0 {
+		c.PrometheusMaxInFlight = 8
+	}
 	if c.DatabaseMaxConns == 0 {
 		c.DatabaseMaxConns = 10
 	}
@@ -165,7 +169,7 @@ func Load() (Config, error) {
 	if cfg.MLAllowHTTP, err = parseBool("KUBERIGHT_ML_ALLOW_HTTP", false); err != nil {
 		return Config{}, err
 	}
-	if cfg.DatabaseMigrate, err = parseBool("KUBERIGHT_DATABASE_MIGRATE", true); err != nil {
+	if cfg.DatabaseMigrate, err = parseBool("KUBERIGHT_DATABASE_MIGRATE", false); err != nil {
 		return Config{}, err
 	}
 	if cfg.ExportRecommendationMetrics, err = parseBool("KUBERIGHT_EXPORT_RECOMMENDATION_METRICS", false); err != nil {
@@ -177,6 +181,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.DatabaseMaxConns, err = parseInt("KUBERIGHT_DATABASE_MAX_CONNS", 10, 1, 100); err != nil {
+		return Config{}, err
+	}
+	if cfg.PrometheusMaxInFlight, err = parseInt("KUBERIGHT_PROMETHEUS_MAX_IN_FLIGHT", 8, 1, 1024); err != nil {
 		return Config{}, err
 	}
 	if cfg.CostCPUCoreHour, err = parseFloat("KUBERIGHT_COST_CPU_CORE_HOUR", 0, 0, 1000); err != nil {
@@ -271,6 +278,9 @@ func (c Config) Validate() error {
 	}
 	if err := validateUpstream("KUBERIGHT_PROMETHEUS_URL", c.PrometheusURL, c.AllowInsecureUpstreams, "KUBERIGHT_ALLOW_INSECURE_UPSTREAMS=true"); err != nil {
 		return err
+	}
+	if c.PrometheusMaxInFlight < 0 || c.PrometheusMaxInFlight > 1024 {
+		return errors.New("KUBERIGHT_PROMETHEUS_MAX_IN_FLIGHT must be between 1 and 1024 when set")
 	}
 	if err := validateUpstream("KUBERIGHT_ML_URL", c.MLURL, c.AllowInsecureUpstreams || c.MLAllowHTTP, "KUBERIGHT_ML_ALLOW_HTTP=true"); err != nil {
 		return err

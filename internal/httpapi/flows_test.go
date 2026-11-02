@@ -65,6 +65,7 @@ func (inventory fakeInventory) Workload(_ context.Context, namespace, kind, name
 }
 
 type fakeUsage struct {
+	hotspots   []usage.ContainerHotspot
 	pods       map[string]usage.PodUsage
 	signals    *usage.Signals
 	rollouts   []usage.Event
@@ -111,6 +112,9 @@ func (source *fakeUsage) Signals(_ context.Context, subject usage.Subject, _ usa
 func (source *fakeUsage) Rollouts(context.Context, usage.Subject, time.Time, time.Time) ([]usage.Event, error) {
 	return source.rollouts, nil
 }
+func (source *fakeUsage) Hotspots(context.Context, []string, time.Duration, time.Time) ([]usage.ContainerHotspot, error) {
+	return source.hotspots, source.err
+}
 func (source *fakeUsage) Ready(context.Context) error { return source.ready }
 
 type fakeForecaster struct {
@@ -135,7 +139,8 @@ func (forecaster *fakeForecaster) Ready(context.Context) error { return nil }
 
 func checkoutSpec() WorkloadSpec {
 	return WorkloadSpec{
-		Cluster: "prod", Namespace: "shop", Kind: "Deployment", Name: "checkout", Replicas: 3,
+		Cluster: "prod", Namespace: "shop", Kind: "Deployment", Name: "checkout", UID: "uid-checkout", Generation: 12,
+		ResourceVersion: "38491", SourceSpecFingerprint: strings.Repeat("a", 64), Replicas: 3,
 		Containers: []ContainerSpec{{Name: "api", CPURequestMilli: 1000, CPULimitMilli: 2000, MemoryRequestBytes: 1 << 30, MemoryLimitBytes: 2 << 30}},
 		Warnings:   []string{},
 	}
@@ -348,6 +353,44 @@ func TestReviewWorkflowEnforcesSeparationOfDuties(t *testing.T) {
 	if audit.Total != 2 || audit.Items[0].Action != "approve" || audit.Items[0].Actor != "bob" {
 		t.Fatalf("audit = %#v", audit.Items)
 	}
+}
+
+func TestApprovalRejectsChangedOrExpiredLiveRecommendation(t *testing.T) {
+	t.Run("workload changed", func(t *testing.T) {
+		inventory := &fakeInventory{spec: checkoutSpec()}
+		api := newTestAPI(t, nil, Dependencies{Provider: inventory, Usage: healthyUsage(600)})
+		response, body := api.do(t, http.MethodPost, "/api/v1/recommendations:generate", "alice", generateBody)
+		if response.Code != http.StatusCreated {
+			t.Fatalf("generate status=%d body=%s", response.Code, response.Body.String())
+		}
+		inventory.spec.Generation++
+		response, body = api.do(t, http.MethodPost, "/api/v1/recommendations/"+body["id"].(string)+"/review", "bob", `{"decision":"approve"}`)
+		if response.Code != http.StatusConflict || body["error"].(map[string]any)["code"] != "recommendation_stale" {
+			t.Fatalf("approval status=%d body=%v", response.Code, body)
+		}
+	})
+
+	t.Run("observation expired", func(t *testing.T) {
+		inventory := &fakeInventory{spec: checkoutSpec()}
+		api := newTestAPI(t, nil, Dependencies{Provider: inventory})
+		start, end, expiry := fixedNow.Add(-48*time.Hour), fixedNow.Add(-25*time.Hour), fixedNow.Add(-time.Hour)
+		recommendation := optimizer.Recommendation{
+			Cluster: "prod", Namespace: "shop", Kind: "Deployment", Workload: "checkout", Container: "api", Confidence: "high", Risk: "low",
+			CurrentCPURequestMilli: 1000, CurrentMemoryRequestBytes: 1 << 30, CurrentCPULimitMilli: 2000, CurrentMemoryLimitBytes: 2 << 30,
+			CPURequestMilli: 900, MemoryRequestBytes: 1 << 30, CPULimitMilli: 2000, MemoryLimitBytes: 2 << 30,
+			Provenance: optimizer.Provenance{WorkloadUID: "uid-checkout", WorkloadGeneration: 12, SourceSpecFingerprint: strings.Repeat("a", 64),
+				ObservationStart: &start, ObservationEnd: &end, ExpiresAt: &expiry, QueryFingerprint: strings.Repeat("b", 64),
+				PolicyFingerprint: strings.Repeat("c", 64), OptimizerVersion: optimizer.AlgorithmVersion},
+		}
+		created, _, err := api.store.CreateRecommendation(context.Background(), recommendation, repository.CreateOptions{Source: repository.SourcePrometheus, CreatedBy: "alice"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, body := api.do(t, http.MethodPost, "/api/v1/recommendations/"+created.ID+"/review", "bob", `{"decision":"approve"}`)
+		if response.Code != http.StatusConflict || body["error"].(map[string]any)["code"] != "recommendation_stale" {
+			t.Fatalf("approval status=%d body=%v", response.Code, body)
+		}
+	})
 }
 
 func TestReviewIsDeniedWithoutApprovalPermission(t *testing.T) {

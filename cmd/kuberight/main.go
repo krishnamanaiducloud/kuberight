@@ -29,6 +29,10 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && (len(os.Args) != 2 || os.Args[1] != "migrate") {
+		fmt.Fprintln(os.Stderr, "usage: kuberight [healthcheck|migrate]")
+		os.Exit(2)
+	}
 
 	logger := httpapi.JSONLogger(slog.LevelInfo)
 	slog.SetDefault(logger)
@@ -37,6 +41,13 @@ func main() {
 	if err != nil {
 		logger.Error("configuration is invalid", "error", err)
 		os.Exit(1)
+	}
+	if len(os.Args) == 2 && os.Args[1] == "migrate" {
+		if err := migrateDatabase(cfg, logger); err != nil {
+			logger.Error("database migration failed", "error", err)
+			os.Exit(1)
+		}
+		return
 	}
 	dependencies := httpapi.Dependencies{Logger: logger}
 	store, err := openStore(cfg, logger)
@@ -50,7 +61,7 @@ func main() {
 	}
 	if cfg.PrometheusURL != "" {
 		client, clientErr := metrics.NewPrometheusClient(metrics.PrometheusOptions{
-			Endpoint: cfg.PrometheusURL, AllowHTTP: cfg.AllowInsecureUpstreams, Timeout: cfg.PrometheusTimeout,
+			Endpoint: cfg.PrometheusURL, AllowHTTP: cfg.AllowInsecureUpstreams, Timeout: cfg.PrometheusTimeout, MaxInFlight: cfg.PrometheusMaxInFlight,
 		})
 		if clientErr != nil {
 			logger.Error("Prometheus client initialization failed", "error", clientErr)
@@ -123,6 +134,27 @@ func main() {
 		<-shutdownComplete
 	}
 	logger.Info("KubeRight API stopped")
+}
+
+// migrateDatabase is the bounded, one-shot entry point used by deployment
+// orchestrators. Keeping DDL out of the serving process lets the runtime use
+// a database role that cannot alter the schema.
+func migrateDatabase(cfg config.Config, logger *slog.Logger) error {
+	if cfg.DatabaseURL == "" {
+		return errors.New("KUBERIGHT_DATABASE_URL is required for the migrate command")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	store, err := postgres.Open(ctx, cfg.DatabaseURL, postgres.Options{MaxConns: 1})
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	if err := postgres.Migrate(ctx, store.Pool()); err != nil {
+		return fmt.Errorf("apply database migrations: %w", err)
+	}
+	logger.Info("database schema is current", "version", postgres.LatestSchemaVersion)
+	return nil
 }
 
 func healthcheck() error {

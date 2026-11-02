@@ -27,8 +27,11 @@ const (
 	defaultMaxSamples       = 100_000
 	defaultMaxRange         = 30 * 24 * time.Hour
 	defaultMaxPoints        = 11_000
+	defaultMaxInFlight      = 8
 	defaultMinimumCoverage  = 0.8
 	maximumExpressionBytes  = 8 << 10
+	maximumMaxInFlight      = 1_024
+	maximumGridTolerance    = time.Millisecond
 )
 
 var (
@@ -137,7 +140,10 @@ type PrometheusOptions struct {
 	MaxSamples       int
 	MaxRange         time.Duration
 	MaxPoints        int
-	HTTPClient       *http.Client
+	// MaxInFlight bounds concurrent queries across this client. Callers waiting
+	// for a slot remain cancellable through their request context.
+	MaxInFlight int
+	HTTPClient  *http.Client
 }
 
 // PrometheusClient is safe for concurrent use after construction.
@@ -149,6 +155,7 @@ type PrometheusClient struct {
 	maxSamples       int
 	maxRange         time.Duration
 	maxPoints        int
+	inFlight         chan struct{}
 }
 
 // NewPrometheusClient validates and freezes the configured endpoint. Redirects
@@ -182,6 +189,13 @@ func NewPrometheusClient(options PrometheusOptions) (*PrometheusClient, error) {
 	if err != nil {
 		return nil, err
 	}
+	maxInFlight, err := positiveIntOrDefault("maximum in-flight queries", options.MaxInFlight, defaultMaxInFlight)
+	if err != nil {
+		return nil, err
+	}
+	if maxInFlight > maximumMaxInFlight {
+		return nil, fmt.Errorf("%w: maximum in-flight queries exceeds %d", ErrInvalidOptions, maximumMaxInFlight)
+	}
 
 	httpClient := &http.Client{}
 	if options.HTTPClient != nil {
@@ -203,6 +217,7 @@ func NewPrometheusClient(options PrometheusOptions) (*PrometheusClient, error) {
 		maxSamples:       maxSamples,
 		maxRange:         maxRange,
 		maxPoints:        maxPoints,
+		inFlight:         make(chan struct{}, maxInFlight),
 	}, nil
 }
 
@@ -215,6 +230,15 @@ func (client *PrometheusClient) QueryRange(ctx context.Context, query RangeQuery
 	expectedSamples, minimumCoverage, staleAfter, err := client.validateRangeQuery(query)
 	if err != nil {
 		return RangeResult{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return RangeResult{}, newUpstreamRequestError(err)
+	}
+	select {
+	case client.inFlight <- struct{}{}:
+		defer func() { <-client.inFlight }()
+	case <-ctx.Done():
+		return RangeResult{}, newUpstreamRequestError(ctx.Err())
 	}
 
 	requestURL := client.queryRangeURL
@@ -233,7 +257,7 @@ func (client *PrometheusClient) QueryRange(ctx context.Context, query RangeQuery
 
 	response, err := client.httpClient.Do(request)
 	if err != nil {
-		return RangeResult{}, upstreamRequestError{cause: err}
+		return RangeResult{}, newUpstreamRequestError(err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
@@ -241,7 +265,7 @@ func (client *PrometheusClient) QueryRange(ctx context.Context, query RangeQuery
 	}
 	payload, err := io.ReadAll(io.LimitReader(response.Body, client.maxResponseBytes+1))
 	if err != nil {
-		return RangeResult{}, upstreamRequestError{cause: err}
+		return RangeResult{}, newUpstreamRequestError(err)
 	}
 	if int64(len(payload)) > client.maxResponseBytes {
 		return RangeResult{}, ErrResponseTooLarge
@@ -258,28 +282,38 @@ func (client *PrometheusClient) QueryRange(ctx context.Context, query RangeQuery
 	default:
 		return RangeResult{}, fmt.Errorf("%w: unrecognized API status", ErrProtocol)
 	}
-	if envelope.Data.ResultType != "matrix" {
+	if envelope.ResultType != "matrix" {
 		return RangeResult{}, fmt.Errorf("%w: expected matrix result", ErrProtocol)
 	}
-	if len(envelope.Data.Result) > client.maxSeries {
+	if len(envelope.Result) > client.maxSeries {
 		return RangeResult{}, fmt.Errorf("%w: series limit exceeded", ErrProtocol)
 	}
 
 	totalSamples := 0
 	result := RangeResult{
-		Series:   make([]Series, 0, len(envelope.Data.Result)),
+		Series:   make([]Series, 0, len(envelope.Result)),
 		Warnings: append([]string(nil), envelope.Warnings...),
-		NoData:   len(envelope.Data.Result) == 0,
+		NoData:   len(envelope.Result) == 0,
 	}
-	for _, rawSeries := range envelope.Data.Result {
+	labelSets := make(map[string]struct{}, len(envelope.Result))
+	for _, rawSeries := range envelope.Result {
 		if len(rawSeries.Values) > client.maxSamples-totalSamples {
 			return RangeResult{}, fmt.Errorf("%w: sample limit exceeded", ErrProtocol)
 		}
 		totalSamples += len(rawSeries.Values)
+		labelSet, err := canonicalLabelSet(rawSeries.Metric)
+		if err != nil {
+			return RangeResult{}, err
+		}
+		if _, duplicate := labelSets[labelSet]; duplicate {
+			return RangeResult{}, fmt.Errorf("%w: duplicate series label set", ErrProtocol)
+		}
+		labelSets[labelSet] = struct{}{}
 		result.Series = append(result.Series, normalizeSeries(
 			rawSeries,
-			query.Start,
-			query.End,
+			query.Start.UTC(),
+			query.End.UTC(),
+			query.Step,
 			expectedSamples,
 			minimumCoverage,
 			staleAfter,
@@ -300,16 +334,25 @@ func (client *PrometheusClient) validateRangeQuery(query RangeQuery) (int, float
 		return 0, 0, 0, fmt.Errorf("%w: end precedes start", ErrInvalidQuery)
 	}
 	queryRange := query.End.Sub(query.Start)
+	// time.Time.Sub saturates at MaxInt64. Reject ranges that cannot be
+	// represented as a duration instead of allowing their point arithmetic to
+	// wrap or undercount.
+	if !query.Start.Add(queryRange).Equal(query.End) {
+		return 0, 0, 0, fmt.Errorf("%w: range cannot be represented safely", ErrInvalidQuery)
+	}
 	if queryRange > client.maxRange {
 		return 0, 0, 0, fmt.Errorf("%w: range exceeds configured limit", ErrInvalidQuery)
 	}
 	if query.Step <= 0 {
 		return 0, 0, 0, fmt.Errorf("%w: step must be positive", ErrInvalidQuery)
 	}
-	expectedSamples64 := int64(queryRange/query.Step) + 1
-	if expectedSamples64 > int64(client.maxPoints) {
+	intervals := int64(queryRange / query.Step)
+	// Comparing before adding one avoids overflow when the duration quotient is
+	// MaxInt64. maxPoints is positive and itself representable as an int.
+	if intervals >= int64(client.maxPoints) {
 		return 0, 0, 0, fmt.Errorf("%w: point count exceeds configured limit", ErrInvalidQuery)
 	}
+	expectedSamples := int(intervals) + 1
 
 	minimumCoverage := query.MinimumCoverage
 	if minimumCoverage == 0 {
@@ -329,16 +372,14 @@ func (client *PrometheusClient) validateRangeQuery(query RangeQuery) (int, float
 			staleAfter = 2 * query.Step
 		}
 	}
-	return int(expectedSamples64), minimumCoverage, staleAfter, nil
+	return expectedSamples, minimumCoverage, staleAfter, nil
 }
 
 type prometheusEnvelope struct {
-	Status string `json:"status"`
-	Data   struct {
-		ResultType string             `json:"resultType"`
-		Result     []prometheusSeries `json:"result"`
-	} `json:"data"`
-	Warnings []string `json:"warnings"`
+	Status     string
+	ResultType string
+	Result     []prometheusSeries
+	Warnings   []string
 }
 
 type prometheusSeries struct {
@@ -347,18 +388,168 @@ type prometheusSeries struct {
 }
 
 func decodePrometheusEnvelope(payload []byte) (prometheusEnvelope, error) {
-	var envelope prometheusEnvelope
+	if err := rejectDuplicateJSONKeys(payload); err != nil {
+		return prometheusEnvelope{}, err
+	}
+	type rawEnvelope struct {
+		Status   json.RawMessage `json:"status"`
+		Data     json.RawMessage `json:"data"`
+		Warnings json.RawMessage `json:"warnings"`
+		Infos    json.RawMessage `json:"infos"`
+	}
+	var raw rawEnvelope
 	decoder := json.NewDecoder(bytes.NewReader(payload))
-	if err := decoder.Decode(&envelope); err != nil {
+	if err := decoder.Decode(&raw); err != nil {
 		return prometheusEnvelope{}, fmt.Errorf("%w: malformed JSON", ErrProtocol)
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return prometheusEnvelope{}, fmt.Errorf("%w: multiple JSON values", ErrProtocol)
 	}
+
+	var envelope prometheusEnvelope
+	if !decodeRequiredJSON(raw.Status, &envelope.Status) {
+		return prometheusEnvelope{}, fmt.Errorf("%w: status must be a string", ErrProtocol)
+	}
+	if len(raw.Warnings) > 0 {
+		if !decodeRequiredJSON(raw.Warnings, &envelope.Warnings) {
+			return prometheusEnvelope{}, fmt.Errorf("%w: warnings must be an array of strings", ErrProtocol)
+		}
+	}
+	if len(raw.Infos) > 0 {
+		var infos []string
+		if !decodeRequiredJSON(raw.Infos, &infos) {
+			return prometheusEnvelope{}, fmt.Errorf("%w: infos must be an array of strings", ErrProtocol)
+		}
+	}
+	if envelope.Status != "success" {
+		return envelope, nil
+	}
+
+	type rawData struct {
+		ResultType json.RawMessage `json:"resultType"`
+		Result     json.RawMessage `json:"result"`
+	}
+	var data rawData
+	if !decodeRequiredJSON(raw.Data, &data) {
+		return prometheusEnvelope{}, fmt.Errorf("%w: data must be an object", ErrProtocol)
+	}
+	if !decodeRequiredJSON(data.ResultType, &envelope.ResultType) {
+		return prometheusEnvelope{}, fmt.Errorf("%w: resultType must be a string", ErrProtocol)
+	}
+	var result []json.RawMessage
+	if !decodeRequiredJSON(data.Result, &result) {
+		return prometheusEnvelope{}, fmt.Errorf("%w: result must be an array", ErrProtocol)
+	}
+	envelope.Result = make([]prometheusSeries, 0, len(result))
+	for _, encodedSeries := range result {
+		series, err := decodePrometheusSeries(encodedSeries)
+		if err != nil {
+			return prometheusEnvelope{}, err
+		}
+		envelope.Result = append(envelope.Result, series)
+	}
 	return envelope, nil
 }
 
-func normalizeSeries(raw prometheusSeries, start, end time.Time, expectedSamples int, minimumCoverage float64, staleAfter time.Duration) Series {
+func decodePrometheusSeries(encoded json.RawMessage) (prometheusSeries, error) {
+	type rawSeries struct {
+		Metric     json.RawMessage `json:"metric"`
+		Values     json.RawMessage `json:"values"`
+		Histograms json.RawMessage `json:"histograms"`
+	}
+	var raw rawSeries
+	if !decodeRequiredJSON(encoded, &raw) {
+		return prometheusSeries{}, fmt.Errorf("%w: series must be an object", ErrProtocol)
+	}
+	var series prometheusSeries
+	if !decodeRequiredJSON(raw.Metric, &series.Metric) || series.Metric == nil {
+		return prometheusSeries{}, fmt.Errorf("%w: series metric must be an object with string labels", ErrProtocol)
+	}
+	if !decodeRequiredJSON(raw.Values, &series.Values) {
+		return prometheusSeries{}, fmt.Errorf("%w: series values must be an array", ErrProtocol)
+	}
+	if len(raw.Histograms) > 0 {
+		var histograms []json.RawMessage
+		if !decodeRequiredJSON(raw.Histograms, &histograms) {
+			return prometheusSeries{}, fmt.Errorf("%w: series histograms must be an array", ErrProtocol)
+		}
+		if len(histograms) > 0 {
+			return prometheusSeries{}, fmt.Errorf("%w: native histogram samples are not supported", ErrProtocol)
+		}
+	}
+	return series, nil
+}
+
+func decodeRequiredJSON(encoded json.RawMessage, destination any) bool {
+	if len(encoded) == 0 || bytes.Equal(bytes.TrimSpace(encoded), []byte("null")) {
+		return false
+	}
+	return json.Unmarshal(encoded, destination) == nil
+}
+
+func rejectDuplicateJSONKeys(payload []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	if err := validateJSONValue(decoder); err != nil {
+		return fmt.Errorf("%w: malformed JSON or duplicate object key", ErrProtocol)
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("%w: multiple JSON values", ErrProtocol)
+	}
+	return nil
+}
+
+func validateJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delimiter, isDelimiter := token.(json.Delim)
+	if !isDelimiter {
+		return nil
+	}
+	switch delimiter {
+	case '{':
+		keys := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return errors.New("object key is not a string")
+			}
+			if _, duplicate := keys[key]; duplicate {
+				return errors.New("duplicate object key")
+			}
+			keys[key] = struct{}{}
+			if err := validateJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil || closing != json.Delim('}') {
+			return errors.New("unterminated object")
+		}
+		return nil
+	case '[':
+		for decoder.More() {
+			if err := validateJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil || closing != json.Delim(']') {
+			return errors.New("unterminated array")
+		}
+		return nil
+	default:
+		return errors.New("unexpected closing delimiter")
+	}
+}
+
+func normalizeSeries(raw prometheusSeries, start, end time.Time, step time.Duration, expectedSamples int, minimumCoverage float64, staleAfter time.Duration) Series {
 	series := Series{
 		Labels:  cloneLabels(raw.Metric),
 		Samples: make([]Sample, 0, min(len(raw.Values), expectedSamples)),
@@ -368,7 +559,7 @@ func normalizeSeries(raw prometheusSeries, start, end time.Time, expectedSamples
 			ReceivedSamples: len(raw.Values),
 		},
 	}
-	seen := make(map[time.Time]float64, min(len(raw.Values), expectedSamples))
+	seen := make(map[int]float64, min(len(raw.Values), expectedSamples))
 	for _, encoded := range raw.Values {
 		timestamp, valueText, ok := decodePrometheusValue(encoded)
 		if !ok {
@@ -380,28 +571,33 @@ func normalizeSeries(raw prometheusSeries, start, end time.Time, expectedSamples
 			series.Quality.AnomalousSamples++
 			continue
 		}
+		gridIndex, canonicalTime, ok := requestedGridPoint(pointTime, start, step, expectedSamples)
+		if !ok {
+			series.Quality.AnomalousSamples++
+			continue
+		}
 		value, err := strconv.ParseFloat(valueText, 64)
 		if err != nil {
 			series.Quality.AnomalousSamples++
 			continue
 		}
 		if math.IsNaN(value) {
-			series.Quality.StaleSamples++
+			series.Quality.AnomalousSamples++
 			continue
 		}
 		if math.IsInf(value, 0) {
 			series.Quality.AnomalousSamples++
 			continue
 		}
-		if previous, exists := seen[pointTime]; exists {
+		if previous, exists := seen[gridIndex]; exists {
 			series.Quality.DuplicateSamples++
 			if previous != value {
 				series.Quality.AnomalousSamples++
 			}
 			continue
 		}
-		seen[pointTime] = value
-		series.Samples = append(series.Samples, Sample{Timestamp: pointTime, Value: value})
+		seen[gridIndex] = value
+		series.Samples = append(series.Samples, Sample{Timestamp: canonicalTime, Value: value})
 	}
 	sort.Slice(series.Samples, func(left, right int) bool {
 		return series.Samples[left].Timestamp.Before(series.Samples[right].Timestamp)
@@ -429,6 +625,28 @@ func normalizeSeries(raw prometheusSeries, start, end time.Time, expectedSamples
 		series.Quality.Issues = append(series.Quality.Issues, IssueAnomalous)
 	}
 	return series
+}
+
+func requestedGridPoint(point, start time.Time, step time.Duration, expectedSamples int) (int, time.Time, bool) {
+	offset := point.Sub(start)
+	index := int64(offset / step)
+	remainder := offset % step
+	distance := remainder
+	if remainder > step/2 {
+		index++
+		distance = step - remainder
+	}
+	tolerance := step / 1_000
+	if tolerance > maximumGridTolerance {
+		tolerance = maximumGridTolerance
+	}
+	if distance > tolerance || index < 0 || index >= int64(expectedSamples) {
+		return 0, time.Time{}, false
+	}
+	// index is bounded by expectedSamples, which was derived without overflow
+	// from the representable query range.
+	canonical := start.Add(time.Duration(index) * step)
+	return int(index), canonical, true
 }
 
 func decodePrometheusValue(encoded json.RawMessage) (float64, string, bool) {
@@ -503,6 +721,14 @@ func cloneLabels(labels map[string]string) map[string]string {
 	return cloned
 }
 
+func canonicalLabelSet(labels map[string]string) (string, error) {
+	encoded, err := json.Marshal(labels)
+	if err != nil {
+		return "", fmt.Errorf("%w: invalid series labels", ErrProtocol)
+	}
+	return string(encoded), nil
+}
+
 func positiveIntOrDefault(name string, value, fallback int) (int, error) {
 	if value == 0 {
 		return fallback, nil
@@ -537,7 +763,18 @@ func positiveDurationOrDefault(name string, value, fallback time.Duration) (time
 }
 
 type upstreamRequestError struct {
-	cause error
+	cancellation error
+}
+
+func newUpstreamRequestError(cause error) upstreamRequestError {
+	var cancellation error
+	switch {
+	case errors.Is(cause, context.Canceled):
+		cancellation = context.Canceled
+	case errors.Is(cause, context.DeadlineExceeded):
+		cancellation = context.DeadlineExceeded
+	}
+	return upstreamRequestError{cancellation: cancellation}
 }
 
 func (err upstreamRequestError) Error() string {
@@ -545,5 +782,8 @@ func (err upstreamRequestError) Error() string {
 }
 
 func (err upstreamRequestError) Unwrap() []error {
-	return []error{ErrUpstream, err.cause}
+	if err.cancellation != nil {
+		return []error{ErrUpstream, err.cancellation}
+	}
+	return []error{ErrUpstream}
 }

@@ -61,6 +61,7 @@ type UsageSource interface {
 	PodUsage(ctx context.Context, namespace string, window time.Duration, end time.Time) (map[string]usage.PodUsage, error)
 	Signals(ctx context.Context, subject usage.Subject, window usage.Window, latency usage.LatencyTemplate) (usage.Signals, error)
 	Rollouts(ctx context.Context, subject usage.Subject, start, end time.Time) ([]usage.Event, error)
+	Hotspots(ctx context.Context, namespaces []string, window time.Duration, end time.Time) ([]usage.ContainerHotspot, error)
 	Ready(context.Context) error
 }
 
@@ -164,6 +165,7 @@ func NewHandler(cfg config.Config, dependencies Dependencies) (http.Handler, err
 	mux.HandleFunc("GET /api/v1/efficiency", server.efficiency)
 	mux.HandleFunc("GET /api/v1/efficiency/workloads", server.workloadEfficiency)
 	mux.HandleFunc("GET /api/v1/capacity", server.capacity)
+	mux.HandleFunc("GET /api/v1/hotspots", server.hotspots)
 	mux.HandleFunc("GET /api/v1/metrics/signals", server.signals)
 	mux.HandleFunc("GET /api/v1/policies", server.policies)
 	mux.HandleFunc("GET /api/v1/audit", server.audit)

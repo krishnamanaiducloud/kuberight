@@ -51,6 +51,11 @@ rules:
     resources: ["nodepools"]
     verbs: ["list"]
   {{- end }}
+  # Pod ownerReferences attribute container metrics to exact controllers;
+  # pod names are never used as an ownership heuristic.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
     verbs: ["list"]

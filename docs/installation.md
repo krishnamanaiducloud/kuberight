@@ -8,6 +8,8 @@ KubeRight is a development preview. The commands below describe the supplied pac
 - Helm 3 for configurable installations.
 - Pull access to the selected image registries.
 - A CNI that enforces `NetworkPolicy` if network isolation is required.
+- Prometheus with cAdvisor-compatible container metrics for history, generated recommendations, efficiency, signals, hotspots, and forecasts; kube-state-metrics adds restart/OOM/rollout evidence.
+- External PostgreSQL for durable shared API state or any multi-replica API deployment. The chart does not install or operate PostgreSQL.
 - Prometheus Operator CRDs only when `metrics.serviceMonitor.enabled` or `metrics.prometheusRule.enabled` is true.
 - OpenShift Route API only when `route.enabled` is true.
 
@@ -49,6 +51,38 @@ curl http://127.0.0.1:8080/healthz
 curl http://127.0.0.1:8080/readyz
 ```
 
+## External PostgreSQL and API high availability
+
+Create a database and two least-privilege credentials through your PostgreSQL/provider workflow:
+
+- a serving role allowed to connect and perform the required application DML; and
+- a short-lived migration role allowed to create/alter the KubeRight schema and migration objects.
+
+Use `sslmode=verify-full` with a trusted CA where the provider supports it. Store each URL in a Secret without putting it in shell history or a values file. For example, write each URL to a protected temporary file, create the Secret from that file, and securely remove the file through your operating system's approved procedure:
+
+```sh
+kubectl -n kuberight create secret generic kuberight-database \
+  --from-file=url=/secure/path/serving-database-url
+
+kubectl -n kuberight create secret generic kuberight-database-migrator \
+  --from-file=url=/secure/path/migration-database-url
+```
+
+Then enable the database and migration hook:
+
+```yaml
+database:
+  enabled: true
+  existingSecret: kuberight-database
+  migrate: true
+  migrationJob:
+    existingSecret: kuberight-database-migrator
+```
+
+The `pre-install,pre-upgrade` hook runs the target image's `migrate` command with a bounded deadline. Migrations are embedded, checksummed, transactional per version, and serialized with a PostgreSQL advisory lock. Serving pods receive the serving Secret, never run DDL, and fail startup unless the schema version/names/checksums exactly match the binary.
+
+When `database.migrate=false`, the chart creates no hook. Run the same target image's `migrate` command through a controlled one-shot Job before the Helm operation, then verify the recorded schema and continue. Do not use a different image version to migrate the database.
+
 ## Grant API access
 
 Kubernetes mode authenticates a bearer token and authorizes virtual resources in API group `kuberight.io`. Installation RBAC gives the service account permission to perform reviews; it intentionally does not grant a human or automation account access to the KubeRight API.
@@ -73,14 +107,18 @@ rules:
       - namespaces
       - workloads
       - metrics-history
+      - hotspots
       - forecasts
+      - efficiency
+      - savings
+      - capacity
       - autoscalers
       - approvals
       - gitops-changes
     verbs: ["get", "list"]
 ```
 
-Bind this role only to the intended user, group, or service account. Add `create` on `recommendations` separately for identities that may calculate and store recommendations. A namespaced Role can authorize namespace-qualified requests, while routes without a namespace require cluster-scoped authorization.
+Bind this role only to the intended user, group, or service account. Add `create` on `recommendations` for identities that may calculate/store recommendations, `create` on `forecasts` for forecast callers, and `update` on `recommendations/approval` for reviewers. A namespaced Role can authorize namespace-qualified requests, while routes without a namespace require cluster-scoped authorization.
 
 Obtain a suitable token from the cluster's supported identity flow. A short-lived service-account token can be created for testing:
 
@@ -111,7 +149,7 @@ Do not place the token in a values file or command-line `--set` argument.
 
 ## Optional ML service
 
-The chart can deploy the forecasting service, but the Go API and dashboard do not call it yet. Enabling it is useful only for direct, in-cluster API evaluation.
+The chart can deploy the forecasting service. When both ML and Prometheus are configured, the Go API queries history and calls it through `POST /api/v1/forecasts`.
 
 ```sh
 helm upgrade --install kuberight charts/kuberight \
@@ -121,16 +159,16 @@ helm upgrade --install kuberight charts/kuberight \
   --set-string ml.image.digest='sha256:<verified-ml-digest>'
 ```
 
-Set `KUBERIGHT_ML_API_KEY` through `ml.extraEnv` with a `secretKeyRef` before allowing additional network clients. Chart storage for model artifacts is ephemeral.
+Set `ml.apiKey.existingSecret` before allowing additional network clients. The chart injects the same key into the Go and ML pods. Chart storage for model artifacts is ephemeral, so the chart rejects multiple ML replicas and ML autoscaling.
 
 ## Profiles and platforms
 
 - `profiles/development.yaml` reduces protections for a disposable cluster.
-- `profiles/production.yaml` is a production-shaped hardening baseline, not a production certification or an HA topology. It intentionally keeps one API replica, one ML replica when enabled, and both HPAs disabled because their state is process-local. Its monitoring CRs remain disabled; enable them only after installing Prometheus Operator CRDs and configuring the monitoring NetworkPolicy selectors. Environment-specific ingress, secrets, egress, and capacity decisions are still required.
+- `profiles/production.yaml` is an HA-shaped API baseline, not production certification. It requires the pre-created `kuberight-database` Secret, enables external PostgreSQL and its migration hook, starts two API replicas, configures an HPA range of 2-6, permits one unavailable replica, and requires zone spreading. Supply a separate migration Secret where possible and verify PostgreSQL capacity, at least two eligible topology domains, backups/restores, ingress/TLS, egress, monitoring, and downstream limits. ML remains a singleton.
 - `profiles/openshift.yaml` renders an edge-terminated Route and non-root settings. Confirm the image and chart against the target SCC and cluster version before use.
 - `profiles/cluster-wide.yaml` grants cluster-wide read-only inventory permissions.
 
-All supplied profiles are singleton configurations. Do not increase `replicaCount`, `ml.replicaCount`, or enable either HPA until recommendation, idempotency, audit, and model state use external shared durable storage. Multiple replicas would route requests to independent stores rather than provide coherent application-level high availability.
+The chart rejects `replicaCount > 1` or API autoscaling unless `database.enabled=true`. PostgreSQL shares recommendation, idempotency, review, and audit state, but it does not add an inventory cache, a durable webhook outbox, or shared ML model storage. The chart always rejects `ml.replicaCount > 1` and ML autoscaling in the supplied topology.
 
 Example OpenShift render and install:
 
@@ -158,7 +196,7 @@ The production manifest does not include Prometheus Operator resources by defaul
 
 ## Upgrade, rollback, and removal
 
-Render and review changes first, pin new digests, then upgrade:
+Render and review changes first, pin new digests, back up external PostgreSQL, and test the backup restore before upgrading. Do not use `--no-hooks` when `database.migrate=true`:
 
 ```sh
 helm template kuberight charts/kuberight -n kuberight -f current-values.yaml > rendered.yaml
@@ -166,6 +204,10 @@ kubectl apply --server-side --dry-run=server -f rendered.yaml
 helm upgrade kuberight charts/kuberight -n kuberight -f current-values.yaml --wait
 ```
 
-Use `helm history kuberight -n kuberight` and `helm rollback kuberight <revision> -n kuberight --wait` for chart rollback. A rollback cannot recover in-memory recommendation or audit history. `helm uninstall kuberight -n kuberight` removes chart-managed resources; inspect PVCs and externally managed secrets separately.
+The pre-upgrade hook migrates PostgreSQL before new serving pods start. Verify the hook Job, serving-pod schema checks, readiness, authentication, inventory, and a low-impact analysis before accepting the deployment.
+
+Prefer rolling forward if application validation fails after a schema migration. Helm rollback changes Kubernetes resources but does **not** run migration down scripts, and the older binary rejects a newer schema. If a binary rollback is unavoidable, quiesce writes and follow a tested database procedure that restores the pre-upgrade backup to a separate/controlled database endpoint before reverting the application. Do not run embedded down SQL manually against production data without a separately verified recovery plan.
+
+Without PostgreSQL, a rollback or restart cannot recover in-memory recommendation, idempotency, review, or audit history. `helm uninstall kuberight -n kuberight` removes chart-managed resources but not the external database or externally managed Secrets; inventory can be read again from Kubernetes.
 
 See the [operations runbook](operations-runbook.md) for failure diagnosis and [Helm values](helm-values.md) for configuration details.

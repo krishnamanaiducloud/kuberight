@@ -270,3 +270,10 @@ func (series Series) MeanBetween(from, to time.Time) (float64, int) {
 	}
 	return sum / float64(count), count
 }
+
+// ThrottlingPeakExpression is the P95 of the per-interval throttling ratio
+// over the lookback, so throttling concentrated in busy hours is visible even
+// when the window average is low.
+func ThrottlingPeakExpression(subject Subject, lookback, step time.Duration) string {
+	return "quantile_over_time(0.95, (" + ThrottlingRatioExpression(subject, step) + ")[" + promDuration(lookback) + ":" + promDuration(step) + "])"
+}

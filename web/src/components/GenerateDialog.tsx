@@ -10,7 +10,8 @@ import { formatBytes, formatMillicores } from '../format'
 import { useDebounced } from '../hooks'
 import { PolicyTuner } from './PolicyTuner'
 import { ResourceTable } from './ResourceTable'
-import { BacktestTable, TrendChips } from './Backtest'
+import { BacktestTable, CpuBehaviorChips, TrendChips } from './Backtest'
+import { RecommendationEvidence } from './RecommendationEvidence'
 import { WorkloadPicker } from './WorkloadPicker'
 
 const windows = [
@@ -33,17 +34,20 @@ type GenerateDialogProps = {
 
 function PreviewPanel({ preview }: { preview: RecommendationPreview }) {
   const { recommendation, events } = preview
-  const throttling = events.throttlingAvailable ? events.throttlingRatio : undefined
   return (
     <Stack gap={1.5}>
       <Stack direction="row" gap={1} flexWrap="wrap">
         <Chip size="small" variant="outlined" color={riskColor[recommendation.risk]} label={`Risk: ${recommendation.risk}`} />
         <Chip size="small" variant="outlined" label={`Confidence: ${recommendation.confidence} (${Math.round(recommendation.confidenceScore * 100)}%)`} />
-        {throttling !== undefined && (
-          <Chip size="small" variant="outlined" color={throttling >= 0.05 ? 'warning' : 'success'} label={`CPU throttled ${(throttling * 100).toFixed(1)}%`} />
-        )}
         {events.available && events.oomKills > 0 && <Chip size="small" variant="outlined" color="error" label={`${events.oomKills} OOM kill${events.oomKills === 1 ? '' : 's'}`} />}
       </Stack>
+      <CpuBehaviorChips
+        throttling={events.throttlingAvailable ? events.throttlingRatio : undefined}
+        throttlingPeak={events.throttlingAvailable ? events.throttlingPeakRatio : undefined}
+        pinned={recommendation.cpuLimitPinned}
+        spikes={recommendation.spikes}
+      />
+      <RecommendationEvidence record={recommendation} source={preview.source ?? 'prometheus'} compact />
       <ResourceTable record={recommendation} />
       <TrendChips trends={recommendation.trends} />
       {recommendation.backtest && <BacktestTable backtest={recommendation.backtest} />}
@@ -163,7 +167,7 @@ export function GenerateDialog({ open, onClose, onCreated, initialSubject }: Gen
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose}>Cancel</Button>
-        <Button variant="contained" disabled={!subject || save.isPending || Boolean(previewError)} onClick={() => save.mutate()} startIcon={save.isPending ? <CircularProgress size={16} /> : undefined}>
+        <Button variant="contained" disabled={!subject || !preview.data || preview.isFetching || save.isPending || Boolean(previewError)} onClick={() => save.mutate()} startIcon={save.isPending ? <CircularProgress size={16} /> : undefined}>
           Save recommendation
         </Button>
       </DialogActions>

@@ -101,6 +101,16 @@ func buildInsights(signals usage.Signals, current *ContainerSpec, found correlat
 	if restarts > 0 {
 		insights = append(insights, Insight{"info", "Containers restarted", fmt.Sprintf("%d restart(s) not caused by memory limits. Check liveness probes and application errors.", restarts)})
 	}
+	switch spikes := spikeProfile(signals.CPU, stepSeconds); spikes.Classification {
+	case optimizer.SpikesRecurring:
+		when := "at the same time each day"
+		if spikes.RecurringHourUTC != nil {
+			when = fmt.Sprintf("daily around %02d:00 UTC", *spikes.RecurringHourUTC)
+		}
+		insights = append(insights, Insight{"warning", "CPU spikes recur on a schedule", fmt.Sprintf("Spikes recur %s, last about %.0f minutes, and reach %.1fx median usage. A KEDA cron trigger or HPA can serve them without permanently larger requests.", when, spikes.MedianDurationMinutes, spikes.PeakToMedian)})
+	case optimizer.SpikesFrequent:
+		insights = append(insights, Insight{"warning", "Frequent CPU spikes", fmt.Sprintf("%.1f spikes per day, about %.0f minutes each, reaching %.1fx median usage. Size requests from P99 and keep any CPU limit above the largest spike.", spikes.SpikesPerDay, spikes.MedianDurationMinutes, spikes.PeakToMedian)})
+	}
 	if at, change, ok := rolloutShift(signals.CPU, signals.Events); ok && math.Abs(change) >= 0.25 {
 		insights = append(insights, Insight{"info", "A rollout changed usage", fmt.Sprintf("CPU changed %+.0f%% after the rollout at %s. Generated recommendations use only post-rollout data when enough remains.", change*100, at.Format(time.RFC3339))})
 	}
@@ -157,6 +167,16 @@ func (server *apiServer) signals(w http.ResponseWriter, r *http.Request) {
 		"current":           current,
 		"correlations":      found,
 		"insights":          buildInsights(signals, current, found, int64(step/time.Second)),
+		"spikes":            spikeProfile(signals.CPU, int64(step/time.Second)),
 		"latencyConfigured": server.config.LatencyQuery != "",
 	})
+}
+
+func spikeProfile(series usage.Series, stepSeconds int64) optimizer.SpikeProfile {
+	var start *time.Time
+	if len(series.Points) > 0 {
+		first := series.Points[0].Timestamp
+		start = &first
+	}
+	return optimizer.SpikeAnalysis(series.Values(), stepSeconds, start)
 }

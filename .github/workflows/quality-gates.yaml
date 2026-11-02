@@ -206,6 +206,13 @@ jobs:
           reject --set database.enabled=true
           reject --set cost.cpuCoreHour=0.031
           reject --set cost.currency=usd
+          reject --set serviceAccount.create=false
+          reject --set serviceAccount.automountServiceAccountToken=false
+          reject --set ml.enabled=true --set ml.replicaCount=2
+          reject --set ml.enabled=true --set ml.autoscaling.enabled=true
+          reject --set autoscaling.enabled=true --set autoscaling.minReplicas=3 --set autoscaling.maxReplicas=2 --set database.enabled=true --set database.existingSecret=kuberight-db
+          reject --set prometheus.url=http://prometheus.monitoring.svc:9090
+          reject --set misspelledTopLevelValue=true
       - name: Verify committed standalone manifests
         run: scripts/render-manifests.sh --check
       - name: Validate core Kubernetes schemas
@@ -328,9 +335,9 @@ jobs:
           docker run -d --name kuberight-ml-smoke --read-only --tmpfs /tmp:rw,noexec,nosuid,size=256m \
             -p 18081:8081 kuberight-ml:ci
           trap 'docker logs kuberight-smoke || true; docker logs kuberight-ml-smoke || true; docker rm -f kuberight-smoke kuberight-ml-smoke || true' EXIT
-          for attempt in {1..30}; do curl --fail --silent http://127.0.0.1:18080/healthz && break; sleep 1; done
+          for _ in {1..30}; do curl --fail --silent http://127.0.0.1:18080/healthz && break; sleep 1; done
           curl --fail --silent http://127.0.0.1:18080/readyz
-          for attempt in {1..30}; do curl --fail --silent http://127.0.0.1:18081/healthz && break; sleep 1; done
+          for _ in {1..30}; do curl --fail --silent http://127.0.0.1:18081/healthz && break; sleep 1; done
           curl --fail --silent http://127.0.0.1:18081/readyz
       - uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
         with:
@@ -452,7 +459,7 @@ jobs:
             -p 18083:8081 kuberight-ml:ci-arm64
           wait_for_url() {
             local url="$1"
-            for attempt in {1..60}; do
+            for _ in {1..60}; do
               if curl --fail --silent "$url" >/dev/null; then
                 return 0
               fi

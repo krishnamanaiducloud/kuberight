@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic/fake"
 	kubernetesfake "k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
@@ -21,7 +22,7 @@ import (
 
 func checkoutDeployment(t *testing.T, replicas int32) *appsv1.Deployment {
 	return &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: "checkout", Namespace: "shop"},
+		ObjectMeta: metav1.ObjectMeta{Name: "checkout", Namespace: "shop", UID: types.UID("uid-checkout"), Generation: 9, ResourceVersion: "4812"},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
 			Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{
@@ -46,8 +47,9 @@ func withDynamicObjects(provider *KubernetesProvider, objects ...runtime.Object)
 
 func TestWorkloadResolvesResourcesAndAutoscalers(t *testing.T) {
 	utilization := int32(70)
+	deployment := checkoutDeployment(t, 2)
 	client := kubernetesfake.NewSimpleClientset(
-		checkoutDeployment(t, 2),
+		deployment,
 		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "other", Namespace: "shop"}},
 		&autoscalingv2.HorizontalPodAutoscaler{
 			ObjectMeta: metav1.ObjectMeta{Name: "checkout", Namespace: "shop"},
@@ -90,6 +92,13 @@ func TestWorkloadResolvesResourcesAndAutoscalers(t *testing.T) {
 	}
 	if spec.Replicas != 4 || !spec.HPAUtilizationBased || !spec.KEDAEnabled || spec.Cluster != "test" {
 		t.Fatalf("spec = %#v", spec)
+	}
+	wantFingerprint, err := fingerprintWorkloadSpec(deployment.Spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.UID != "uid-checkout" || spec.Generation != 9 || spec.ResourceVersion != "4812" || spec.SourceSpecFingerprint != wantFingerprint {
+		t.Fatalf("workload provenance = %#v, want fingerprint %s", spec, wantFingerprint)
 	}
 	if api.VPAControlsCPU || !api.VPAControlsMemory {
 		t.Fatalf("wildcard VPA policy must control only memory: %#v", api)

@@ -90,6 +90,10 @@ func (summary *TrendSummary) withUplift(statistic float64, horizonDays int) floa
 type Exceedance struct {
 	OverRequest *float64 `json:"overRequest,omitempty"`
 	OverLimit   *float64 `json:"overLimit,omitempty"`
+	// NearLimit is the share of samples at or above 95% of the limit. CPU
+	// usage cannot exceed a CPU limit, so for CPU this is the share of time
+	// spent pressed against it.
+	NearLimit *float64 `json:"nearLimit,omitempty"`
 }
 
 // Backtest replays the observed samples against current and recommended
@@ -116,11 +120,22 @@ func exceedance(samples []float64, threshold int64) *float64 {
 	return &ratio
 }
 
+func nearLimit(samples []float64, limit int64) *float64 {
+	if limit <= 0 {
+		return nil
+	}
+	return exceedance(samples, int64(math.Floor(float64(limit)*pinnedLimitFraction))-1)
+}
+
+func measure(samples []float64, request, limit int64) Exceedance {
+	return Exceedance{OverRequest: exceedance(samples, request), OverLimit: exceedance(samples, limit), NearLimit: nearLimit(samples, limit)}
+}
+
 func backtest(input Input, cpuRequest, cpuLimit, memoryRequest, memoryLimit int64) Backtest {
 	return Backtest{
-		CPUCurrent:        Exceedance{OverRequest: exceedance(input.CPUSamplesMilli, input.CPURequestsMilli), OverLimit: exceedance(input.CPUSamplesMilli, input.CPULimitMilli)},
-		CPURecommended:    Exceedance{OverRequest: exceedance(input.CPUSamplesMilli, cpuRequest), OverLimit: exceedance(input.CPUSamplesMilli, cpuLimit)},
-		MemoryCurrent:     Exceedance{OverRequest: exceedance(input.MemorySamplesBytes, input.MemoryRequestsBytes), OverLimit: exceedance(input.MemorySamplesBytes, input.MemoryLimitBytes)},
-		MemoryRecommended: Exceedance{OverRequest: exceedance(input.MemorySamplesBytes, memoryRequest), OverLimit: exceedance(input.MemorySamplesBytes, memoryLimit)},
+		CPUCurrent:        measure(input.CPUSamplesMilli, input.CPURequestsMilli, input.CPULimitMilli),
+		CPURecommended:    measure(input.CPUSamplesMilli, cpuRequest, cpuLimit),
+		MemoryCurrent:     measure(input.MemorySamplesBytes, input.MemoryRequestsBytes, input.MemoryLimitBytes),
+		MemoryRecommended: measure(input.MemorySamplesBytes, memoryRequest, memoryLimit),
 	}
 }

@@ -41,9 +41,20 @@ database:
   enabled: false
   existingSecret: ""
   key: url
-  # Apply embedded, checksummed schema migrations at startup under an
-  # advisory lock. When false, startup fails unless the schema is current.
+  # Run a bounded pre-install/pre-upgrade Job that applies embedded,
+  # checksummed migrations under an advisory lock. Serving pods always verify
+  # the schema and never execute DDL. When false, installation succeeds only
+  # when an operator has already migrated the database.
   migrate: true
+  migrationJob:
+    # Empty reuses database.existingSecret. Production installations should
+    # provide a separate URL for a short-lived role allowed to execute DDL,
+    # while the serving URL is restricted to application DML.
+    existingSecret: ""
+    key: url
+    activeDeadlineSeconds: 300
+    backoffLimit: 3
+    annotations: {}
   maxConns: 10
 
 # Prometheus with cAdvisor container metrics (and optionally
@@ -53,6 +64,8 @@ prometheus:
   # Permit an in-cluster http:// URL. Prefer HTTPS.
   allowHTTP: false
   timeout: 10s
+  # Global bound across all recommendation/signal requests in one API pod.
+  maxInFlight: 8
 
 # Usage lookback and resolution for generated recommendations.
 recommendations:

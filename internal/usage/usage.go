@@ -5,11 +5,14 @@ package usage
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -150,6 +153,8 @@ type Events struct {
 	// CFS quota) or cAdvisor throttling series are absent.
 	ThrottlingAvailable bool    `json:"throttlingAvailable"`
 	ThrottlingRatio     float64 `json:"throttlingRatio"`
+	// ThrottlingPeakRatio is the P95 of per-interval throttling over the window.
+	ThrottlingPeakRatio float64 `json:"throttlingPeakRatio"`
 }
 
 // RangeQuerier is the subset of the Prometheus client used by Source.
@@ -196,6 +201,30 @@ func ThrottlingExpression(subject Subject, lookback time.Duration) string {
 	selector := subject.selector()
 	window := promDuration(lookback)
 	return "sum(increase(container_cpu_cfs_throttled_periods_total{" + selector + "}[" + window + "])) / sum(increase(container_cpu_cfs_periods_total{" + selector + "}[" + window + "]))"
+}
+
+// RecommendationQueryFingerprint identifies the exact PromQL definitions and
+// range used to calculate a live recommendation without storing sensitive or
+// high-cardinality query text in the recommendation itself.
+func RecommendationQueryFingerprint(subject Subject, window Window) string {
+	end := window.End.UTC().Truncate(time.Second)
+	start := end.Add(-window.Duration)
+	lookback := promDuration(window.Duration)
+	selector := subject.selector()
+	parts := []string{
+		"kuberight-recommendation-queries/v1",
+		CPUExpression(subject, window.Step),
+		MemoryExpression(subject, window.Step),
+		"sum(increase(kube_pod_container_status_restarts_total{" + selector + "}[" + lookback + "]))",
+		"sum(max_over_time(kube_pod_container_status_last_terminated_reason{" + selector + `,reason="OOMKilled"}[` + lookback + "]))",
+		ThrottlingExpression(subject, window.Duration),
+		ThrottlingPeakExpression(subject, window.Duration, window.Step),
+		strconv.FormatInt(start.Unix(), 10),
+		strconv.FormatInt(end.Unix(), 10),
+		strconv.FormatInt(int64(window.Step), 10),
+	}
+	digest := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return hex.EncodeToString(digest[:])
 }
 
 // History reads CPU and memory usage concurrently.
@@ -300,6 +329,15 @@ func (source *Source) Events(ctx context.Context, subject Subject, window Window
 	if ratioFound {
 		events.ThrottlingAvailable = true
 		events.ThrottlingRatio = math.Min(math.Max(ratio, 0), 1)
+	}
+	if ratioFound && window.Step > 0 {
+		peak, peakFound, peakErr := source.instant(ctx, ThrottlingPeakExpression(subject, window.Duration, window.Step), end)
+		if peakErr != nil {
+			return Events{}, fmt.Errorf("peak throttling query: %w", peakErr)
+		}
+		if peakFound {
+			events.ThrottlingPeakRatio = math.Min(math.Max(peak, 0), 1)
+		}
 	}
 	return events, nil
 }

@@ -1,12 +1,16 @@
 import { useQuery } from '@tanstack/react-query'
-import { Alert, Box, Card, CardContent, Chip, LinearProgress, Skeleton, Stack, Typography } from '@mui/material'
+import { Link as RouterLink } from 'react-router-dom'
+import { Alert, Box, Button, Card, CardActionArea, CardContent, Chip, LinearProgress, Skeleton, Stack, Typography } from '@mui/material'
 import CheckCircleOutline from '@mui/icons-material/CheckCircleOutline'
 import ShieldOutlined from '@mui/icons-material/ShieldOutlined'
 import SavingsOutlined from '@mui/icons-material/SavingsOutlined'
 import LanOutlined from '@mui/icons-material/LanOutlined'
-import { api, ApiError, type ApiRecord } from '../api'
+import { api, type ApiRecord } from '../api'
+import { RequestAlert } from '../components/RequestAlert'
 
 type OverviewResponse = ApiRecord & {
+  clusters?: number
+  workloads?: number
   mode?: string
   inventory?: { available: boolean; reason?: string; source?: string }
   generatedAt?: string
@@ -17,9 +21,9 @@ type OverviewResponse = ApiRecord & {
 }
 
 const metricCards = [
-  { key: 'clusters', label: 'Connected clusters', icon: <LanOutlined /> },
-  { key: 'workloads', label: 'Observed workloads', icon: <CheckCircleOutline /> },
-  { key: 'pending', label: 'Awaiting review', icon: <ShieldOutlined /> },
+  { key: 'clusters', label: 'Connected clusters', icon: <LanOutlined />, path: '/clusters' },
+  { key: 'workloads', label: 'Observed workloads', icon: <CheckCircleOutline />, path: '/workloads' },
+  { key: 'pending', label: 'Awaiting review', icon: <ShieldOutlined />, path: '/approvals' },
 ] as const
 
 export function Overview() {
@@ -35,17 +39,24 @@ export function Overview() {
         <Typography variant="overline" color="primary.main">FLEET INTELLIGENCE</Typography>
         <Typography variant="h2" component="h1" sx={{ maxWidth: 820 }}>Rightsize with evidence,<br />not instinct.</Typography>
         <Typography color="text.secondary" sx={{ mt: 1.5, maxWidth: 700 }}>KubeRight separates observed signals, forecasts, and estimated savings so platform teams can make controlled changes with a clear audit trail.</Typography>
+        <Stack direction={{ xs: 'column', sm: 'row' }} gap={1} sx={{ mt: 2.5 }} alignItems={{ sm: 'center' }}>
+          <Button component={RouterLink} to="/workloads" variant="contained">Choose a workload</Button>
+          <Button component={RouterLink} to="/approvals" variant="outlined">Review decision queue</Button>
+          {value?.generatedAt && <Typography variant="caption" color="text.secondary" sx={{ ml: { sm: 1 } }}>Control-plane snapshot {new Date(value.generatedAt).toLocaleString()}</Typography>}
+        </Stack>
       </Box>
-      {query.error && <Alert severity={query.error instanceof ApiError && query.error.status === 401 ? 'warning' : 'error'} sx={{ mb: 2 }}>{query.error instanceof ApiError && query.error.status === 401 ? 'Connect with an authorized bearer token to load fleet data.' : (query.error as Error).message}</Alert>}
+      {query.error && <Box sx={{ mb: 2 }}><RequestAlert error={query.error} resource="fleet overview" onRetry={() => void query.refetch()} /></Box>}
       {value?.inventory?.available === false && <Alert severity="info" sx={{ mb: 2 }}>{value.inventory.reason ?? 'No provider has confirmed fleet data.'}</Alert>}
       <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, 1fr)', xl: 'repeat(4, 1fr)' }, gap: 2 }}>
         {metricCards.map((card) => (
           <Card key={card.key}>
-            <CardContent>
-              <Stack direction="row" justifyContent="space-between" alignItems="center"><Typography color="text.secondary">{card.label}</Typography><Box color="primary.main">{card.icon}</Box></Stack>
-              {query.isLoading ? <Skeleton width="45%" height={60} /> : <Typography variant="h3" sx={{ mt: 2 }}>{typeof metricValue(card.key) === 'number' ? metricValue(card.key) : '—'}</Typography>}
-              <Typography variant="caption" color="text.secondary">Confirmed by the control plane</Typography>
-            </CardContent>
+            <CardActionArea component={RouterLink} to={card.path} aria-label={`Open ${card.label.toLowerCase()}`} sx={{ height: '100%' }}>
+              <CardContent>
+                <Stack direction="row" justifyContent="space-between" alignItems="center"><Typography color="text.secondary">{card.label}</Typography><Box color="primary.main">{card.icon}</Box></Stack>
+                {query.isLoading ? <Skeleton width="45%" height={60} /> : <Typography variant="h3" sx={{ mt: 2 }}>{typeof metricValue(card.key) === 'number' ? metricValue(card.key) : '—'}</Typography>}
+                <Typography variant="caption" color="text.secondary">Confirmed by the control plane · open</Typography>
+              </CardContent>
+            </CardActionArea>
           </Card>
         ))}
         <Card>

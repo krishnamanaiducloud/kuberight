@@ -13,6 +13,11 @@ const record = {
   dataQuality: { cpuSampleCount: 600, memorySampleCount: 600, minimumRequired: 30, sufficient: true, issues: [] },
   reason: 'P95 CPU and P99 memory', warnings: ['memory limit is absent and no new limit was introduced'], applied: false,
   createdAt: '2026-10-19T12:00:00Z', createdBy: 'alice', source: 'prometheus', reviewStatus: 'pending',
+  provenance: {
+    workloadUid: 'uid-checkout', workloadGeneration: 3, workloadResourceVersion: '88', sourceSpecFingerprint: 'a'.repeat(64),
+    queryFingerprint: 'b'.repeat(64), policyFingerprint: 'c'.repeat(64), optimizerVersion: '2.0.0',
+    observationStart: '2026-10-12T12:00:00Z', observationEnd: '2026-10-19T12:00:00Z', expiresAt: '2099-10-20T12:00:00Z',
+  },
 }
 
 function respond(body: unknown, status = 200) {
@@ -37,6 +42,7 @@ describe('RecommendationDrawer', () => {
     expect(screen.getAllByText('-20.0%')).toHaveLength(2)
     expect(screen.getByText('-25.0%')).toBeInTheDocument()
     expect(screen.getByText(/memory limit is absent/)).toBeInTheDocument()
+    expect(screen.getByText('Evidence valid')).toBeInTheDocument()
     // Rejection requires a comment.
     expect(screen.getByRole('button', { name: 'Reject' })).toBeDisabled()
 
@@ -55,5 +61,16 @@ describe('RecommendationDrawer', () => {
     renderDrawer()
     fireEvent.click(await screen.findByRole('button', { name: 'Approve' }, { timeout: 5000 }))
     await waitFor(() => expect(screen.getByText(/reviewed by an identity other than/)).toBeInTheDocument(), { timeout: 5000 })
+  })
+
+  it('disables approval when Prometheus evidence has expired', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(respond({
+      ...record,
+      provenance: { ...record.provenance, expiresAt: '2020-01-01T00:00:00Z' },
+    })))
+    renderDrawer()
+    expect(await screen.findByText('Evidence expired', {}, { timeout: 5000 })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeDisabled()
+    expect(screen.getByText(/Approval is disabled/)).toBeInTheDocument()
   })
 })

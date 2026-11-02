@@ -150,3 +150,60 @@ func TestSeriesWindowHelpers(t *testing.T) {
 		t.Fatalf("mean=%v count=%d", mean, count)
 	}
 }
+
+func TestHotspotExpressionsAreBoundedAndScoped(t *testing.T) {
+	expressions := HotspotExpressions([]string{"shop"}, 24*time.Hour)
+	for index, expression := range expressions {
+		if !strings.Contains(expression, `namespace=~"shop"`) || !strings.Contains(expression, "topk(200,") {
+			t.Fatalf("expression %d is not scoped and bounded: %s", index, expression)
+		}
+	}
+	if !strings.Contains(expressions[1], "quantile_over_time(0.95,") || !strings.Contains(expressions[2], "clamp_min(") || !strings.Contains(expressions[3], "and on (namespace, pod, container)") {
+		t.Fatalf("unexpected expressions: %v", expressions)
+	}
+}
+
+func TestHotspotsMergeMeasurementsPerContainer(t *testing.T) {
+	end := time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)
+	call := 0
+	fake := &fakeQuerier{respond: func(query metrics.RangeQuery) (metrics.RangeResult, error) {
+		call++
+		labels := map[string]string{"namespace": "shop", "pod": "api-7d9f8c6b5-x2k4p", "container": "app"}
+		other := map[string]string{"namespace": "other", "pod": "x-1", "container": "c"}
+		values := map[int]float64{1: 0.12, 2: 0.4, 3: 4.2, 4: 210, 5: 880}
+		return metrics.RangeResult{Series: []metrics.Series{
+			{Labels: labels, Samples: []metrics.Sample{{Timestamp: end, Value: values[call]}}},
+			{Labels: other, Samples: []metrics.Sample{{Timestamp: end, Value: 1}}},
+		}}, nil
+	}}
+	spots, err := NewSource(fake).Hotspots(context.Background(), []string{"shop"}, 24*time.Hour, end)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spots) != 1 {
+		t.Fatalf("spots=%#v, want only the requested namespace", spots)
+	}
+	spot := spots[0]
+	if *spot.ThrottlingRatio != 0.12 || *spot.ThrottlingPeakRatio != 0.4 || *spot.SpikeRatio != 4.2 || *spot.CPUMedianMilli != 210 || *spot.CPUPeakMilli != 880 {
+		t.Fatalf("spot=%#v", spot)
+	}
+}
+
+func TestThrottlingPeakIsReportedWithEvents(t *testing.T) {
+	fake := &fakeQuerier{respond: func(query metrics.RangeQuery) (metrics.RangeResult, error) {
+		switch {
+		case strings.Contains(query.Expression, "quantile_over_time(0.95"):
+			return series(0.31), nil
+		case strings.Contains(query.Expression, "cfs_throttled"):
+			return series(0.03), nil
+		case strings.Contains(query.Expression, "OOMKilled"):
+			return series(0), nil
+		default:
+			return series(1), nil
+		}
+	}}
+	events, err := NewSource(fake).Events(context.Background(), subject, Window{Duration: 24 * time.Hour, Step: 5 * time.Minute})
+	if err != nil || events.ThrottlingRatio != 0.03 || events.ThrottlingPeakRatio != 0.31 {
+		t.Fatalf("events=%#v err=%v", events, err)
+	}
+}

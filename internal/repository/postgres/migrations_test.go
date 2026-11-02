@@ -74,6 +74,23 @@ func TestInitialRollbackDropsTablesInDependencyOrder(t *testing.T) {
 	}
 }
 
+func TestAuditAppendOnlyMigrationRejectsEveryMutationClass(t *testing.T) {
+	migrations, err := Migrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := normalizeSQL(migrations[2].UpSQL)
+	for _, required := range []string{
+		"create function kuberight_reject_audit_mutation()",
+		"raise exception 'audit_events is append-only'",
+		"create trigger audit_events_append_only before update or delete or truncate on audit_events for each statement",
+	} {
+		if !strings.Contains(up, required) {
+			t.Errorf("append-only migration is missing clause %q", required)
+		}
+	}
+}
+
 func TestMigrationLoaderRejectsMissingPairAndVersionGaps(t *testing.T) {
 	tests := map[string]fstest.MapFS{
 		"missing down": {

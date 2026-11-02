@@ -77,6 +77,19 @@ export type ReviewStatus = 'pending' | 'approved' | 'rejected'
 
 export type Percentiles = { p50: number; p90: number; p95: number; p99: number; max: number }
 
+export type RecommendationProvenance = {
+  workloadUid?: string
+  workloadGeneration?: number
+  workloadResourceVersion?: string
+  sourceSpecFingerprint?: string
+  observationStart?: string
+  observationEnd?: string
+  queryFingerprint?: string
+  policyFingerprint?: string
+  optimizerVersion?: string
+  expiresAt?: string
+}
+
 export type RecommendationRecord = {
   id: string
   cluster?: string
@@ -100,6 +113,9 @@ export type RecommendationRecord = {
   risk: 'low' | 'medium' | 'high'
   burstable: boolean
   cpuThrottlingRatio?: number
+  cpuThrottlingPeakRatio?: number
+  cpuLimitPinned?: boolean
+  spikes?: SpikeProfile
   trends?: Trends
   backtest?: Backtest
   dataQuality: { cpuSampleCount: number; memorySampleCount: number; minimumRequired: number; sufficient: boolean; issues: string[] }
@@ -111,6 +127,7 @@ export type RecommendationRecord = {
   createdAt: string
   createdBy?: string
   source: 'request' | 'prometheus'
+  provenance?: RecommendationProvenance
   reviewStatus: ReviewStatus
   reviewedBy?: string
   reviewedAt?: string
@@ -200,6 +217,8 @@ export type Policy = {
   highConfidenceSamples: number
   cpuPercentile: number
   memoryPercentile: number
+  trendHorizonDays?: number
+  cpuLimitStrategy?: 'adjust' | 'remove'
 }
 
 export type PolicyProfile = { name: string; description: string; default: boolean; policy: Policy }
@@ -208,9 +227,10 @@ export type PolicyProfile = { name: string; description: string; default: boolea
 export type RecommendationPreview = {
   dryRun: true
   recommendation: Omit<RecommendationRecord, 'id' | 'createdAt' | 'source' | 'reviewStatus'> & { cpuThrottlingRatio?: number; effectivePolicy: Policy }
+  source?: 'prometheus'
   window: string
   step: string
-  events: { available: boolean; restarts: number; oomKills: number; throttlingAvailable: boolean; throttlingRatio: number }
+  events: { available: boolean; restarts: number; oomKills: number; throttlingAvailable: boolean; throttlingRatio: number; throttlingPeakRatio: number }
 }
 
 export type EfficiencyRow = {
@@ -255,7 +275,8 @@ export type EfficiencyResponse = {
   }
 }
 
-export type Exceedance = { overRequest?: number; overLimit?: number }
+export type Exceedance = { overRequest?: number; overLimit?: number; nearLimit?: number }
+export type SpikeProfile = { classification: 'none' | 'rare' | 'frequent' | 'recurring'; count: number; spikesPerDay: number; medianDurationMinutes: number; peakToMedian: number; threshold: number; recurringHourUtc?: number }
 export type Backtest = { cpuCurrent: Exceedance; cpuRecommended: Exceedance; memoryCurrent: Exceedance; memoryRecommended: Exceedance }
 export type TrendSummary = { slopePerDay: number; growthPerDayPercent: number; rSquared: number; significant: boolean; projectedUplift: number }
 export type Trends = { cpu: TrendSummary; memory: TrendSummary }
@@ -281,6 +302,7 @@ export type SignalsResponse = {
   correlations?: { cpuThrottling?: number; cpuReplicas?: number; cpuLatency?: number; throttlingLatency?: number; memoryLatency?: number }
   insights?: Insight[]
   latencyConfigured?: boolean
+  spikes?: SpikeProfile
 }
 
 export type CapacityResponse = {
@@ -318,4 +340,23 @@ export type WorkloadEfficiencyRow = {
   memoryEfficiency?: number
   memoryReclaimableBytes?: number
   reclaimableMonthlyCost?: number
+}
+
+export type HotspotRow = {
+  namespace: string
+  kind: string
+  workload: string
+  container: string
+  pods: number
+  throttlingRatio?: number
+  throttlingPeakRatio?: number
+  spikeRatio?: number
+  cpuMedianMilli?: number
+  cpuPeakMilli?: number
+  cpuRequestMilli: number
+  cpuLimitMilli: number
+  pinnedAtLimit: boolean
+  severity: 'critical' | 'warning' | 'info'
+  issues: string[]
+  advice: string
 }

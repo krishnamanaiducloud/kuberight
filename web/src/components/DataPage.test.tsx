@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 import { vi } from 'vitest'
 import { DataPage } from './DataPage'
 import { navigation } from '../navigation'
@@ -12,7 +13,7 @@ describe('DataPage', () => {
       json: async () => ({ items: [], total: 0, status: { available: true, source: 'kubernetes', asOf: '2026-10-17T12:00:00Z' } }),
     }))
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-    render(<QueryClientProvider client={client}><DataPage title="Clusters" description="Cluster inventory" endpoint="/api/v1/clusters" /></QueryClientProvider>)
+    render(<QueryClientProvider client={client}><MemoryRouter><DataPage title="Clusters" description="Cluster inventory" endpoint="/api/v1/clusters" /></MemoryRouter></QueryClientProvider>)
     expect(await screen.findByText('No verified records')).toBeInTheDocument()
     expect(screen.getByText(/will not substitute demo data/i)).toBeInTheDocument()
     vi.unstubAllGlobals()
@@ -26,7 +27,7 @@ describe('DataPage', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-    render(<QueryClientProvider client={client}><DataPage title="CPU recommendations" description="CPU" endpoint="/api/v1/recommendations" /></QueryClientProvider>)
+    render(<QueryClientProvider client={client}><MemoryRouter><DataPage title="CPU recommendations" description="CPU" endpoint="/api/v1/recommendations" /></MemoryRouter></QueryClientProvider>)
     expect(await screen.findByText('No verified records')).toBeInTheDocument()
     expect(fetchMock.mock.calls[0][0]).toContain('sort=createdAt')
     expect(fetchMock.mock.calls[0][0]).not.toContain('sort=name')
@@ -51,7 +52,7 @@ describe('DataPage', () => {
     }))
     const cpu = navigation.find((item) => item.path === '/recommendations/cpu')!
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-    render(<QueryClientProvider client={client}><DataPage title={cpu.label} description={cpu.description} endpoint={cpu.endpoint!} columnKeys={cpu.columnKeys} /></QueryClientProvider>)
+    render(<QueryClientProvider client={client}><MemoryRouter><DataPage title={cpu.label} description={cpu.description} endpoint={cpu.endpoint!} columnKeys={cpu.columnKeys} /></MemoryRouter></QueryClientProvider>)
     expect(await screen.findByRole('columnheader', { name: /^cpu request milli$/i })).toBeInTheDocument()
     expect(screen.getByRole('columnheader', { name: /^current cpu request milli$/i })).toBeInTheDocument()
     expect(screen.queryByRole('columnheader', { name: /memory request bytes/i })).not.toBeInTheDocument()

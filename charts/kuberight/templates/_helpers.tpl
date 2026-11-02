@@ -66,7 +66,7 @@ app.kubernetes.io/component: ml
 {{- if .Values.serviceAccount.create }}
 {{- default (include "kuberight.fullname" .) .Values.serviceAccount.name }}
 {{- else }}
-{{- default "default" .Values.serviceAccount.name }}
+{{- .Values.serviceAccount.name }}
 {{- end }}
 {{- end }}
 
@@ -104,8 +104,23 @@ app.kubernetes.io/component: ml
 {{- if and .Values.autoscaling.enabled (not (or .Values.autoscaling.targetCPUUtilizationPercentage .Values.autoscaling.targetMemoryUtilizationPercentage)) -}}
 {{- fail "at least one autoscaling CPU or memory utilization target is required when autoscaling.enabled=true" -}}
 {{- end -}}
+{{- if and .Values.autoscaling.enabled (lt (int .Values.autoscaling.maxReplicas) (int .Values.autoscaling.minReplicas)) -}}
+{{- fail "autoscaling.maxReplicas must be greater than or equal to autoscaling.minReplicas" -}}
+{{- end -}}
 {{- if and .Values.ml.enabled .Values.ml.autoscaling.enabled (not .Values.ml.autoscaling.targetCPUUtilizationPercentage) -}}
 {{- fail "ml.autoscaling.targetCPUUtilizationPercentage is required when ml.autoscaling.enabled=true" -}}
+{{- end -}}
+{{- if and .Values.ml.enabled .Values.ml.autoscaling.enabled (lt (int .Values.ml.autoscaling.maxReplicas) (int .Values.ml.autoscaling.minReplicas)) -}}
+{{- fail "ml.autoscaling.maxReplicas must be greater than or equal to ml.autoscaling.minReplicas" -}}
+{{- end -}}
+{{- if and (not .Values.serviceAccount.create) (empty .Values.serviceAccount.name) -}}
+{{- fail "serviceAccount.name is required when serviceAccount.create=false; refusing to bind KubeRight to the namespace default service account" -}}
+{{- end -}}
+{{- if and (not .Values.serviceAccount.automountServiceAccountToken) (or .Values.inventory.enabled (eq .Values.auth.mode "kubernetes")) -}}
+{{- fail "serviceAccount.automountServiceAccountToken must be true when Kubernetes inventory or authentication is enabled" -}}
+{{- end -}}
+{{- if and .Values.ml.enabled (or (gt (int .Values.ml.replicaCount) 1) .Values.ml.autoscaling.enabled) -}}
+{{- fail "ml.replicaCount > 1 and ml.autoscaling.enabled are unsupported while model storage is pod-local" -}}
 {{- end -}}
 {{- if and .Values.route.enabled .Values.route.tls.enabled (ne .Values.route.tls.termination "edge") -}}
 {{- fail "route.tls.termination must be edge because KubeRight serves HTTP behind the Route" -}}
@@ -118,6 +133,9 @@ app.kubernetes.io/component: ml
 {{- end -}}
 {{- if and .Values.database.enabled (not .Values.database.existingSecret) -}}
 {{- fail "database.existingSecret is required when database.enabled=true" -}}
+{{- end -}}
+{{- if and .Values.prometheus.url (hasPrefix "http://" .Values.prometheus.url) (not .Values.prometheus.allowHTTP) -}}
+{{- fail "prometheus.allowHTTP=true is required for a cleartext http:// Prometheus URL" -}}
 {{- end -}}
 {{- if and .Values.ml.enabled .Values.ml.apiKey.existingSecret (not .Values.ml.apiKey.key) -}}
 {{- fail "ml.apiKey.key is required when ml.apiKey.existingSecret is set" -}}

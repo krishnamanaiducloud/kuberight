@@ -64,6 +64,19 @@ export function PolicyTuner({ profiles, profile, policy, customized, onChange }:
                 {percentiles.map((item) => <MenuItem key={item.value} value={item.value}>{item.label}</MenuItem>)}
               </TextField>
             </Stack>
+            <TextField
+              select
+              size="small"
+              label="CPU limit"
+              value={policy.cpuLimitStrategy ?? 'adjust'}
+              onChange={(event) => tune({ cpuLimitStrategy: event.target.value as Policy['cpuLimitStrategy'] })}
+              helperText={(policy.cpuLimitStrategy ?? 'adjust') === 'remove'
+                ? 'Requests alone govern CPU share, so throttling cannot occur.'
+                : 'Keep existing limits, sized above the largest observed spike.'}
+            >
+              <MenuItem value="adjust">Adjust to cover spikes</MenuItem>
+              <MenuItem value="remove">Remove CPU limits</MenuItem>
+            </TextField>
             <PercentSlider label="CPU safety margin" value={policy.cpuSafetyMargin} max={1} onChange={(value) => tune({ cpuSafetyMargin: value })} />
             <PercentSlider label="Memory safety margin" value={policy.memorySafetyMargin} max={1} onChange={(value) => tune({ memorySafetyMargin: value })} />
             <PercentSlider label="Maximum reduction per change" value={policy.maximumReduction} max={0.5} onChange={(value) => tune({ maximumReduction: value })} />
