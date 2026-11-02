@@ -28,6 +28,9 @@ const (
 	RecommendationCreated  = "recommendation.created"
 	RecommendationApproved = "recommendation.approved"
 	RecommendationRejected = "recommendation.rejected"
+	// RecommendationRegressed is sent once when an applied recommendation is
+	// followed by OOM kills, throttling, restarts, or slower responses.
+	RecommendationRegressed = "recommendation.regressed"
 )
 
 // Event describes one lifecycle change of a recommendation.
@@ -188,6 +191,8 @@ func SlackText(event Event) string {
 			event.CurrentCPURequestMilli, event.CPURequestMilli, event.CurrentMemoryRequestBytes>>20, event.MemoryRequestBytes>>20)
 	case RecommendationRejected:
 		return fmt.Sprintf("KubeRight: %s rejected the recommendation for %s: %s", event.Actor, subject, event.Comment)
+	case RecommendationRegressed:
+		return fmt.Sprintf("KubeRight: the applied recommendation for %s regressed: %s. Consider restoring the previous resources.", subject, event.Comment)
 	default:
 		return fmt.Sprintf("KubeRight: new %s-risk recommendation for %s awaits review (CPU %dm → %dm, memory %d MiB → %d MiB).", event.Risk, subject,
 			event.CurrentCPURequestMilli, event.CPURequestMilli, event.CurrentMemoryRequestBytes>>20, event.MemoryRequestBytes>>20)

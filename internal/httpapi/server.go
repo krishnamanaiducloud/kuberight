@@ -80,9 +80,13 @@ type Dependencies struct {
 	Notifier   notify.Notifier
 	Logger     *slog.Logger
 	Now        func() time.Time
+	// Verification is shared with the background verifier so its results
+	// appear on /metrics. A handler without one creates its own.
+	Verification *VerificationState
 }
 
 type apiServer struct {
+	verified   *VerificationState
 	config     config.Config
 	access     AccessController
 	repository repository.Store
@@ -108,6 +112,16 @@ func (access unavailableAccess) Ready(context.Context) error { return access.err
 // NewHandler builds the API and returns an error rather than silently starting
 // with an invalid security configuration.
 func NewHandler(cfg config.Config, dependencies Dependencies) (http.Handler, error) {
+	server, err := newAPIServer(cfg, dependencies)
+	if err != nil {
+		return nil, err
+	}
+	return server.routes()
+}
+
+// newAPIServer validates the configuration and resolves defaults for every
+// dependency the API and the background verifier share.
+func newAPIServer(cfg config.Config, dependencies Dependencies) (*apiServer, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -143,8 +157,17 @@ func NewHandler(cfg config.Config, dependencies Dependencies) (http.Handler, err
 		logger:     logger,
 		metrics:    newAPIMetrics(),
 		now:        now,
+		verified:   dependencies.Verification,
 	}
+	if server.verified == nil {
+		server.verified = NewVerificationState()
+	}
+	return server, nil
+}
 
+// routes builds the mux and middleware chain.
+func (server *apiServer) routes() (http.Handler, error) {
+	cfg, logger := server.config, server.logger
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", server.health)
 	mux.HandleFunc("GET /readyz", server.ready)
@@ -167,6 +190,8 @@ func NewHandler(cfg config.Config, dependencies Dependencies) (http.Handler, err
 	mux.HandleFunc("GET /api/v1/capacity", server.capacity)
 	mux.HandleFunc("GET /api/v1/hotspots", server.hotspots)
 	mux.HandleFunc("GET /api/v1/metrics/signals", server.signals)
+	mux.HandleFunc("GET /api/v1/correlation", server.correlationAnalysis)
+	mux.HandleFunc("GET /api/v1/recommendations/{id}/verification", server.recommendationVerification)
 	mux.HandleFunc("GET /api/v1/policies", server.policies)
 	mux.HandleFunc("GET /api/v1/audit", server.audit)
 	mux.HandleFunc("GET /api/v1/settings/integrations", server.integrations)
@@ -337,6 +362,7 @@ func resourceName(resource string) string {
 
 func (server *apiServer) prometheusMetrics(w http.ResponseWriter, r *http.Request) {
 	server.metrics.render(w)
+	server.verified.render(w)
 	server.renderIntegrationMetrics(r.Context(), w)
 }
 

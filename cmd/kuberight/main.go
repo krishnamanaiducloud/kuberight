@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kuberight/kuberight/internal/benchmark"
 	"github.com/kuberight/kuberight/internal/config"
 	"github.com/kuberight/kuberight/internal/forecast"
 	"github.com/kuberight/kuberight/internal/httpapi"
@@ -29,8 +31,19 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) == 2 && os.Args[1] == "benchmark" {
+		// The accuracy benchmark is offline and reproducible; it needs no
+		// cluster, Prometheus, or configuration.
+		encoder := json.NewEncoder(os.Stdout)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(benchmark.Run(benchmark.DefaultConfig())); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 && (len(os.Args) != 2 || os.Args[1] != "migrate") {
-		fmt.Fprintln(os.Stderr, "usage: kuberight [healthcheck|migrate]")
+		fmt.Fprintln(os.Stderr, "usage: kuberight [healthcheck|migrate|benchmark]")
 		os.Exit(2)
 	}
 
@@ -99,6 +112,7 @@ func main() {
 		}
 		dependencies.Provider = inventory
 	}
+	dependencies.Verification = httpapi.NewVerificationState()
 	handler, err := httpapi.NewHandler(cfg, dependencies)
 	if err != nil {
 		logger.Error("API initialization failed", "error", err)
@@ -108,6 +122,15 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+	// Post-change verification needs live usage and the live workload spec.
+	if cfg.VerificationInterval > 0 && dependencies.Usage != nil && dependencies.Provider != nil {
+		verifier, verifierErr := httpapi.NewVerifier(cfg, dependencies)
+		if verifierErr != nil {
+			logger.Error("verifier initialization failed", "error", verifierErr)
+			os.Exit(1)
+		}
+		go verifier.Run(ctx)
+	}
 	shutdownComplete := make(chan struct{})
 	go func() {
 		<-ctx.Done()

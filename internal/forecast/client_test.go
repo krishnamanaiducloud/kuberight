@@ -107,3 +107,41 @@ func TestNewClientRejectsUnsafeEndpoints(t *testing.T) {
 		}
 	}
 }
+
+func TestBacktestSendsContractAndValidatesResponse(t *testing.T) {
+	body := `{"method":"rolling-origin-no-future-observations","horizon":2,"nominalCoverage":0.9,"origins":[{"originIndex":96,"model":"m","calibrated":true,"score":{"samples":2,"mae":0.1,"rmse":0.1,"smape":0.05,"mape":null,"coverage":1,"meanIntervalWidth":0.2,"baselineMAE":0.2,"skill":0.5}}],"overall":{"samples":2,"mae":0.1,"rmse":0.1,"smape":0.05,"mape":0.04,"coverage":1,"meanIntervalWidth":0.2,"baselineMAE":0.2,"skill":0.5},"points":[{"index":96,"actual":1,"predicted":1.1,"lower":0.9,"upper":1.3,"baseline":1},{"index":97,"actual":2,"predicted":1.9,"lower":1.5,"upper":2.2,"baseline":1}],"generatedAt":"2026-10-01T00:00:00Z","warning":"w"}`
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		var request map[string]any
+		if r.URL.Path != "/api/v1/backtest" || json.NewDecoder(r.Body).Decode(&request) != nil || request["origins"].(float64) != 1 {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write([]byte(body))
+	})
+	response, err := client.Backtest(context.Background(), BacktestRequest{Samples: make([]float64, 98), Horizon: 2, Origins: 1, IntervalSeconds: 3600, Resource: "cpu", ConfidenceLevel: 0.9})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Overall.Skill == nil || *response.Overall.Skill != 0.5 || response.Origins[0].Score.MAPE != nil || len(response.Points) != 2 {
+		t.Fatalf("response %#v", response)
+	}
+
+	for name, payload := range map[string]string{
+		"inverted":     strings.Replace(body, `"lower":0.9,"upper":1.3`, `"lower":1.3,"upper":0.9`, 1),
+		"out of range": strings.Replace(body, `"coverage":1,"meanIntervalWidth":0.2,"baselineMAE":0.2,"skill":0.5},"points"`, `"coverage":2,"meanIntervalWidth":0.2,"baselineMAE":0.2,"skill":0.5},"points"`, 1),
+		"malformed":    "{",
+	} {
+		bad := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(payload)) })
+		if _, err := bad.Backtest(context.Background(), BacktestRequest{Horizon: 2, Origins: 1}); !errors.Is(err, ErrProtocol) {
+			t.Fatalf("%s: err=%v", name, err)
+		}
+	}
+	shape := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) })
+	if _, err := shape.Backtest(context.Background(), BacktestRequest{Horizon: 3, Origins: 1}); !errors.Is(err, ErrProtocol) {
+		t.Fatalf("wrong shape err=%v", err)
+	}
+	busy := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTooManyRequests) })
+	if _, err := busy.Backtest(context.Background(), BacktestRequest{Horizon: 2, Origins: 1}); !errors.Is(err, ErrBusy) {
+		t.Fatalf("busy err=%v", err)
+	}
+}

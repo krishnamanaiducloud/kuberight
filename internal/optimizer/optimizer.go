@@ -23,7 +23,9 @@ const (
 // AlgorithmVersion changes whenever recommendation semantics change in a way
 // that can produce materially different values from the same observations.
 // It is stored with every recommendation so decisions remain reproducible.
-const AlgorithmVersion = "kuberight-optimizer/v1"
+// v2 adds dynamic safety margins, quantity rounding, forecast-aware sizing,
+// QoS protection, LimitRange adjustment, and the assessment verdict.
+const AlgorithmVersion = "kuberight-optimizer/v2"
 
 type AutoscalingContext struct {
 	HPAUtilizationBased bool `json:"hpaUtilizationBased,omitempty"`
@@ -214,6 +216,19 @@ type Input struct {
 	// which it was calculated. It is optional for the low-level calculate API;
 	// live Prometheus generation always supplies it.
 	Provenance Provenance `json:"provenance,omitempty"`
+	// Pod, NamespacePolicy, Nodes, HPA, and Forecast are optional context for
+	// the assessment's QoS, LimitRange, ResourceQuota, scheduling, autoscaler,
+	// and forecast checks. Absent context is reported as unknown, not passed.
+	Pod             *PodContext      `json:"pod,omitempty"`
+	NamespacePolicy *NamespacePolicy `json:"namespacePolicy,omitempty"`
+	Nodes           []NodeShape      `json:"nodes,omitempty"`
+	HPA             *HPAContext      `json:"hpa,omitempty"`
+	Forecast        *ForecastContext `json:"forecast,omitempty"`
+	// RecentRollout shortens the validity period because usage after a
+	// rollout is still settling.
+	RecentRollout bool `json:"recentRollout,omitempty"`
+	// skipAssessment avoids recursion when the held-back test re-sizes.
+	skipAssessment bool
 }
 
 // Provenance makes a recommendation reproducible and allows consumers to
@@ -285,6 +300,18 @@ type Recommendation struct {
 	Applied                   bool         `json:"applied"`
 	Policy                    Policy       `json:"effectivePolicy"`
 	Provenance                Provenance   `json:"provenance,omitempty"`
+	// Assessment is the verdict and its evidence. Recommendations stored
+	// before v2 have none.
+	Assessment *Assessment `json:"assessment,omitempty"`
+}
+
+// Approvable reports whether the recommendation may be approved. Legacy
+// recommendations without an assessment keep their previous behavior.
+func (recommendation Recommendation) Approvable() (bool, string) {
+	if recommendation.Assessment == nil || recommendation.Assessment.Status == StatusRecommend {
+		return true, ""
+	}
+	return false, fmt.Sprintf("the recommendation status is %s: %s", recommendation.Assessment.Status, strings.Join(recommendation.Assessment.StatusReasons, "; "))
 }
 
 // Expired reports whether a recommendation is past its explicit validity
@@ -429,6 +456,76 @@ func validateInput(input Input, policy Policy) error {
 	}
 	if provenance.ExpiresAt != nil && provenance.ObservationEnd != nil && !provenance.ExpiresAt.After(*provenance.ObservationEnd) {
 		return errors.New("recommendation expiry must be after the observation end")
+	}
+	return validateContext(input)
+}
+
+func validResources(resources ContainerResources) bool {
+	return len(resources.Name) <= 253 &&
+		resources.CPURequestMilli >= 0 && resources.CPURequestMilli <= maxCPUMilli && resources.CPULimitMilli >= 0 && resources.CPULimitMilli <= maxCPUMilli &&
+		resources.MemoryRequestBytes >= 0 && resources.MemoryRequestBytes <= maxMemoryBytes && resources.MemoryLimitBytes >= 0 && resources.MemoryLimitBytes <= maxMemoryBytes
+}
+
+func validateContext(input Input) error {
+	if pod := input.Pod; pod != nil {
+		if len(pod.Containers) > 64 || len(pod.InitContainers) > 64 {
+			return errors.New("a pod may describe at most 64 containers and 64 init containers")
+		}
+		for _, container := range pod.Containers {
+			if !validResources(container) {
+				return errors.New("pod container resources are outside the supported range")
+			}
+		}
+		for _, container := range pod.InitContainers {
+			if !validResources(container.ContainerResources) {
+				return errors.New("init container resources are outside the supported range")
+			}
+		}
+		if pod.OverheadCPUMilli < 0 || pod.OverheadCPUMilli > maxCPUMilli || pod.OverheadMemoryBytes < 0 || pod.OverheadMemoryBytes > maxMemoryBytes {
+			return errors.New("pod overhead is outside the supported range")
+		}
+	}
+	if policy := input.NamespacePolicy; policy != nil {
+		if len(policy.LimitRanges) > 32 || len(policy.Quotas) > 32 {
+			return errors.New("at most 32 LimitRanges and 32 ResourceQuotas may be supplied")
+		}
+		for _, limits := range policy.LimitRanges {
+			if limits.Type != "Container" && limits.Type != "Pod" {
+				return errors.New("LimitRange type must be Container or Pod")
+			}
+			if limits.MinCPUMilli < 0 || limits.MaxCPUMilli < 0 || limits.MinMemoryBytes < 0 || limits.MaxMemoryBytes < 0 ||
+				limits.MaxCPULimitRequestRatio < 0 || limits.MaxMemoryLimitRequestRatio < 0 ||
+				math.IsNaN(limits.MaxCPULimitRequestRatio) || math.IsNaN(limits.MaxMemoryLimitRequestRatio) {
+				return errors.New("LimitRange values cannot be negative")
+			}
+		}
+	}
+	if len(input.Nodes) > 10_000 {
+		return errors.New("at most 10000 nodes may be supplied")
+	}
+	for _, node := range input.Nodes {
+		if node.CPUMilli < 0 || node.MemoryBytes < 0 {
+			return errors.New("node capacity cannot be negative")
+		}
+	}
+	if hpa := input.HPA; hpa != nil {
+		if hpa.MinReplicas < 0 || hpa.MaxReplicas < 0 || hpa.CurrentReplicas < 0 || hpa.TargetCPUUtilization < 0 || hpa.TargetCPUUtilization > 10_000 ||
+			(hpa.MaxReplicas > 0 && hpa.MinReplicas > hpa.MaxReplicas) {
+			return errors.New("HPA settings are invalid")
+		}
+	}
+	if forecast := input.Forecast; forecast != nil {
+		for _, value := range []float64{forecast.CPUPeakMilli, forecast.CPUUpperMilli, forecast.MemoryPeakBytes, forecast.MemoryUpperBytes, forecast.IntervalLevel} {
+			if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
+				return errors.New("forecast values must be finite and non-negative")
+			}
+		}
+		if forecast.CPUPeakMilli > float64(maxCPUMilli) || forecast.MemoryPeakBytes > float64(maxMemoryBytes) || forecast.IntervalLevel > 1 {
+			return errors.New("forecast values are outside the supported range")
+		}
+		if coverage := forecast.EmpiricalCoverage; coverage != nil && (math.IsNaN(*coverage) || *coverage < 0 || *coverage > 1) {
+			return errors.New("forecast coverage must be between 0 and 1")
+		}
 	}
 	return nil
 }
@@ -597,8 +694,31 @@ func Recommend(input Input) (Recommendation, error) {
 		}
 		warnings = append(warnings, "CPU spikes recur "+when+"; scheduled scaling (a KEDA cron trigger or HPA) can serve them without permanently larger requests")
 	}
-	cpuRequest := roundedRecommendation(trends.CPU.withUplift(cpuStatistic, policy.TrendHorizonDays), policy.CPUSafetyMargin, policy.MinimumCPUMilli, policy.MaximumCPUMilli)
-	memoryRequest := roundedRecommendation(trends.Memory.withUplift(memoryStats.at(policy.MemoryPercentile), policy.TrendHorizonDays), policy.MemorySafetyMargin, policy.MinimumMemoryBytes, policy.MaximumMemoryBytes)
+	// Include the observed maximum so a narrow but material spike at the edge
+	// of the P99 interpolation window is not incorrectly classified as steady.
+	burstable := cpuStats.P50 > 0 && (cpuStats.P99/cpuStats.P50 >= 3 || cpuStats.Max/cpuStats.P50 >= 3)
+	cpuSizing := trends.CPU.withUplift(cpuStatistic, policy.TrendHorizonDays)
+	memorySizing := trends.Memory.withUplift(memoryStats.at(policy.MemoryPercentile), policy.TrendHorizonDays)
+	// A calibrated forecast that expects more demand than history raises the
+	// sizing statistic; a forecast never lowers it.
+	forecastUsed := false
+	cpuUncertainty, memoryUncertainty := 0.0, 0.0
+	if forecast := input.Forecast; forecast != nil {
+		cpuUncertainty = forecastWidth(forecast.CPUPeakMilli, forecast.CPUUpperMilli)
+		memoryUncertainty = forecastWidth(forecast.MemoryPeakBytes, forecast.MemoryUpperBytes)
+		if forecast.calibrated() {
+			if forecast.CPUPeakMilli > cpuSizing {
+				cpuSizing, forecastUsed = forecast.CPUPeakMilli, true
+			}
+			if forecast.MemoryPeakBytes > memorySizing {
+				memorySizing, forecastUsed = forecast.MemoryPeakBytes, true
+			}
+		}
+	}
+	cpuMargin := dynamicMargin(policy.CPUSafetyMargin, input.CPUSamplesMilli, regularSpikes || burstable, cpuUncertainty, input)
+	memoryMargin := dynamicMargin(policy.MemorySafetyMargin, input.MemorySamplesBytes, false, memoryUncertainty, input)
+	cpuRequest := roundedRecommendation(cpuSizing, cpuMargin.Total, policy.MinimumCPUMilli, policy.MaximumCPUMilli)
+	memoryRequest := roundedRecommendation(memorySizing, memoryMargin.Total, policy.MinimumMemoryBytes, policy.MaximumMemoryBytes)
 	// A throttled container is CPU-constrained even when its averaged usage
 	// looks low, so its CPU must not be reduced. Peak-interval throttling
 	// counts too, so throttling concentrated in busy hours is not averaged
@@ -622,9 +742,6 @@ func Recommend(input Input) (Recommendation, error) {
 		memoryRequest = max(memoryRequest, reductionFloor(input.MemoryRequestsBytes, memoryMaximumReduction))
 	}
 
-	// Include the observed maximum so a narrow but material spike at the edge
-	// of the P99 interpolation window is not incorrectly classified as steady.
-	burstable := cpuStats.P50 > 0 && (cpuStats.P99/cpuStats.P50 >= 3 || cpuStats.Max/cpuStats.P50 >= 3)
 	if burstable && !regularSpikes {
 		warnings = append(warnings, "CPU usage is bursty; validate throttling and latency before applying")
 	}
@@ -699,7 +816,41 @@ func Recommend(input Input) (Recommendation, error) {
 		risk = "high"
 	}
 
-	return Recommendation{
+	// Round to readable quantities (always upward), keep VPA-managed values
+	// exactly as they are, then protect the QoS class and fit LimitRanges.
+	values := sizing{
+		cpuRequest: min(RoundCPU(cpuRequest), policy.MaximumCPUMilli), cpuLimit: min(RoundCPU(cpuLimit), policy.MaximumCPUMilli),
+		memoryRequest: min(RoundMemory(memoryRequest), policy.MaximumMemoryBytes), memoryLimit: min(RoundMemory(memoryLimit), policy.MaximumMemoryBytes),
+	}
+	if input.Autoscaling.VPAControlsCPU {
+		values.cpuRequest = input.CPURequestsMilli
+	}
+	if input.Autoscaling.VPAControlsMemory {
+		values.memoryRequest = input.MemoryRequestsBytes
+	}
+	if values.cpuLimit > 0 {
+		values.cpuLimit = max(values.cpuLimit, values.cpuRequest)
+	}
+	if values.memoryLimit > 0 {
+		values.memoryLimit = max(values.memoryLimit, values.memoryRequest)
+	}
+	var qos QoS
+	var limitRangeChecks []Check
+	if !input.skipAssessment {
+		values, qos = protectQoS(input, values, policy.CPULimitStrategy == CPULimitRemove)
+		values, limitRangeChecks = applyLimitRanges(input, values)
+		if qos.Protected {
+			warnings = append(warnings, "the pod is Guaranteed, so recommended requests equal limits to keep its QoS class")
+		}
+		for _, check := range limitRangeChecks {
+			if check.Status == CheckAdjusted {
+				warnings = append(warnings, check.Name+": "+check.Detail)
+			}
+		}
+	}
+	cpuRequest, cpuLimit, memoryRequest, memoryLimit = values.cpuRequest, values.cpuLimit, values.memoryRequest, values.memoryLimit
+
+	recommendation := Recommendation{
 		Cluster:                   input.Cluster,
 		Namespace:                 input.Namespace,
 		Kind:                      input.Kind,
@@ -734,5 +885,14 @@ func Recommend(input Input) (Recommendation, error) {
 		Provenance:                normalizedProvenance(input.Provenance, policy),
 		Trends:                    trends,
 		Backtest:                  backtest(input, cpuRequest, cpuLimit, memoryRequest, memoryLimit),
-	}, nil
+	}
+	if !input.skipAssessment {
+		recommendation.Assessment = assess(input, values, facts{
+			policy: policy, quality: quality, trends: trends, cpuStats: cpuStats, memoryStats: memoryStats, cpuStatistic: cpuStatistic,
+			regularSpikes: regularSpikes, burstable: burstable, throttled: throttled, pinned: pinned,
+			cpuMargin: cpuMargin, memoryMargin: memoryMargin, qos: qos, limitRangeChecks: limitRangeChecks,
+			forecastUsed: forecastUsed, confidenceScore: confidenceScore, risk: risk,
+		})
+	}
+	return recommendation, nil
 }

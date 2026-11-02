@@ -34,7 +34,7 @@ func (provider *KubernetesProvider) Workload(ctx context.Context, namespace, kin
 	options := metav1.ListOptions{FieldSelector: fields.OneTermEqualSelector("metadata.name", name).String()}
 	var (
 		replicas           int32
-		containers         []corev1.Container
+		podSpec            corev1.PodSpec
 		identity           metav1.ObjectMeta
 		workloadObjectSpec any
 		found              bool
@@ -47,7 +47,7 @@ func (provider *KubernetesProvider) Workload(ctx context.Context, namespace, kin
 		if listErr == nil {
 			for index := range list.Items {
 				if item := &list.Items[index]; item.Name == name {
-					replicas, containers, found = defaultReplicas(item.Spec.Replicas), item.Spec.Template.Spec.Containers, true
+					replicas, podSpec, found = defaultReplicas(item.Spec.Replicas), item.Spec.Template.Spec, true
 					identity, workloadObjectSpec = item.ObjectMeta, item.Spec
 				}
 			}
@@ -58,7 +58,7 @@ func (provider *KubernetesProvider) Workload(ctx context.Context, namespace, kin
 		if listErr == nil {
 			for index := range list.Items {
 				if item := &list.Items[index]; item.Name == name {
-					replicas, containers, found = defaultReplicas(item.Spec.Replicas), item.Spec.Template.Spec.Containers, true
+					replicas, podSpec, found = defaultReplicas(item.Spec.Replicas), item.Spec.Template.Spec, true
 					identity, workloadObjectSpec = item.ObjectMeta, item.Spec
 				}
 			}
@@ -69,7 +69,7 @@ func (provider *KubernetesProvider) Workload(ctx context.Context, namespace, kin
 		if listErr == nil {
 			for index := range list.Items {
 				if item := &list.Items[index]; item.Name == name {
-					replicas, containers, found = item.Status.DesiredNumberScheduled, item.Spec.Template.Spec.Containers, true
+					replicas, podSpec, found = item.Status.DesiredNumberScheduled, item.Spec.Template.Spec, true
 					identity, workloadObjectSpec = item.ObjectMeta, item.Spec
 				}
 			}
@@ -80,7 +80,7 @@ func (provider *KubernetesProvider) Workload(ctx context.Context, namespace, kin
 		if listErr == nil {
 			for index := range list.Items {
 				if item := &list.Items[index]; item.Name == name {
-					replicas, containers, found = defaultReplicas(item.Spec.Replicas), item.Spec.Template.Spec.Containers, true
+					replicas, podSpec, found = defaultReplicas(item.Spec.Replicas), item.Spec.Template.Spec, true
 					identity, workloadObjectSpec = item.ObjectMeta, item.Spec
 				}
 			}
@@ -91,7 +91,7 @@ func (provider *KubernetesProvider) Workload(ctx context.Context, namespace, kin
 		if listErr == nil {
 			for index := range list.Items {
 				if item := &list.Items[index]; item.Name == name {
-					replicas, containers, found = defaultReplicas(item.Spec.Parallelism), item.Spec.Template.Spec.Containers, true
+					replicas, podSpec, found = defaultReplicas(item.Spec.Parallelism), item.Spec.Template.Spec, true
 					identity, workloadObjectSpec = item.ObjectMeta, item.Spec
 				}
 			}
@@ -102,7 +102,7 @@ func (provider *KubernetesProvider) Workload(ctx context.Context, namespace, kin
 		if listErr == nil {
 			for index := range list.Items {
 				if item := &list.Items[index]; item.Name == name {
-					replicas, containers, found = defaultReplicas(item.Spec.JobTemplate.Spec.Parallelism), item.Spec.JobTemplate.Spec.Template.Spec.Containers, true
+					replicas, podSpec, found = defaultReplicas(item.Spec.JobTemplate.Spec.Parallelism), item.Spec.JobTemplate.Spec.Template.Spec, true
 					identity, workloadObjectSpec = item.ObjectMeta, item.Spec
 				}
 			}
@@ -124,21 +124,31 @@ func (provider *KubernetesProvider) Workload(ctx context.Context, namespace, kin
 	spec := httpapi.WorkloadSpec{
 		Cluster: provider.clusterID, Namespace: namespace, Kind: kind, Name: name,
 		UID: string(identity.UID), Generation: identity.Generation, ResourceVersion: identity.ResourceVersion, SourceSpecFingerprint: specFingerprint, Replicas: replicas,
-		Containers: make([]httpapi.ContainerSpec, 0, len(containers)), Warnings: []string{},
+		Containers: make([]httpapi.ContainerSpec, 0, len(podSpec.Containers)), Warnings: []string{},
 	}
-	for _, container := range containers {
-		spec.Containers = append(spec.Containers, httpapi.ContainerSpec{
-			Name:               container.Name,
-			CPURequestMilli:    container.Resources.Requests.Cpu().MilliValue(),
-			CPULimitMilli:      container.Resources.Limits.Cpu().MilliValue(),
-			MemoryRequestBytes: container.Resources.Requests.Memory().Value(),
-			MemoryLimitBytes:   container.Resources.Limits.Memory().Value(),
-		})
+	for _, container := range podSpec.Containers {
+		spec.Containers = append(spec.Containers, containerSpec(container))
 	}
+	for _, container := range podSpec.InitContainers {
+		sidecar := container.RestartPolicy != nil && *container.RestartPolicy == corev1.ContainerRestartPolicyAlways
+		spec.InitContainers = append(spec.InitContainers, httpapi.InitContainerSpec{ContainerSpec: containerSpec(container), Sidecar: sidecar})
+	}
+	spec.OverheadCPUMilli = podSpec.Overhead.Cpu().MilliValue()
+	spec.OverheadMemoryBytes = podSpec.Overhead.Memory().Value()
 	provider.applyHPA(ctx, &spec)
 	provider.applyKEDA(ctx, &spec)
 	provider.applyVPA(ctx, &spec)
 	return spec, nil
+}
+
+func containerSpec(container corev1.Container) httpapi.ContainerSpec {
+	return httpapi.ContainerSpec{
+		Name:               container.Name,
+		CPURequestMilli:    container.Resources.Requests.Cpu().MilliValue(),
+		CPULimitMilli:      container.Resources.Limits.Cpu().MilliValue(),
+		MemoryRequestBytes: container.Resources.Requests.Memory().Value(),
+		MemoryLimitBytes:   container.Resources.Limits.Memory().Value(),
+	}
 }
 
 func fingerprintWorkloadSpec(spec any) (string, error) {
@@ -177,15 +187,26 @@ func (provider *KubernetesProvider) applyHPA(ctx context.Context, spec *httpapi.
 		if hpa.Status.CurrentReplicas > 0 {
 			spec.Replicas = hpa.Status.CurrentReplicas
 		}
+		details := &httpapi.HPASpec{Name: hpa.Name, MinReplicas: defaultReplicas(hpa.Spec.MinReplicas), MaxReplicas: hpa.Spec.MaxReplicas, CurrentReplicas: hpa.Status.CurrentReplicas}
 		for _, metric := range hpa.Spec.Metrics {
 			switch {
 			case metric.Type == autoscalingv2.ResourceMetricSourceType && metric.Resource != nil &&
 				metric.Resource.Name == corev1.ResourceCPU && metric.Resource.Target.Type == autoscalingv2.UtilizationMetricType:
 				spec.HPAUtilizationBased = true
+				if metric.Resource.Target.AverageUtilization != nil {
+					details.TargetCPUUtilization = *metric.Resource.Target.AverageUtilization
+				}
 			case metric.Type == autoscalingv2.ContainerResourceMetricSourceType && metric.ContainerResource != nil &&
 				metric.ContainerResource.Name == corev1.ResourceCPU && metric.ContainerResource.Target.Type == autoscalingv2.UtilizationMetricType:
 				spec.HPAUtilizationBased = true
+				if metric.ContainerResource.Target.AverageUtilization != nil {
+					details.TargetCPUUtilization = *metric.ContainerResource.Target.AverageUtilization
+					details.Container = metric.ContainerResource.Container
+				}
 			}
+		}
+		if details.TargetCPUUtilization > 0 {
+			spec.HPA = details
 		}
 	}
 }
@@ -218,6 +239,14 @@ func (provider *KubernetesProvider) applyKEDA(ctx context.Context, spec *httpapi
 		}
 		if targetName == spec.Name && targetKind == spec.Kind {
 			spec.KEDAEnabled = true
+			triggers, _, _ := unstructured.NestedSlice(item.Object, "spec", "triggers")
+			for _, trigger := range triggers {
+				if values, ok := trigger.(map[string]any); ok {
+					if kind, ok := values["type"].(string); ok && kind != "" && len(spec.KEDATriggers) < 32 {
+						spec.KEDATriggers = append(spec.KEDATriggers, kind)
+					}
+				}
+			}
 		}
 	}
 }

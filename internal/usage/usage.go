@@ -75,8 +75,12 @@ func (subject Subject) Validate() error {
 // values are validated names rendered through strconv.Quote, which matches
 // PromQL's string-literal escaping.
 func (subject Subject) selector() string {
-	pods := regexp.QuoteMeta(subject.Workload) + podSuffixes[subject.Kind]
-	return "namespace=" + strconv.Quote(subject.Namespace) + ",pod=~" + strconv.Quote(pods) + ",container=" + strconv.Quote(subject.Container)
+	return "namespace=" + strconv.Quote(subject.Namespace) + ",pod=~" + strconv.Quote(podPattern(subject)) + ",container=" + strconv.Quote(subject.Container)
+}
+
+// podPattern matches the names of the workload's pods.
+func podPattern(subject Subject) string {
+	return regexp.QuoteMeta(subject.Workload) + podSuffixes[subject.Kind]
 }
 
 // Window is a query range ending at End.

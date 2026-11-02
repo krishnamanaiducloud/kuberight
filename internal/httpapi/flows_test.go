@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -295,13 +296,38 @@ func TestGenerateRecommendationFailureModes(t *testing.T) {
 	}
 }
 
+// createRecommendation stores a recommendation calculated from enough steady
+// samples to pass every validation, so it can be approved.
 func createRecommendation(t *testing.T, api testAPI, identity string) string {
 	t.Helper()
-	response, body := api.do(t, http.MethodPost, "/api/v1/recommendations", identity, `{"namespace":"shop","workload":"api","container":"app","cpuRequestMilli":500,"memoryRequestBytes":536870912,"cpuSamplesMilli":[100,120],"memorySamplesBytes":[200000000,210000000]}`)
+	cpu, memory := make([]string, 120), make([]string, 120)
+	for index := range cpu {
+		cpu[index] = strconv.Itoa(100 + index%10)
+		memory[index] = strconv.Itoa(200_000_000 + (index%10)*1_000_000)
+	}
+	payload := `{"namespace":"shop","workload":"api","container":"app","cpuRequestMilli":500,"memoryRequestBytes":536870912,"sampleIntervalSeconds":300,"cpuSamplesMilli":[` +
+		strings.Join(cpu, ",") + `],"memorySamplesBytes":[` + strings.Join(memory, ",") + `]}`
+	response, body := api.do(t, http.MethodPost, "/api/v1/recommendations", identity, payload)
 	if response.Code != http.StatusCreated {
 		t.Fatalf("create status=%d body=%s", response.Code, response.Body.String())
 	}
 	return body["id"].(string)
+}
+
+func TestUnsafeRecommendationsCannotBeApproved(t *testing.T) {
+	api := newTestAPI(t, nil, Dependencies{})
+	response, body := api.do(t, http.MethodPost, "/api/v1/recommendations", "alice", `{"namespace":"shop","workload":"api","container":"app","cpuRequestMilli":500,"memoryRequestBytes":536870912,"cpuSamplesMilli":[100,120],"memorySamplesBytes":[200000000,210000000]}`)
+	if response.Code != http.StatusCreated || body["assessment"].(map[string]any)["status"] != "insufficient_data" {
+		t.Fatalf("create status=%d body=%v", response.Code, body)
+	}
+	path := "/api/v1/recommendations/" + body["id"].(string) + "/review"
+	response, body = api.do(t, http.MethodPost, path, "bob", `{"decision":"approve"}`)
+	if response.Code != http.StatusConflict || body["error"].(map[string]any)["code"] != "recommendation_not_approvable" {
+		t.Fatalf("approving insufficient data: status=%d body=%v", response.Code, body)
+	}
+	if response, _ := api.do(t, http.MethodPost, path, "bob", `{"decision":"reject","comment":"not enough history"}`); response.Code != http.StatusOK {
+		t.Fatalf("rejecting must stay possible: status=%d", response.Code)
+	}
 }
 
 func TestReviewWorkflowEnforcesSeparationOfDuties(t *testing.T) {

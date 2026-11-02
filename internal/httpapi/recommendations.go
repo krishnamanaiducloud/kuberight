@@ -220,6 +220,10 @@ func (server *apiServer) resolveWorkload(w http.ResponseWriter, r *http.Request,
 		return WorkloadSpec{}, ContainerSpec{}, false
 	}
 	container, found := spec.Container(subject.Container)
+	if !found && spec.IsInitContainer(subject.Container) {
+		respondError(w, r, http.StatusUnprocessableEntity, "unsupported_container", "unsupported: init containers run to completion before the application starts, so their brief usage history cannot be sized safely; native sidecars (restartPolicy Always) are supported")
+		return WorkloadSpec{}, ContainerSpec{}, false
+	}
 	if !found {
 		respondError(w, r, http.StatusNotFound, "container_not_found", "the container was not found in the workload")
 		return WorkloadSpec{}, ContainerSpec{}, false
@@ -306,6 +310,7 @@ func (server *apiServer) generateRecommendation(w http.ResponseWriter, r *http.R
 	// Usage recorded before a rollout that materially changed it describes
 	// code that no longer runs, so size from post-rollout samples instead.
 	rolloutIssues := []string{}
+	recentRollout := false
 	if rollouts, rolloutErr := server.usage.Rollouts(r.Context(), subject, history.Start, history.End); rolloutErr == nil {
 		if at, change, ok := rolloutShift(history.CPU, rollouts); ok && math.Abs(change) >= rolloutShiftThreshold {
 			minimumSamples := optimizer.DefaultPolicy().MinimumSamples
@@ -315,6 +320,7 @@ func (server *apiServer) generateRecommendation(w http.ResponseWriter, r *http.R
 			cpuAfter, memoryAfter := history.CPU.Since(at), history.Memory.Since(at)
 			if len(cpuAfter.Points) >= minimumSamples && len(memoryAfter.Points) >= minimumSamples {
 				history.CPU, history.Memory = cpuAfter, memoryAfter
+				recentRollout = true
 				warnings = append(warnings, fmt.Sprintf("CPU changed %+.0f%% after the rollout at %s; only the %d post-rollout samples were used", change*100, at.Format(time.RFC3339), len(cpuAfter.Points)))
 			} else {
 				rolloutIssues = append(rolloutIssues, fmt.Sprintf("CPU changed %+.0f%% after the rollout at %s and too few post-rollout samples exist", change*100, at.Format(time.RFC3339)))
@@ -355,11 +361,18 @@ func (server *apiServer) generateRecommendation(w http.ResponseWriter, r *http.R
 			QueryFingerprint:        usage.RecommendationQueryFingerprint(subject, queryWindow),
 			ExpiresAt:               timePointer(queryWindow.End.Add(recommendationValidity)),
 		},
+		RecentRollout: recentRollout,
 	}
+	warnings = append(warnings, server.assessmentContext(r.Context(), &input, spec, history)...)
 	recommendation, err := optimizer.Recommend(input)
 	if err != nil {
 		respondError(w, r, http.StatusUnprocessableEntity, "invalid_recommendation_input", err.Error())
 		return
+	}
+	// Volatile or changing usage gets a shorter validity than the default.
+	if assessment := recommendation.Assessment; assessment != nil && assessment.ValidForSeconds > 0 {
+		expires := queryWindow.End.Add(time.Duration(assessment.ValidForSeconds) * time.Second)
+		recommendation.Provenance.ExpiresAt = &expires
 	}
 	warnings = append(warnings, informationalCPU...)
 	warnings = append(warnings, informationalMemory...)
@@ -514,6 +527,12 @@ func (server *apiServer) reviewRecommendation(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if status == repository.ReviewApproved {
+		// Hold, insufficient-data, and unsupported advice cannot be approved;
+		// it can still be rejected with a comment.
+		if approvable, reason := record.Approvable(); !approvable {
+			respondError(w, r, http.StatusConflict, "recommendation_not_approvable", reason)
+			return
+		}
 		staleReason, freshnessErr := server.recommendationStaleness(r.Context(), record)
 		if freshnessErr != nil {
 			server.logger.Warn("recommendation freshness check failed", "request_id", requestIDFromContext(r.Context()), "recommendation_id", id, "error", freshnessErr)

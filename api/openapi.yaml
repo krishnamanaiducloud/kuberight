@@ -307,7 +307,10 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
-          description: The recommendation has already been reviewed.
+          description: |
+            The recommendation has already been reviewed, is stale
+            (`recommendation_stale`), or its assessment status is not
+            `recommend` and it cannot be approved (`recommendation_not_approvable`).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
@@ -607,6 +610,83 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
         "503": { $ref: "#/components/responses/DependencyUnavailable" }
+
+  /api/v1/correlation:
+    get:
+      tags: [Inventory]
+      operationId: getCorrelationAnalysis
+      summary: Correlation analysis for one container
+      description: |
+        Aligns CPU, memory, throttling, replicas, per-replica CPU, optional
+        latency, request rate (`KUBERIGHT_REQUEST_RATE_QUERY`), and node
+        pressure on one time grid. Reports Pearson and Spearman correlations
+        with 95% confidence intervals adjusted for serial correlation, the
+        strongest lead or lag, level shifts with their nearest event, the
+        change around each rollout, scaling, restart, and OOM event, daily and
+        weekly seasonality, a rolling-origin backtest of the CPU forecast, the
+        container's latest recommendation, and its post-change verification
+        once approved. Correlations use only the samples after the latest
+        rollout when enough remain. Every report states that correlation is
+        not causation. Requires the `list` verb on `metrics-history`; the
+        recommendation is included only with `list` on `recommendations`.
+      parameters:
+        - $ref: "#/components/parameters/SubjectNamespace"
+        - $ref: "#/components/parameters/SubjectKind"
+        - $ref: "#/components/parameters/SubjectWorkload"
+        - $ref: "#/components/parameters/SubjectContainer"
+        - name: window
+          in: query
+          schema: { type: string, default: 168h, description: Between 1h and 720h. }
+      responses:
+        "200":
+          description: Signals, extra series, the correlation report, forecast evaluation, recommendation, and verification.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+        "503": { $ref: "#/components/responses/DependencyUnavailable" }
+
+  /api/v1/recommendations/{id}/verification:
+    get:
+      tags: [Recommendations]
+      operationId: getRecommendationVerification
+      summary: Post-change verification of an approved recommendation
+      description: |
+        Checks whether the approved values are live and, after at least an
+        hour of post-change history, compares OOM kills, restarts per hour,
+        CPU throttling, latency, and peak memory with the history the
+        recommendation was based on. A regression is announced once through
+        the `recommendation.regressed` webhook and counted in the
+        `kuberight_recommendation_regressions` metric. Requires `get` on
+        `recommendations`.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^rec_.+$'
+            minLength: 5
+            maxLength: 64
+      responses:
+        "200":
+          description: The verification verdict.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Verification"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: The recommendation has not been approved.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
 
   /api/v1/forecasts:
     get:
@@ -1153,6 +1233,164 @@ components:
           $ref: "#/components/schemas/AutoscalingContext"
         policy:
           $ref: "#/components/schemas/Policy"
+        pod:
+          type: object
+          additionalProperties: true
+          description: |
+            The pod template: `containers`, `initContainers` (with `sidecar`
+            for restartPolicy Always), and RuntimeClass overhead. Enables QoS
+            protection, pod-level LimitRange checks, scheduling checks, and
+            workload aggregation. At most 64 containers and 64 init containers.
+        namespacePolicy:
+          type: object
+          additionalProperties: true
+          description: Namespace `limitRanges` (Container or Pod) and `quotas` (hard and used, -1 when unconstrained).
+        nodes:
+          type: array
+          maxItems: 10000
+          description: Schedulable nodes' allocatable capacity.
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              name: { type: string }
+              cpuMilli: { type: integer, minimum: 0 }
+              memoryBytes: { type: integer, minimum: 0 }
+        hpa:
+          type: object
+          additionalProperties: false
+          description: A CPU-utilization HPA, used to project the replica count after the change.
+          properties:
+            minReplicas: { type: integer, minimum: 0 }
+            maxReplicas: { type: integer, minimum: 0 }
+            targetCpuUtilization: { type: integer, minimum: 0, maximum: 10000 }
+            currentReplicas: { type: integer, minimum: 0 }
+            containerMetric: { type: boolean }
+        forecast:
+          type: object
+          additionalProperties: true
+          description: |
+            Predicted peak demand over the trend horizon with its interval
+            upper bounds, nominal `intervalLevel`, and held-out
+            `empiricalCoverage`. A calibrated forecast (coverage within 10
+            points of nominal) can raise, never lower, the sizing statistic.
+        recentRollout:
+          type: boolean
+          description: Usage is still settling after a rollout; shortens the validity period.
+
+    Assessment:
+      type: object
+      additionalProperties: true
+      description: |
+        The verdict and its evidence. Only `recommend` may be approved;
+        `hold`, `insufficient_data`, and `unsupported` explain why no safe
+        change is offered and are returned with HTTP 200 like any result.
+      required: [status, statusReasons, riskScore, current, recommended, safetyMargins, validation, outOfSample, qos, checks, expectedSavings, validFor, validForSeconds, explanation]
+      properties:
+        status:
+          type: string
+          enum: [recommend, hold, insufficient_data, unsupported]
+        statusReasons:
+          type: array
+          items: { type: string }
+        riskScore: { type: number, minimum: 0, maximum: 1 }
+        current:
+          $ref: "#/components/schemas/Quantities"
+        recommended:
+          $ref: "#/components/schemas/Quantities"
+        safetyMargins:
+          type: object
+          additionalProperties: true
+          description: Dynamic CPU and memory margins with base, variability, burst, uncertainty, and criticality components.
+        seasonality:
+          type: object
+          additionalProperties: true
+        validation:
+          type: array
+          description: Recent-window replays (last quarter, last half, full window) of the recommendation.
+          items: { type: object, additionalProperties: true }
+        outOfSample:
+          type: object
+          additionalProperties: true
+          description: Sized from the first 70% of samples and measured on the remaining 30%.
+        qos:
+          type: object
+          additionalProperties: true
+          description: Pod QoS class before and after; Guaranteed pods stay Guaranteed.
+        checks:
+          type: array
+          description: LimitRange, ResourceQuota, and scheduling checks with status pass, fail, adjusted, unknown, or not_applicable.
+          items:
+            type: object
+            additionalProperties: false
+            required: [name, status, detail]
+            properties:
+              name: { type: string }
+              status: { type: string, enum: [pass, fail, adjusted, unknown, not_applicable] }
+              detail: { type: string }
+        autoscaling:
+          type: object
+          additionalProperties: true
+          description: HPA replica projection and KEDA and VPA interaction.
+        workload:
+          type: object
+          additionalProperties: true
+          description: Effective pod requests (init containers by maximum, sidecars summed, overhead added) times replicas.
+        forecast:
+          type: object
+          additionalProperties: true
+          description: Predicted demand from the ML service (with interval and calibration) or from the trend.
+        expectedSavings:
+          type: object
+          additionalProperties: false
+          properties:
+            cpuMilli: { type: integer }
+            memoryBytes: { type: integer }
+        validFor: { type: string }
+        validForSeconds: { type: integer, minimum: 0 }
+        explanation:
+          type: array
+          items: { type: string }
+
+    Quantities:
+      type: object
+      additionalProperties: false
+      required: [cpuRequest, memoryRequest]
+      properties:
+        cpuRequest: { type: string, example: 250m }
+        cpuLimit: { type: string }
+        memoryRequest: { type: string, example: 512Mi }
+        memoryLimit: { type: string }
+
+    Verification:
+      type: object
+      additionalProperties: false
+      required: [recommendationId, status, applied, checks, reasons, checkedAt]
+      properties:
+        recommendationId: { type: string }
+        status:
+          type: string
+          enum: [unavailable, not_applied, pending, verified, regressed]
+        applied: { type: boolean }
+        appliedAt: { type: string, format: date-time }
+        appliedAtSource: { type: string }
+        postChangeWindow: { type: string }
+        checks:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [name, regressed, detail]
+            properties:
+              name: { type: string }
+              before: { type: number }
+              after: { type: number }
+              regressed: { type: boolean }
+              detail: { type: string }
+        reasons:
+          type: array
+          items: { type: string }
+        checkedAt: { type: string, format: date-time }
 
     AutoscalingContext:
       type: object
@@ -1337,6 +1575,8 @@ components:
         reviewedBy: { type: string }
         reviewedAt: { type: string, format: date-time }
         reviewComment: { type: string, maxLength: 1024 }
+        assessment:
+          $ref: "#/components/schemas/Assessment"
 
     ReviewStatus:
       type: string

@@ -78,6 +78,14 @@ type Config struct {
 	// resource signals. It must use $namespace, $workload, or $container.
 	LatencyQuery string
 
+	// RequestRateQuery is an optional PromQL template, in requests per
+	// second, that correlation analysis compares with usage and latency.
+	RequestRateQuery string
+
+	// VerificationInterval is how often approved recommendations are checked
+	// for post-change regressions. Zero disables the background check.
+	VerificationInterval time.Duration
+
 	// WebhookURL receives recommendation lifecycle events. WebhookSecret,
 	// when set, signs each body with HMAC-SHA256. WebhookFormat is json or
 	// slack.
@@ -92,6 +100,7 @@ type Config struct {
 
 const (
 	DefaultRecommendationWindow = 7 * 24 * time.Hour
+	DefaultVerificationInterval = 15 * time.Minute
 	DefaultRecommendationStep   = 5 * time.Minute
 	DefaultForecastWindow       = 14 * 24 * time.Hour
 	DefaultForecastStep         = time.Hour
@@ -154,6 +163,7 @@ func Load() (Config, error) {
 		MLAPIKey:           os.Getenv("KUBERIGHT_ML_API_KEY"),
 		CostCurrency:       strings.ToUpper(envOr("KUBERIGHT_COST_CURRENCY", "USD")),
 		LatencyQuery:       strings.TrimSpace(os.Getenv("KUBERIGHT_LATENCY_QUERY")),
+		RequestRateQuery:   strings.TrimSpace(os.Getenv("KUBERIGHT_REQUEST_RATE_QUERY")),
 		WebhookURL:         strings.TrimSpace(os.Getenv("KUBERIGHT_WEBHOOK_URL")),
 		WebhookSecret:      os.Getenv("KUBERIGHT_WEBHOOK_SECRET"),
 		WebhookFormat:      strings.ToLower(envOr("KUBERIGHT_WEBHOOK_FORMAT", "json")),
@@ -224,6 +234,7 @@ func Load() (Config, error) {
 		{"KUBERIGHT_RECOMMENDATION_STEP", DefaultRecommendationStep, 15 * time.Second, time.Hour, &cfg.RecommendationStep},
 		{"KUBERIGHT_FORECAST_WINDOW", DefaultForecastWindow, 2 * 24 * time.Hour, 30 * 24 * time.Hour, &cfg.ForecastWindow},
 		{"KUBERIGHT_FORECAST_STEP", DefaultForecastStep, time.Minute, 24 * time.Hour, &cfg.ForecastStep},
+		{"KUBERIGHT_VERIFICATION_INTERVAL", DefaultVerificationInterval, 0, 24 * time.Hour, &cfg.VerificationInterval},
 	}
 	for _, item := range durations {
 		value, parseErr := parseDuration(item.name, item.defaultValue, item.minimum, item.maximum)
@@ -327,6 +338,14 @@ func (c Config) Validate() error {
 		if len(c.LatencyQuery) > 2048 || strings.ContainsAny(c.LatencyQuery, "\r\n") || !strings.Contains(c.LatencyQuery, "$") {
 			return errors.New("KUBERIGHT_LATENCY_QUERY must be one line of at most 2048 bytes using $namespace, $workload, or $container")
 		}
+	}
+	if c.RequestRateQuery != "" {
+		if len(c.RequestRateQuery) > 2048 || strings.ContainsAny(c.RequestRateQuery, "\r\n") || !strings.Contains(c.RequestRateQuery, "$") {
+			return errors.New("KUBERIGHT_REQUEST_RATE_QUERY must be one line of at most 2048 bytes using $namespace, $workload, or $container")
+		}
+	}
+	if c.VerificationInterval != 0 && (c.VerificationInterval < time.Minute || c.VerificationInterval > 24*time.Hour) {
+		return errors.New("KUBERIGHT_VERIFICATION_INTERVAL must be 0 (disabled) or between 1m and 24h")
 	}
 	if err := validateUpstream("KUBERIGHT_WEBHOOK_URL", c.WebhookURL, c.AllowInsecureUpstreams, "KUBERIGHT_ALLOW_INSECURE_UPSTREAMS=true"); err != nil {
 		return err

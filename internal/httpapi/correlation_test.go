@@ -335,7 +335,7 @@ func TestMetricsExportRecommendationsWhenEnabled(t *testing.T) {
 	for _, want := range []string{
 		`kuberight_recommendation_cpu_request_millicores{cluster="",namespace="shop",kind="",workload="api",container="app",state="current"} 500`,
 		`kuberight_recommendation_memory_request_bytes{cluster="",namespace="shop",kind="",workload="api",container="app",state="current"} 536870912`,
-		`kuberight_recommendation_info{cluster="",namespace="shop",kind="",workload="api",container="app",review_status="pending",risk="high",confidence="low",source="request"} 1`,
+		`kuberight_recommendation_info{cluster="",namespace="shop",kind="",workload="api",container="app",review_status="pending",risk="medium",confidence="medium",source="request"} 1`,
 		`kuberight_recommendation_monthly_savings{cluster="",namespace="shop"`,
 		`kuberight_webhook_events_total{outcome="delivered"} 4`,
 	} {
