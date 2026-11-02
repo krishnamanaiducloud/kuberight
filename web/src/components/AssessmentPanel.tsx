@@ -69,7 +69,7 @@ export function AssessmentPanel({ assessment }: { assessment: Assessment }) {
 
       <Section title="Kubernetes quantities">
         <Box sx={{ overflowX: 'auto' }}>
-          <Table size="small" aria-label="Current and recommended quantities" sx={{ '& th, & td': { px: { xs: 0.75, sm: 2 } } }}>
+          <Table size="small" aria-label="Current and recommended quantities" sx={{ '& th, & td': { px: { xs: 0.5, sm: 2 }, fontSize: { xs: '0.8rem', sm: '0.875rem' } } }}>
             <TableHead><TableRow><TableCell /><TableCell>CPU request</TableCell><TableCell>CPU limit</TableCell><TableCell>Memory request</TableCell><TableCell>Memory limit</TableCell></TableRow></TableHead>
             <TableBody>
               {([['Current', assessment.current], ['Recommended', assessment.recommended]] as const).map(([label, values]) => (
