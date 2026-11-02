@@ -13,11 +13,11 @@ metadata:
   name: kuberight
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.1
+    helm.sh/chart: kuberight-0.1.0-rc.2
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.1"
+    app.kubernetes.io/version: "0.1.0-rc.2"
     app.kubernetes.io/component: server
 spec:
   podSelector:
@@ -42,11 +42,11 @@ metadata:
   name: kuberight
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.1
+    helm.sh/chart: kuberight-0.1.0-rc.2
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.1"
+    app.kubernetes.io/version: "0.1.0-rc.2"
     app.kubernetes.io/component: server
 spec:
   minAvailable: 1
@@ -64,11 +64,11 @@ metadata:
   name: kuberight
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.1
+    helm.sh/chart: kuberight-0.1.0-rc.2
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.1"
+    app.kubernetes.io/version: "0.1.0-rc.2"
     app.kubernetes.io/component: server
 automountServiceAccountToken: true
 
@@ -79,11 +79,11 @@ kind: ClusterRole
 metadata:
   name: kuberight-8cde1ab2-auth-reviewer
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.1
+    helm.sh/chart: kuberight-0.1.0-rc.2
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.1"
+    app.kubernetes.io/version: "0.1.0-rc.2"
     app.kubernetes.io/component: server
 rules:
   - apiGroups: ["authentication.k8s.io"]
@@ -100,11 +100,11 @@ kind: ClusterRoleBinding
 metadata:
   name: kuberight-8cde1ab2-auth-reviewer
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.1
+    helm.sh/chart: kuberight-0.1.0-rc.2
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.1"
+    app.kubernetes.io/version: "0.1.0-rc.2"
     app.kubernetes.io/component: server
 roleRef:
   apiGroup: rbac.authorization.k8s.io
@@ -123,11 +123,11 @@ metadata:
   name: kuberight-workloads
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.1
+    helm.sh/chart: kuberight-0.1.0-rc.2
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.1"
+    app.kubernetes.io/version: "0.1.0-rc.2"
     app.kubernetes.io/component: server
 rules:
   # Pod ownerReferences attribute container metrics to exact controllers;
@@ -164,11 +164,11 @@ metadata:
   name: kuberight-workloads
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.1
+    helm.sh/chart: kuberight-0.1.0-rc.2
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.1"
+    app.kubernetes.io/version: "0.1.0-rc.2"
     app.kubernetes.io/component: server
 roleRef:
   apiGroup: rbac.authorization.k8s.io
@@ -187,11 +187,11 @@ metadata:
   name: kuberight
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.1
+    helm.sh/chart: kuberight-0.1.0-rc.2
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.1"
+    app.kubernetes.io/version: "0.1.0-rc.2"
     app.kubernetes.io/component: server
 spec:
   type: ClusterIP
@@ -213,11 +213,11 @@ metadata:
   name: kuberight
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.1
+    helm.sh/chart: kuberight-0.1.0-rc.2
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.1"
+    app.kubernetes.io/version: "0.1.0-rc.2"
     app.kubernetes.io/component: server
 spec:
   replicas: 1
@@ -250,7 +250,7 @@ spec:
       terminationGracePeriodSeconds: 30
       containers:
         - name: kuberight
-          image: "mohankrishna999/kuberight:0.1.0-rc.1"
+          image: "mohankrishna999/kuberight:0.1.0-rc.2"
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false

@@ -41,11 +41,11 @@ def test_health_readiness_metrics_and_security_headers(client: TestClient) -> No
     health = client.get("/healthz", headers={"X-Request-ID": "test-request-1"})
     assert health.status_code == 200
     assert health.json()["status"] == "ok"
-    assert health.json()["version"] == "0.1.0-rc.1"
+    assert health.json()["version"] == "0.1.0-rc.2"
     assert health.headers["x-request-id"] == "test-request-1"
     assert health.headers["x-content-type-options"] == "nosniff"
     assert client.get("/readyz").json()["status"] == "ready"
-    assert client.get("/openapi.json").json()["info"]["version"] == "0.1.0-rc.1"
+    assert client.get("/openapi.json").json()["info"]["version"] == "0.1.0-rc.2"
 
     metrics = client.get("/metrics")
     assert metrics.status_code == 200

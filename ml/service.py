@@ -38,7 +38,7 @@ from sklearn.pipeline import Pipeline, make_pipeline
 from sklearn.preprocessing import StandardScaler
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-SERVICE_VERSION = "0.1.0-rc.1"
+SERVICE_VERSION = "0.1.0-rc.2"
 MODEL_SCHEMA_VERSION = "ridge-features-v1"
 MIN_API_SAMPLES = 48
 MAX_API_SAMPLES = 10_080

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: KubeRight API
-  version: 0.1.0-rc.1
+  version: 0.1.0-rc.2
   description: |
     The HTTP contract implemented by the KubeRight Go service. All `/api/v1`
     operations require a bearer token. The token is authenticated either with
