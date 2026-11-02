@@ -28,6 +28,8 @@ const checkLabel: Record<CheckStatus, string> = { pass: 'Pass', fail: 'Fail', ad
 
 const share = (value?: number) => (value === undefined ? '—' : `${(value * 100).toFixed(value < 0.1 ? 1 : 0)}%`)
 const margin = (value: number) => `${Math.round(value * 100)}%`
+// Long evidence chips wrap on narrow screens instead of being cut off with an ellipsis.
+const wrappingChip = { height: 'auto', maxWidth: '100%', '& .MuiChip-label': { whiteSpace: 'normal', overflowWrap: 'anywhere', py: 0.25 } }
 
 /** A pill that names the verdict; used in tables and headers. */
 export function AssessmentStatusChip({ status }: { status: AssessmentStatus }) {
@@ -67,7 +69,7 @@ export function AssessmentPanel({ assessment }: { assessment: Assessment }) {
 
       <Section title="Kubernetes quantities">
         <Box sx={{ overflowX: 'auto' }}>
-          <Table size="small" aria-label="Current and recommended quantities">
+          <Table size="small" aria-label="Current and recommended quantities" sx={{ '& th, & td': { px: { xs: 0.75, sm: 2 } } }}>
             <TableHead><TableRow><TableCell /><TableCell>CPU request</TableCell><TableCell>CPU limit</TableCell><TableCell>Memory request</TableCell><TableCell>Memory limit</TableCell></TableRow></TableHead>
             <TableBody>
               {([['Current', assessment.current], ['Recommended', assessment.recommended]] as const).map(([label, values]) => (
@@ -83,11 +85,11 @@ export function AssessmentPanel({ assessment }: { assessment: Assessment }) {
           </Table>
         </Box>
         <Stack direction="row" gap={1} flexWrap="wrap" sx={{ mt: 1 }}>
-          <Chip size="small" variant="outlined" label={`Saves ${formatMillicores(savings.cpuMilli)} CPU and ${formatBytes(savings.memoryBytes)} memory across replicas`} color={savings.cpuMilli < 0 || savings.memoryBytes < 0 ? 'warning' : 'default'} />
+          <Chip size="small" variant="outlined" label={`Saves ${formatMillicores(savings.cpuMilli)} CPU and ${formatBytes(savings.memoryBytes)} memory across replicas`} color={savings.cpuMilli < 0 || savings.memoryBytes < 0 ? 'warning' : 'default'} sx={wrappingChip} />
           <Chip size="small" variant="outlined" label={`QoS ${assessment.qos.current} → ${assessment.qos.recommended}${assessment.qos.protected ? ' (protected)' : ''}`} />
           {assessment.workload && (
             <Tooltip title="Effective pod requests: init containers by their maximum, sidecars and application containers summed, overhead added, times replicas.">
-              <Chip size="small" variant="outlined" label={`Workload ${formatMillicores(assessment.workload.totalCurrentCpuMilli)} → ${formatMillicores(assessment.workload.totalRecommendedCpuMilli)} CPU${assessment.workload.approximate ? ' (container only)' : ''}`} />
+              <Chip size="small" variant="outlined" label={`Workload ${formatMillicores(assessment.workload.totalCurrentCpuMilli)} → ${formatMillicores(assessment.workload.totalRecommendedCpuMilli)} CPU${assessment.workload.approximate ? ' (container only)' : ''}`} sx={wrappingChip} />
             </Tooltip>
           )}
         </Stack>
@@ -104,7 +106,7 @@ export function AssessmentPanel({ assessment }: { assessment: Assessment }) {
             )
           })}
           {forecast && (
-            <Chip size="small" variant="outlined" color={forecast.calibrated ? 'default' : 'warning'}
+            <Chip size="small" variant="outlined" color={forecast.calibrated ? 'default' : 'warning'} sx={wrappingChip}
               label={`${forecast.source === 'ml' ? 'ML' : 'Trend'} forecast ${formatMillicores(forecast.cpuMilli)} CPU${forecast.cpuUpperMilli ? ` (≤ ${formatMillicores(forecast.cpuUpperMilli)})` : ''} over ${forecast.horizon}${forecast.empiricalCoverage !== undefined ? `, ${share(forecast.empiricalCoverage)} held-out coverage` : ''}${forecast.usedForSizing ? ' · used for sizing' : ''}`} />
           )}
         </Stack>

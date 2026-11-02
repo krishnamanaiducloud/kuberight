@@ -72,9 +72,9 @@ export function Overview() {
           <CardContent>
             <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 2 }}><Typography variant="h6">Dependency posture</Typography>{value?.generatedAt && <Typography variant="caption" color="text.secondary">As of {new Date(value.generatedAt).toLocaleString()}</Typography>}</Stack>
             {query.isLoading ? <LinearProgress /> : !value?.dependencies?.length ? <Typography color="text.secondary">No dependency status has been reported.</Typography> : value.dependencies.map((dependency) => (
-              <Stack key={dependency.name} direction="row" justifyContent="space-between" alignItems="center" sx={{ py: 1.25, borderBottom: '1px solid', borderColor: 'divider' }}>
-                <Box><Typography sx={{ fontWeight: 700 }}>{dependency.name}</Typography><Typography variant="caption" color="text.secondary">{dependency.detail ?? 'No detail supplied'}</Typography></Box>
-                <Chip size="small" label={dependency.healthy ? 'Healthy' : dependency.configured === false ? 'Not configured' : 'Unavailable'} color={dependency.healthy ? 'success' : dependency.configured === false ? 'default' : 'warning'} variant="outlined" />
+              <Stack key={dependency.name} direction="row" justifyContent="space-between" alignItems="center" gap={1.5} sx={{ py: 1.25, borderBottom: '1px solid', borderColor: 'divider' }}>
+                <Box sx={{ minWidth: 0 }}><Typography sx={{ fontWeight: 700 }}>{dependency.name}</Typography><Typography variant="caption" color="text.secondary" sx={{ overflowWrap: 'anywhere' }}>{dependency.detail ?? 'No detail supplied'}</Typography></Box>
+                <Chip size="small" label={dependency.healthy ? 'Healthy' : dependency.configured === false ? 'Not configured' : 'Unavailable'} color={dependency.healthy ? 'success' : dependency.configured === false ? 'default' : 'warning'} variant="outlined" sx={{ flexShrink: 0 }} />
               </Stack>
             ))}
           </CardContent>
