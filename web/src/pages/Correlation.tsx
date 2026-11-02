@@ -172,7 +172,7 @@ export function CorrelationView({ subject, usageWindow }: { subject: Subject; us
           ? <Typography color="text.secondary">Not enough overlapping data to correlate. CPU and memory charts are still shown below.</Typography>
           : (
             <Box sx={{ overflowX: 'auto' }}>
-              <Table size="small" aria-label="Correlations">
+              <Table size="small" aria-label="Correlations" sx={{ '& th, & td:nth-of-type(2), & td:nth-of-type(6), & td:nth-of-type(7)': { whiteSpace: 'nowrap' } }}>
                 <TableHead>
                   <TableRow><TableCell>Signals</TableCell><TableCell>r (95% CI)</TableCell><TableCell sx={{ minWidth: 140 }}>Interval</TableCell><TableCell>Strength</TableCell><TableCell>Timing</TableCell><TableCell>Spearman</TableCell><TableCell>p</TableCell></TableRow>
                 </TableHead>
