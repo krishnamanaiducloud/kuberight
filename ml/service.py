@@ -19,7 +19,7 @@ import threading
 import time
 import uuid
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -44,6 +44,9 @@ MIN_API_SAMPLES = 48
 MAX_API_SAMPLES = 10_080
 MAX_API_HORIZON = 168
 MAX_SAMPLE_VALUE = 1.0e18
+MAX_BACKTEST_ORIGINS = 4
+MAX_CALIBRATION_FACTOR = 3.0
+CALIBRATION_TOLERANCE = 0.10
 SERIES_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
@@ -232,6 +235,26 @@ class ValidationSummary(BaseModel):
     improvement_ratio: float | None = Field(serialization_alias="improvementRatio")
 
 
+class CalibrationSummary(BaseModel):
+    """Interval calibration measured on data the interval offsets never saw.
+
+    Offsets come from the earlier validation folds; coverage is measured on the
+    last fold. When coverage falls short of the nominal level, offsets are
+    widened by the smallest factor (at most MAX_CALIBRATION_FACTOR) that reaches
+    it on that fold, and the final intervals use the widened offsets.
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    method: str = "split-conformal-last-fold"
+    nominal_coverage: float = Field(serialization_alias="nominalCoverage")
+    held_out_coverage: float | None = Field(serialization_alias="heldOutCoverage")
+    calibrated_coverage: float | None = Field(serialization_alias="calibratedCoverage")
+    factor: float
+    evaluation_samples: int = Field(serialization_alias="evaluationSamples")
+    calibrated: bool
+
+
 class SeasonalitySummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -311,9 +334,110 @@ class ForecastResponse(BaseModel):
     data_quality: DataQualitySummary = Field(serialization_alias="dataQuality")
     retraining: RetrainingSummary
     model_metadata: ModelMetadata = Field(serialization_alias="modelMetadata")
+    calibration: CalibrationSummary
     generated_at: datetime = Field(serialization_alias="generatedAt")
     experimental: bool = True
     warning: str
+
+
+class BacktestRequest(BaseModel):
+    """History to replay: forecasts start at past origins and are scored on what followed."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    samples: list[FiniteSample] = Field(min_length=MIN_API_SAMPLES + 1, max_length=MAX_API_SAMPLES)
+    horizon: int = Field(default=12, ge=1, le=MAX_API_HORIZON)
+    origins: int = Field(default=3, ge=1, le=MAX_BACKTEST_ORIGINS)
+    interval_seconds: int = Field(default=3_600, ge=1, le=86_400)
+    resource: Literal["cpu", "memory"] = "cpu"
+    confidence_level: float = Field(default=0.9, ge=0.8, le=0.95)
+
+    @model_validator(mode="after")
+    def validate_levels(self) -> BacktestRequest:
+        if self.confidence_level not in (0.8, 0.9, 0.95):
+            raise ValueError("confidence_level must be one of 0.8, 0.9, or 0.95")
+        if len(self.samples) - self.origins * self.horizon < MIN_API_SAMPLES:
+            raise ValueError(
+                f"at least {MIN_API_SAMPLES} samples must precede the earliest backtest origin"
+            )
+        return self
+
+
+class BacktestPoint(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    index: int
+    actual: float
+    predicted: float
+    lower: float
+    upper: float
+    baseline: float
+
+
+class ForecastScore(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    samples: int
+    mae: float
+    rmse: float
+    smape: float
+    mape: float | None
+    coverage: float
+    mean_interval_width: float = Field(serialization_alias="meanIntervalWidth")
+    baseline_mae: float = Field(serialization_alias="baselineMAE")
+    skill: float | None
+
+
+class BacktestOrigin(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    origin_index: int = Field(serialization_alias="originIndex")
+    model: str
+    calibrated: bool
+    score: ForecastScore
+
+
+class BacktestResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    method: str = "rolling-origin-no-future-observations"
+    horizon: int
+    nominal_coverage: float = Field(serialization_alias="nominalCoverage")
+    origins: list[BacktestOrigin]
+    overall: ForecastScore
+    points: list[BacktestPoint]
+    generated_at: datetime = Field(serialization_alias="generatedAt")
+    warning: str
+
+
+def _score(
+    actual: np.ndarray,
+    predicted: np.ndarray,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    baseline: np.ndarray,
+) -> ForecastScore:
+    errors = actual - predicted
+    absolute = np.abs(errors)
+    denominator = np.abs(actual) + np.abs(predicted)
+    smape_terms = np.where(denominator > 0, 2 * absolute / np.maximum(denominator, 1e-12), 0.0)
+    nonzero = np.abs(actual) > 1e-12
+    mape = float(np.mean(absolute[nonzero] / np.abs(actual[nonzero]))) if nonzero.any() else None
+    scale = max(float(np.mean(np.abs(actual))), np.finfo(float).eps)
+    mae = float(np.mean(absolute))
+    baseline_mae = float(np.mean(np.abs(actual - baseline)))
+    skill = None if baseline_mae <= np.finfo(float).eps else 1.0 - mae / baseline_mae
+    return ForecastScore(
+        samples=len(actual),
+        mae=round(mae, 9),
+        rmse=round(float(np.sqrt(np.mean(errors**2))), 9),
+        smape=round(float(np.mean(smape_terms)), 6),
+        mape=round(mape, 6) if mape is not None else None,
+        coverage=round(float(np.mean((lower <= actual) & (actual <= upper))), 6),
+        mean_interval_width=round(float(np.mean(upper - lower)) / scale, 6),
+        baseline_mae=round(baseline_mae, 9),
+        skill=round(skill, 6) if skill is not None else None,
+    )
 
 
 @dataclass
@@ -326,6 +450,7 @@ class _ValidationResult:
     improvement_ratio: float | None
     model_residuals: list[float]
     baseline_residuals: list[float]
+    fold_lengths: list[int] = field(default_factory=list)
 
 
 class _DeadlineExceeded(RuntimeError):
@@ -648,6 +773,7 @@ def _chronological_validation(
     model_residuals: list[float] = []
     baseline_residuals: list[float] = []
     completed_cutoffs: list[int] = []
+    fold_lengths: list[int] = []
     model_failed = False
     for cutoff in cutoffs:
         deadline.check()
@@ -655,6 +781,7 @@ def _chronological_validation(
         actual = values[cutoff:validation_end]
         baseline = _baseline_forecast(values[:cutoff], len(actual), period)
         baseline_residuals.extend((actual - np.asarray(baseline)).tolist())
+        fold_lengths.append(len(actual))
         try:
             model = _fit_model(values[:cutoff], period)
             deadline.check()
@@ -686,6 +813,7 @@ def _chronological_validation(
         improvement_ratio=improvement,
         model_residuals=model_residuals,
         baseline_residuals=baseline_residuals,
+        fold_lengths=fold_lengths,
     )
 
 
@@ -758,17 +886,60 @@ def _data_quality(request: ForecastRequest, truncated: bool) -> DataQualitySumma
     )
 
 
-def _confidence_intervals(
-    predictions: list[float], residuals: list[float], level: float
-) -> list[ConfidenceInterval]:
+def _interval_offsets(residuals: list[float], level: float) -> tuple[float, float]:
+    """Return the lower (<= 0) and upper (>= 0) residual offsets for a level."""
     if len(residuals) >= 8:
         alpha = (1.0 - level) / 2.0
         low_offset, high_offset = np.quantile(residuals, [alpha, 1.0 - alpha]).tolist()
-        low_offset = min(0.0, float(low_offset))
-        high_offset = max(0.0, float(high_offset))
-    else:
-        scale = float(np.std(residuals)) if residuals else 0.0
-        low_offset, high_offset = -1.645 * scale, 1.645 * scale
+        return min(0.0, float(low_offset)), max(0.0, float(high_offset))
+    scale = float(np.std(residuals)) if residuals else 0.0
+    return -1.645 * scale, 1.645 * scale
+
+
+def _coverage(residuals: list[float], low_offset: float, high_offset: float) -> float:
+    inside = sum(1 for value in residuals if low_offset <= value <= high_offset)
+    return inside / len(residuals)
+
+
+def _calibrate(residuals: list[float], fold_lengths: list[int], level: float) -> CalibrationSummary:
+    """Measure interval coverage on the last validation fold and widen to reach it."""
+    uncalibrated = CalibrationSummary(
+        nominal_coverage=level,
+        held_out_coverage=None,
+        calibrated_coverage=None,
+        factor=1.0,
+        evaluation_samples=0,
+        calibrated=False,
+    )
+    if len(fold_lengths) < 2 or len(residuals) != sum(fold_lengths):
+        return uncalibrated
+    split = len(residuals) - fold_lengths[-1]
+    calibration_set, evaluation_set = residuals[:split], residuals[split:]
+    if len(calibration_set) < 8 or len(evaluation_set) < 8:
+        return uncalibrated
+    low_offset, high_offset = _interval_offsets(calibration_set, level)
+    held_out = _coverage(evaluation_set, low_offset, high_offset)
+    factor = 1.0
+    while _coverage(evaluation_set, low_offset * factor, high_offset * factor) < level:
+        if factor >= MAX_CALIBRATION_FACTOR:
+            break
+        factor = min(MAX_CALIBRATION_FACTOR, factor + 0.05)
+    calibrated_coverage = _coverage(evaluation_set, low_offset * factor, high_offset * factor)
+    return CalibrationSummary(
+        nominal_coverage=level,
+        held_out_coverage=round(held_out, 6),
+        calibrated_coverage=round(calibrated_coverage, 6),
+        factor=round(factor, 2),
+        evaluation_samples=len(evaluation_set),
+        calibrated=calibrated_coverage >= level - CALIBRATION_TOLERANCE,
+    )
+
+
+def _confidence_intervals(
+    predictions: list[float], residuals: list[float], level: float, factor: float = 1.0
+) -> list[ConfidenceInterval]:
+    low_offset, high_offset = _interval_offsets(residuals, level)
+    low_offset, high_offset = low_offset * factor, high_offset * factor
     intervals: list[ConfidenceInterval] = []
     for index, prediction in enumerate(predictions):
         widening = math.sqrt(1.0 + index / max(1, len(predictions)))
@@ -1015,8 +1186,11 @@ class ForecastEngine:
         if quality.irregular_intervals:
             retraining_reasons.append("sampling interval is irregular")
         serialized_predictions = [round(value, 9) for value in predictions]
+        calibration = _calibrate(residuals, validation.fold_lengths, request.confidence_level)
         intervals = (
-            _confidence_intervals(serialized_predictions, residuals, request.confidence_level)
+            _confidence_intervals(
+                serialized_predictions, residuals, request.confidence_level, calibration.factor
+            )
             if residuals
             else _unvalidated_uncertainty_bounds(
                 serialized_predictions, values, request.confidence_level
@@ -1075,6 +1249,7 @@ class ForecastEngine:
                 training_samples=len(values),
                 persisted=persisted,
             ),
+            calibration=calibration,
             generated_at=now,
             warning=(
                 "Experimental forecast for decision support only; enforce workload policy and "
@@ -1085,6 +1260,86 @@ class ForecastEngine:
                     if not residuals
                     else ""
                 )
+            ),
+        )
+
+    def backtest(self, request: BacktestRequest) -> BacktestResponse:
+        """Forecast from past origins and score each forecast on the samples that followed."""
+        values = np.asarray(request.samples, dtype=float)
+        origins: list[BacktestOrigin] = []
+        actual_all: list[np.ndarray] = []
+        parts: dict[str, list[np.ndarray]] = {
+            "predicted": [],
+            "lower": [],
+            "upper": [],
+            "baseline": [],
+        }
+        points: list[BacktestPoint] = []
+        for position in range(request.origins):
+            cut = len(values) - (request.origins - position) * request.horizon
+            history = values[:cut]
+            actual = values[cut : cut + request.horizon]
+            response = self.forecast(
+                ForecastRequest(
+                    samples=history.tolist(),
+                    horizon=request.horizon,
+                    interval_seconds=request.interval_seconds,
+                    resource=request.resource,
+                    confidence_level=request.confidence_level,
+                )
+            )
+            predicted = np.asarray(response.predictions, dtype=float)
+            lower = np.asarray([item.lower for item in response.confidence_intervals], dtype=float)
+            upper = np.asarray([item.upper for item in response.confidence_intervals], dtype=float)
+            baseline = np.asarray(
+                _baseline_forecast(history, request.horizon, response.seasonality.period),
+                dtype=float,
+            )
+            origins.append(
+                BacktestOrigin(
+                    origin_index=cut,
+                    model=response.model,
+                    calibrated=response.calibration.calibrated,
+                    score=_score(actual, predicted, lower, upper, baseline),
+                )
+            )
+            actual_all.append(actual)
+            for name, array in (
+                ("predicted", predicted),
+                ("lower", lower),
+                ("upper", upper),
+                ("baseline", baseline),
+            ):
+                parts[name].append(array)
+            if position == request.origins - 1:
+                points = [
+                    BacktestPoint(
+                        index=cut + offset,
+                        actual=float(actual[offset]),
+                        predicted=float(predicted[offset]),
+                        lower=float(lower[offset]),
+                        upper=float(upper[offset]),
+                        baseline=float(baseline[offset]),
+                    )
+                    for offset in range(len(actual))
+                ]
+        overall = _score(
+            np.concatenate(actual_all),
+            np.concatenate(parts["predicted"]),
+            np.concatenate(parts["lower"]),
+            np.concatenate(parts["upper"]),
+            np.concatenate(parts["baseline"]),
+        )
+        return BacktestResponse(
+            horizon=request.horizon,
+            nominal_coverage=request.confidence_level,
+            origins=origins,
+            overall=overall,
+            points=points,
+            generated_at=datetime.now(UTC),
+            warning=(
+                "Scores describe this history only. Coverage below the nominal level means the "
+                "intervals were too narrow for this workload; do not size from them alone."
             ),
         )
 
@@ -1141,6 +1396,14 @@ class ForecastEngine:
                 trained_at=now,
                 training_samples=len(values),
                 persisted=False,
+            ),
+            calibration=CalibrationSummary(
+                nominal_coverage=request.confidence_level,
+                held_out_coverage=None,
+                calibrated_coverage=None,
+                factor=1.0,
+                evaluation_samples=0,
+                calibrated=False,
             ),
             generated_at=now,
             warning=(
@@ -1411,6 +1674,39 @@ def create_app(settings: Settings | None = None, engine: ForecastEngine | None =
             metrics.requests.labels(outcome="error").inc()
             logger.exception("unexpected forecast failure")
             raise HTTPException(status_code=500, detail="forecast failed safely") from exc
+        finally:
+            metrics.duration.observe(time.monotonic() - started)
+            metrics.in_progress.dec()
+            slots.release()
+
+    @application.post(
+        "/api/v1/backtest",
+        response_model=BacktestResponse,
+        response_model_by_alias=True,
+        dependencies=[Depends(require_api_key)],
+        tags=["forecasting"],
+    )
+    def backtest(request: BacktestRequest) -> BacktestResponse:
+        if not slots.acquire(blocking=False):
+            metrics.requests.labels(outcome="busy").inc()
+            raise HTTPException(
+                status_code=429,
+                detail="forecast capacity is busy; retry later",
+                headers={"Retry-After": "1"},
+            )
+        metrics.in_progress.inc()
+        started = time.monotonic()
+        try:
+            response = forecast_engine.backtest(request)
+            metrics.requests.labels(outcome="backtest").inc()
+            return response
+        except HTTPException:
+            metrics.requests.labels(outcome="rejected").inc()
+            raise
+        except Exception as exc:
+            metrics.requests.labels(outcome="error").inc()
+            logger.exception("unexpected backtest failure")
+            raise HTTPException(status_code=500, detail="backtest failed safely") from exc
         finally:
             metrics.duration.observe(time.monotonic() - started)
             metrics.in_progress.dec()
