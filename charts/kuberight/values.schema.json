@@ -106,6 +106,23 @@
       "maxLength": 2048,
       "pattern": "^$|^[^\\n\\r]*\\$(namespace|workload|container)[^\\n\\r]*$"
     },
+    "requestRateQuery": {
+      "type": "string",
+      "maxLength": 2048,
+      "pattern": "^$|^[^\\n\\r]*\\$(namespace|workload|container)[^\\n\\r]*$"
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["interval"],
+      "properties": {
+        "interval": {
+          "type": "string",
+          "description": "0s disables the background check; otherwise between 1m and 24h.",
+          "pattern": "^(0s|([1-9][0-9]*(m|h))+)$"
+        }
+      }
+    },
     "webhook": {
       "type": "object",
       "additionalProperties": false,

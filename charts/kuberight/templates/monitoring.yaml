@@ -59,4 +59,16 @@ spec:
           annotations:
             summary: KubeRight HTTP 5xx rate exceeds 5 percent
             runbook_url: https://github.com/krishnamanaiducloud/kuberight/blob/main/docs/operations-runbook.md
+    - name: kuberight.recommendations
+      rules:
+        - alert: KubeRightRecommendationRegressed
+          # Each API replica verifies independently, so take the largest count.
+          expr: max(kuberight_recommendation_regressions{namespace={{ .Release.Namespace | quote }}}) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: An applied KubeRight recommendation was followed by OOM kills, throttling, restarts, or slower responses
+            description: Open the recommendation's verification (GET /api/v1/recommendations/{id}/verification) or the Correlation analysis view, and consider restoring the previous requests and limits.
+            runbook_url: https://github.com/krishnamanaiducloud/kuberight/blob/main/README.md#correlation-analysis-and-recommendation-accuracy
 {{- end }}

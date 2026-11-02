@@ -71,6 +71,11 @@ rules:
   - apiGroups: ["autoscaling.k8s.io"]
     resources: ["verticalpodautoscalers"]
     verbs: ["list"]
+  # Recommendations are checked against namespace LimitRanges and
+  # ResourceQuotas before they can be approved.
+  - apiGroups: [""]
+    resources: ["limitranges", "resourcequotas"]
+    verbs: ["list"]
   {{- end }}
   {{- with .Values.rbac.extraRules }}
   {{- toYaml . | nindent 2 }}

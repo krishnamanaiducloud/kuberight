@@ -94,6 +94,18 @@ cost:
 # PromQL template in seconds using $namespace, $workload, or $container.
 latencyQuery: ""
 
+# Correlate traffic with usage, latency, and replicas. A one-line PromQL
+# template in requests per second using $namespace, $workload, or $container,
+# for example sum(rate(http_requests_total{namespace="$namespace",service="$workload"}[5m])).
+requestRateQuery: ""
+
+# Post-change verification of approved recommendations: how often each API
+# replica checks for OOM kills, throttling, restarts, and latency after the
+# approved values go live. "0s" disables the background check; the
+# verification endpoint still works on demand.
+verification:
+  interval: 15m
+
 # Recommendation lifecycle events for Slack, Teams, PagerDuty, Argo Events,
 # or CI. The Secret holds the URL and an optional HMAC signing secret.
 webhook:

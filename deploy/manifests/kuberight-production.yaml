@@ -49,7 +49,7 @@ metadata:
     app.kubernetes.io/version: "0.1.0-rc.1"
     app.kubernetes.io/component: server
 spec:
-  minAvailable: 1
+  maxUnavailable: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: kuberight
@@ -130,6 +130,11 @@ metadata:
     app.kubernetes.io/version: "0.1.0-rc.1"
     app.kubernetes.io/component: server
 rules:
+  # Pod ownerReferences attribute container metrics to exact controllers;
+  # pod names are never used as an ownership heuristic.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
     verbs: ["list"]
@@ -144,6 +149,11 @@ rules:
     verbs: ["list"]
   - apiGroups: ["autoscaling.k8s.io"]
     resources: ["verticalpodautoscalers"]
+    verbs: ["list"]
+  # Recommendations are checked against namespace LimitRanges and
+  # ResourceQuotas before they can be approved.
+  - apiGroups: [""]
+    resources: ["limitranges", "resourcequotas"]
     verbs: ["list"]
 
 ---
@@ -210,7 +220,6 @@ metadata:
     app.kubernetes.io/version: "0.1.0-rc.1"
     app.kubernetes.io/component: server
 spec:
-  replicas: 1
   revisionHistoryLimit: 5
   strategy:
     type: RollingUpdate
@@ -271,6 +280,17 @@ spec:
               value: "20"
             - name: KUBERIGHT_INVENTORY_NAMESPACE
               value: "kuberight"
+            - name: KUBERIGHT_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: "kuberight-database"
+                  key: "url"
+            - name: KUBERIGHT_DATABASE_MIGRATE
+              # Schema changes are owned by the bounded migration Job. Every
+              # serving replica verifies the exact embedded schema read-only.
+              value: "false"
+            - name: KUBERIGHT_DATABASE_MAX_CONNS
+              value: "10"
             - name: KUBERIGHT_RECOMMENDATION_WINDOW
               value: "168h"
             - name: KUBERIGHT_RECOMMENDATION_STEP
@@ -279,6 +299,8 @@ spec:
               value: "336h"
             - name: KUBERIGHT_FORECAST_STEP
               value: "1h"
+            - name: KUBERIGHT_VERIFICATION_INTERVAL
+              value: "15m"
           startupProbe:
             httpGet:
               path: /healthz
@@ -326,3 +348,96 @@ spec:
               app.kubernetes.io/component: server
       nodeSelector:
         kubernetes.io/os: linux
+
+---
+# Source: kuberight/templates/hpa.yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: kuberight
+  namespace: kuberight
+  labels:
+    helm.sh/chart: kuberight-0.1.0-rc.1
+    app.kubernetes.io/name: kuberight
+    app.kubernetes.io/instance: kuberight
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "0.1.0-rc.1"
+    app.kubernetes.io/component: server
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: kuberight
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+---
+# Source: kuberight/templates/migration-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kuberight-migrate
+  namespace: kuberight
+  labels:
+    helm.sh/chart: kuberight-0.1.0-rc.1
+    app.kubernetes.io/name: kuberight
+    app.kubernetes.io/instance: kuberight
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "0.1.0-rc.1"
+    app.kubernetes.io/component: migration
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+    helm.sh/hook-weight: "-5"
+spec:
+  activeDeadlineSeconds: 300
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        helm.sh/chart: kuberight-0.1.0-rc.1
+        app.kubernetes.io/name: kuberight
+        app.kubernetes.io/instance: kuberight
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/version: "0.1.0-rc.1"
+        app.kubernetes.io/component: migration
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: "mohankrishna999/kuberight:0.1.0-rc.1"
+          imagePullPolicy: IfNotPresent
+          args: ["migrate"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+          env:
+            - name: KUBERIGHT_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: "kuberight-database"
+                  key: "url"
+          resources:
+            limits:
+              cpu: 1
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+      nodeSelector:
+        kubernetes.io/os: linux
+

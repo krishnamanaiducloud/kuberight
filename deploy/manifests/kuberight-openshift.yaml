@@ -137,6 +137,11 @@ metadata:
     app.kubernetes.io/version: "0.1.0-rc.1"
     app.kubernetes.io/component: server
 rules:
+  # Pod ownerReferences attribute container metrics to exact controllers;
+  # pod names are never used as an ownership heuristic.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
     verbs: ["list"]
@@ -151,6 +156,11 @@ rules:
     verbs: ["list"]
   - apiGroups: ["autoscaling.k8s.io"]
     resources: ["verticalpodautoscalers"]
+    verbs: ["list"]
+  # Recommendations are checked against namespace LimitRanges and
+  # ResourceQuotas before they can be approved.
+  - apiGroups: [""]
+    resources: ["limitranges", "resourcequotas"]
     verbs: ["list"]
 
 ---
@@ -286,6 +296,8 @@ spec:
               value: "336h"
             - name: KUBERIGHT_FORECAST_STEP
               value: "1h"
+            - name: KUBERIGHT_VERIFICATION_INTERVAL
+              value: "15m"
           startupProbe:
             httpGet:
               path: /healthz
