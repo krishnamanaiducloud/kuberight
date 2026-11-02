@@ -13,7 +13,9 @@ KubeRight is a Kubernetes resource-inventory and right-sizing project. It combin
 - Validated values: every recommendation is backtested against the observed history, showing how often usage would have exceeded the current and the recommended requests and limits. A recommended memory limit always keeps 10% headroom above the observed peak, so it would not have caused an OOM kill.
 - Trend-aware sizing: a sustained rising trend (linear fit over at least a day, R² ≥ 0.5, ≥ 2% per day) is projected over a configurable horizon. Growing memory is never reduced and is flagged as a possible leak.
 - Rollout-aware windows: when a Deployment rollout shifts CPU by 25% or more, only post-rollout samples are used, or reductions are blocked if too few remain.
-- Correlated signals per container: CPU, throttling, memory, replicas, and optional application latency on one time axis. Restarts, OOM kills, and rollouts are marked on every chart, with Pearson correlations and findings such as "latency follows throttling".
+- Correlated signals per container: CPU, throttling, memory, replicas, and optional application latency and request rate on one time axis. Restarts, OOM kills, and rollouts are marked on every chart, with Pearson correlations and findings such as "latency follows throttling".
+- A correlation analysis view that reports association, never causation: Pearson and Spearman coefficients with confidence intervals and autocorrelation-adjusted significance, lead/lag detection, change points matched to rollouts and scaling events, and before/after comparisons. See [correlation analysis and recommendation accuracy](#correlation-analysis-and-recommendation-accuracy).
+- Every generated recommendation carries an assessment with a verdict of `recommend`, `hold`, `insufficient_data`, or `unsupported`. Only `recommend` can be approved. Applied changes are verified afterwards, and regressions raise an alert.
 - Built-in conservative, balanced, and aggressive profiles, plus fine-tuning of the sizing percentile (P90, P95, P99, or peak), safety margins, and maximum reduction per change. The dashboard recalculates a live preview against real usage as you adjust them, before anything is saved.
 - Fleet efficiency per namespace, with a per-workload drill-down: requested versus average and P95 usage, reclaimable CPU and memory, reclaimable monthly cost, and containers that set no requests.
 - Node impact: pods are bin-packed by requests onto the cluster's node shapes to estimate how many nodes are needed now and after the recommendations are applied. The view also explains how Karpenter or Cluster Autoscaler would realize the savings.
@@ -64,7 +66,9 @@ Each integration is independent. An unconfigured or unreachable one is reported 
 | `KUBERIGHT_COST_CPU_CORE_HOUR`, `KUBERIGHT_COST_MEMORY_GIB_HOUR`, `KUBERIGHT_COST_CURRENCY` | Unit prices for savings estimates. Set both prices or neither. |
 | `KUBERIGHT_REQUIRE_DISTINCT_APPROVER` | Rejects reviews by the identity that created a recommendation. Defaults to `true` with Kubernetes authentication and `false` in static-token mode. |
 | `KUBERIGHT_LATENCY_QUERY` | One-line PromQL template in seconds, using `$namespace`, `$workload`, or `$container`, for example a p95 from an HTTP server or service-mesh histogram. Enables latency correlation. |
-| `KUBERIGHT_WEBHOOK_URL`, `KUBERIGHT_WEBHOOK_SECRET`, `KUBERIGHT_WEBHOOK_FORMAT` | Sends `recommendation.created`, `.approved`, and `.rejected` events as JSON or Slack messages. With a secret, each request carries `X-KubeRight-Signature: sha256=HMAC(secret, timestamp + "." + body)` and `X-KubeRight-Timestamp`. |
+| `KUBERIGHT_REQUEST_RATE_QUERY` | One-line PromQL template in requests per second, with the same placeholders, for example `sum(rate(http_requests_total{namespace="$namespace",service="$workload"}[5m]))`. Enables traffic correlation. |
+| `KUBERIGHT_VERIFICATION_INTERVAL` | How often each API pod verifies applied recommendations (default `15m`, between `1m` and `24h`). `0` disables the background check; the verification endpoint still works on demand. Needs Prometheus and the in-cluster inventory. |
+| `KUBERIGHT_WEBHOOK_URL`, `KUBERIGHT_WEBHOOK_SECRET`, `KUBERIGHT_WEBHOOK_FORMAT` | Sends `recommendation.created`, `.approved`, `.rejected`, and `.regressed` events as JSON or Slack messages. With a secret, each request carries `X-KubeRight-Signature: sha256=HMAC(secret, timestamp + "." + body)` and `X-KubeRight-Timestamp`. |
 | `KUBERIGHT_EXPORT_RECOMMENDATION_METRICS` | Adds per-container current and recommended request and limit gauges, review status, and savings to `/metrics`. Off by default because `/metrics` is unauthenticated. |
 
 ### Integrations and platforms
@@ -75,7 +79,7 @@ Each integration is independent. An unconfigured or unreachable one is reported 
 - **Autoscaler awareness:** HPA, KEDA, and VPA settings are read and respected per container.
 - **Platforms:** linux/amd64 and linux/arm64 images; profiles for production, OpenShift, and cluster-wide inventory; spot capacity labels recognized on EKS, GKE, AKS, and Karpenter. Pods default to `kubernetes.io/os: linux` so mixed Windows and Linux clusters schedule them correctly. The API binary also builds and runs on Windows and macOS for development.
 
-Generating recommendations from Prometheus requires the in-cluster inventory, which provides each container's current identity, requests, and limits. The Helm chart exposes these settings as `database`, `prometheus`, `recommendations`, `forecasting`, `cost`, `approvals`, and `ml.apiKey` values. It never deploys PostgreSQL or Prometheus. It refuses `replicaCount > 1` or API autoscaling unless `database.enabled=true`, and rejects ML scaling while model storage remains local. The production-shaped profile enables two API replicas and an HPA, so it requires a pre-created external PostgreSQL Secret, a safe migration credential, and environment-specific topology, network, TLS, backup, and monitoring configuration.
+Generating recommendations from Prometheus requires the in-cluster inventory, which provides each container's current identity, requests, and limits. The Helm chart exposes these settings as `database`, `prometheus`, `recommendations`, `forecasting`, `cost`, `approvals`, `latencyQuery`, `requestRateQuery`, `verification.interval`, and `ml.apiKey` values. It never deploys PostgreSQL or Prometheus. It refuses `replicaCount > 1` or API autoscaling unless `database.enabled=true`, and rejects ML scaling while model storage remains local. The production-shaped profile enables two API replicas and an HPA, so it requires a pre-created external PostgreSQL Secret, a safe migration credential, and environment-specific topology, network, TLS, backup, and monitoring configuration.
 
 For Kubernetes installation, required RBAC, immutable-image guidance, and platform notes, use the [installation guide](docs/installation.md). In Kubernetes authentication mode, users also need RBAC for the virtual `kuberight.io` resources. Reviewing requires `update` on `recommendations/approval`, generating forecasts requires `create` on `forecasts`, the efficiency views require `list` on `efficiency`, and node impact requires `list` on `capacity`:
 
@@ -84,6 +88,111 @@ For Kubernetes installation, required RBAC, immutable-image guidance, and platfo
   resources: ["recommendations/approval"]
   verbs: ["update"]
 ```
+
+## Correlation analysis and recommendation accuracy
+
+### Correlation analysis
+
+`GET /api/v1/correlation?namespace=&kind=&workload=&container=&window=` aligns CPU, CPU per replica, memory, throttling, replicas, node pressure, and the optional latency and request-rate series on one timestamp grid. `window` defaults to `168h` and can be up to `720h`. The Correlation analysis page in the dashboard shows the same report. The endpoint needs `list` on `metrics-history`. The page includes the latest recommendation and its verification when the caller can also `list` `recommendations`.
+
+- **Coefficients:** Pearson with a 95% Fisher confidence interval, plus Spearman rank correlation. The interval and the p-value use an effective sample size that is reduced for autocorrelation, so smooth, trending series are not reported as significant by accident.
+- **Lead/lag:** cross-correlation finds whether one signal leads another and by how much, for example throttling that precedes latency by one step.
+- **Normalization:** total CPU is divided by replicas, so HPA scale-outs do not hide per-pod changes.
+- **Regimes:** after a rollout, correlations use only the post-rollout regime when enough samples follow it.
+- **Change points:** binary segmentation on a median-filtered series, with a BIC-style penalty. Each change point is matched to the nearest rollout or scaling event.
+- **Events:** each rollout and scale event gets a before/after comparison per signal.
+
+Findings are worded as associations. KubeRight does not claim that one signal causes another.
+
+### Assessment and verdicts
+
+Recommendations generated from Prometheus carry an `assessment`:
+
+| Verdict | Meaning |
+| --- | --- |
+| `recommend` | Every check passed. Only this verdict can be approved. |
+| `hold` | At least one check failed. The reasons are listed, and approval returns `409 recommendation_not_approvable`. |
+| `insufficient_data` | Too little, stale, or patchy history. No change is proposed. |
+| `unsupported` | VPA controls both CPU and memory, so KubeRight defers to it. Init containers are rejected with `422 unsupported_container`. |
+
+The assessment covers:
+
+- **Quantities:** Kubernetes quantities (`250m`, `512Mi`), rounded to `5m` above one core and to whole MiB.
+- **Margins:** dynamic safety margins. The policy base gains additions for variability (up to 25 points), regular bursts (10), forecast uncertainty (up to 20), and high-criticality or stateful workloads (10 and 5).
+- **Validation windows:** multi-window validation over recent sub-windows.
+- **Held-back test:** the recommendation is sized on the first 70% of the history and checked against the last 30%.
+- **Pod effects:** QoS-class protection, and pod-level requests that include init containers, sidecars, and overhead.
+- **Namespace and node limits:** LimitRange bounds and defaults, ResourceQuota headroom, and whether the pod still fits on a schedulable node.
+- **HPA impact:** the projected HPA utilization and replica count. A projection above `maxReplicas` holds the change. KEDA is treated like an HPA when it scales on CPU utilization.
+- **Forecast:** the forecast is used for sizing only when its interval is calibrated, meaning held-out coverage is within 10 points of the nominal level.
+- **Risk and validity:** a 0–100 risk score and an expiry of 24 hours. The expiry is 12 hours with significant trends, regular spikes, or highly variable usage, and 6 hours after a recent rollout.
+
+### Post-change verification and alerting
+
+`GET /api/v1/recommendations/{id}/verification` compares an approved recommendation against the live workload. Once the live requests and limits are within 2% of the approved values and at least one hour of post-change history exists, it compares the following against the same length of history before the change:
+
+- OOM kills;
+- the restart rate;
+- CPU throttling;
+- latency, when configured;
+- peak memory.
+
+A regression is any of the following:
+
+- any new OOM kill;
+- at least double the restart rate;
+- throttling that reaches 5% and rises by at least 5 points;
+- latency that rises 25% or more.
+
+The background verifier exports these metrics:
+
+- `kuberight_recommendation_verifications{status}`;
+- `kuberight_recommendation_regressions`.
+
+It sends one `recommendation.regressed` webhook per regression. With `metrics.prometheusRule.enabled=true`, the chart adds the `KubeRightRecommendationRegressed` alert.
+
+### Benchmarks
+
+The datasets are synthetic and reproducible, generated from a fixed seed, and the results come from those datasets only. They are not a measurement of accuracy on your clusters. Run them yourself:
+
+```sh
+go run ./cmd/kuberight benchmark            # optimizer: JSON report with methodology
+python -m ml.benchmark --output report.json # forecasting service
+```
+
+**Optimizer benchmark (`internal/benchmark`).**
+
+- **Datasets:** 11 workload archetypes: stable, bursty API, memory-intensive, Java GC sawtooth, StatefulSet, HPA-scaled, KEDA-scaled, CronJob, sidecar, recent rollout, and incomplete metrics.
+- **Samples:** 4,032 samples per dataset at 5-minute steps.
+- **Method:** each strategy sizes from 7 training days and is scored on the following 7 unseen days.
+- **False positive:** a reduction followed by CPU above the new request in more than 25% of test samples, or memory above the new limit.
+- **Regression:** new limit breaches that the current settings did not have.
+
+| Strategy | Changes | OOM exposures | False positives | Regressions | Mean CPU savings | Mean memory savings |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| KubeRight (balanced, full assessment) | 10 | 0 | 0 | 0 | 11.7% | 12.0% |
+| Keep current | 0 | 0 | 0 | 0 | 0% | 0% |
+| P95, no margin | 11 | 8 | 8 | 8 | 56.3% | 45.2% |
+| VPA-style (P90 + 15%) | 11 | 0 | 0 | 0 | 51.5% | 37.6% |
+| Peak + 10% | 11 | 0 | 0 | 0 | 34.4% | 37.9% |
+
+- **Savings cap:** the balanced policy reduces at most 20% per change, so KubeRight saves less per step than the uncapped VPA-style strategy on these datasets.
+- **Withheld change:** it made no change on the incomplete-metrics dataset (`insufficient_data`).
+- **Increase:** it raised requests on the CronJob dataset, whose busy hours exceed the current settings.
+
+**Forecast benchmark (`ml/benchmark.py`).**
+
+- **Datasets:** the same 11 archetypes, 336 hourly samples each.
+- **Method:** a rolling-origin backtest with 3 origins and a 24-hour horizon. Each forecast sees only earlier samples.
+- **Scoring:** 792 held-out samples in total, measured against a seasonal-naive baseline.
+
+Results:
+
+- **Coverage:** mean interval coverage was 94.3% against a nominal 90%. 10 of 11 datasets met the nominal level.
+- **Against the baseline:** 7 of 11 beat it (skill > 0). On the GC-sawtooth, KEDA-scaled, and CronJob datasets the service selected the seasonal-naive model itself.
+- **Weak case:** a level shift (the recent-rollout dataset) reached 75% coverage and was worse than the baseline. KubeRight therefore sizes from post-rollout samples only, shortens validity to 6 hours, and uses a forecast for sizing only when it is calibrated.
+
+`POST /api/v1/backtest` on the forecasting service runs the same rolling-origin evaluation on your own history. The Correlation analysis page shows its result for the selected container.
 
 ## Repository map
 
