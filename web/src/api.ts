@@ -345,12 +345,57 @@ export type ForecastResponse = {
 }
 
 export type SavingsSummary = {
+  theoreticalMonthlyChange: number
+  recommendedMonthlyChange: number
+  approvedMonthlyChange: number
+  externallyObservedMonthlyChange: number
+  verifiedMonthlyChange: number
+  /** @deprecated Compatibility alias for recommendedMonthlyChange. */
   estimatedMonthlySavings: number
+  /** @deprecated Compatibility alias for approvedMonthlyChange. */
   approvedMonthlySavings: number
   currency: string
   recommendations: number
+  pricedRecommendations: number
   truncated: boolean
+  verificationOutcomesTruncated: boolean
   basis: string
+  realized: {
+    available: false
+    reason: string
+  }
+}
+
+export type SavingsStage = 'theoretical' | 'recommended' | 'approved' | 'externally_observed' | 'verified'
+
+export type SavingsItem = {
+  id: string
+  cluster?: string
+  namespace: string
+  kind?: string
+  workload: string
+  container: string
+  replicas: number
+  reviewStatus: ReviewStatus
+  stage: SavingsStage
+  stale: boolean
+  approvable: boolean
+  eligibilityReason?: string
+  costAvailable: boolean
+  costUnavailableReason?: string
+  currentMonthlyCost?: number
+  recommendedMonthlyCost?: number
+  theoreticalMonthlyChange?: number
+  /** @deprecated Compatibility alias for theoreticalMonthlyChange. */
+  estimatedMonthlySavings?: number
+  verificationStatus: 'not_checked' | 'unavailable' | 'inconclusive' | 'not_applied' | 'pending' | 'verified' | 'regressed'
+  configurationObserved: boolean
+  configurationObservedAt?: string
+  checkedAt?: string
+  evidenceComplete: boolean
+  attribution?: 'none' | 'exact_pod_uid'
+  currency: string
+  createdAt: string
 }
 
 export type DependencyStatus = {

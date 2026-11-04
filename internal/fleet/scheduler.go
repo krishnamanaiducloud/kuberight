@@ -90,17 +90,23 @@ func NewWorker(queue Queue, executor Executor, owner string, logger *slog.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Worker{queue: queue, executor: executor, owner: owner, logger: logger, lease: 5 * time.Minute, poll: 5 * time.Second, concurrency: 1, now: time.Now}
+	return &Worker{queue: queue, executor: executor, owner: owner, logger: logger, lease: repository.FleetScanLeaseDuration, poll: 5 * time.Second, concurrency: 1, now: time.Now}
 }
 
 func (worker *Worker) Run(ctx context.Context) {
 	if worker == nil || worker.queue == nil || worker.executor == nil || worker.owner == "" {
 		return
 	}
+	var workers sync.WaitGroup
 	for index := 0; index < worker.concurrency; index++ {
-		go worker.runOne(ctx)
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			worker.runOne(ctx)
+		}()
 	}
 	<-ctx.Done()
+	workers.Wait()
 }
 
 func (worker *Worker) runOne(ctx context.Context) {
@@ -134,7 +140,10 @@ func (worker *Worker) claimAndExecute(ctx context.Context) {
 	defer cancelExecution()
 	heartbeatContext, stopHeartbeat := context.WithCancel(executionContext)
 
-	progress := repository.FleetScanProgress{Expected: scan.Expected, Processed: scan.Processed, Succeeded: scan.Succeeded, Failed: scan.Failed, FailureDetails: append([]repository.FleetTargetFailure(nil), scan.FailureDetails...)}
+	// Progress is per attempt. Carrying a failed attempt's partial counters into
+	// a retry can make an otherwise successful retry impossible to finalize and
+	// can retain stale per-target failure details.
+	progress := repository.FleetScanProgress{}
 	var progressMu, updateMu, leaseMu sync.Mutex
 	var leaseErr error
 	var loseLeaseOnce sync.Once
@@ -189,6 +198,14 @@ func (worker *Worker) claimAndExecute(ctx context.Context) {
 	}()
 
 	report := func(next repository.FleetScanProgress) error {
+		// The worker owns lifecycle transitions. Executors may only report
+		// counters and bounded target diagnostics while the lease is running.
+		if next.Status != "" || next.Error != "" {
+			return repository.ErrFleetScanConflict
+		}
+		if err := repository.ValidateFleetScanProgress(next); err != nil {
+			return err
+		}
 		progressMu.Lock()
 		progress = cloneProgress(next)
 		progressMu.Unlock()

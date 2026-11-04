@@ -14,6 +14,7 @@ import HistoryOutlined from '@mui/icons-material/HistoryOutlined'
 import SettingsOutlined from '@mui/icons-material/SettingsOutlined'
 import SpeedOutlined from '@mui/icons-material/SpeedOutlined'
 import LocalFireDepartmentOutlined from '@mui/icons-material/LocalFireDepartmentOutlined'
+import PlaylistAddCheckCircleOutlined from '@mui/icons-material/PlaylistAddCheckCircleOutlined'
 import { Hotspots } from './pages/Hotspots'
 import { Efficiency } from './pages/Efficiency'
 import { Workloads } from './pages/Workloads'
@@ -25,6 +26,7 @@ import { Integrations } from './pages/Integrations'
 import { Recommendations } from './pages/Recommendations'
 import { Savings } from './pages/Savings'
 import { Utilization } from './pages/Utilization'
+import { Fleet } from './pages/Fleet'
 
 export type NavItem = {
   label: string
@@ -52,6 +54,7 @@ export const navigation: NavItem[] = [
   { label: 'CPU recommendations', path: '/recommendations/cpu', endpoint: '/api/v1/recommendations', description: 'Explainable CPU requests and limits. Select a row for details and review.', icon: <MemoryOutlined />, columnKeys: cpuRecommendationColumns, render: (item) => <Recommendations title={item.label} description={item.description} columnKeys={item.columnKeys!} /> },
   { label: 'Memory recommendations', path: '/recommendations/memory', endpoint: '/api/v1/recommendations', description: 'Memory sizing with OOM and peak safeguards. Select a row for details and review.', icon: <MemoryOutlined />, columnKeys: memoryRecommendationColumns, render: (item) => <Recommendations title={item.label} description={item.description} columnKeys={item.columnKeys!} /> },
   { label: 'Approvals', path: '/approvals', endpoint: '/api/v1/approvals', description: 'Review queue. Approval records a decision; KubeRight never applies changes.', icon: <ApprovalOutlined />, render: (item) => <Approvals title={item.label} description={item.description} /> },
+  { label: 'Fleet operations', path: '/fleet', endpoint: '/api/v1/fleet/scans', description: 'Schedule and inspect durable, retryable recommendation scans across explicit Kubernetes scopes', icon: <PlaylistAddCheckCircleOutlined />, render: (item) => <Fleet title={item.label} description={item.description} /> },
   { label: 'Savings', path: '/savings', endpoint: '/api/v1/savings', description: 'Request-based cost estimates from operator-configured unit prices; not billing data', icon: <SavingsOutlined />, render: (item) => <Savings title={item.label} description={item.description} /> },
   { label: 'Forecasting', path: '/forecasting', endpoint: '/api/v1/forecasts', description: 'Experimental usage forecasts with confidence intervals from the forecasting service', icon: <AutoGraphOutlined />, render: (item) => <Forecasting title={item.label} description={item.description} /> },
   { label: 'Autoscalers', path: '/autoscalers', endpoint: '/api/v1/autoscalers', description: 'HPA, KEDA, and VPA interaction awareness', icon: <TuneOutlined /> },

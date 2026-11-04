@@ -79,6 +79,74 @@ func Run(t *testing.T, newStore func(*testing.T) repository.Store) {
 		}
 	})
 
+	t.Run("verification evidence is append only durable and notification safe", func(t *testing.T) {
+		store := newStore(t)
+		record, _, err := store.CreateRecommendation(ctx, Recommendation("shop", "checkout", "api", "low"), repository.CreateOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.GetVerificationOutcome(ctx, record.ID); !errors.Is(err, repository.ErrNotFound) {
+			t.Fatalf("missing outcome=%v", err)
+		}
+		first := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+		pending, err := store.RecordVerification(ctx, repository.VerificationRun{
+			RecommendationID: record.ID, Status: repository.VerificationPending, ConfigurationObserved: true,
+			FirstObservedAt: &first, ObservedGeneration: 7, ObservedSpecFingerprint: strings.Repeat("a", 64),
+			Attribution: repository.VerificationAttributionExactPodUID, Checks: []repository.VerificationCheck{},
+			Reasons: []string{"waiting for one hour"}, CheckedAt: first,
+		})
+		if err != nil || pending.ID == "" || pending.Status != repository.VerificationPending {
+			t.Fatalf("pending=%#v err=%v", pending, err)
+		}
+		later := first.Add(2 * time.Hour)
+		verified, err := store.RecordVerification(ctx, repository.VerificationRun{
+			RecommendationID: record.ID, Status: repository.VerificationVerified, ConfigurationObserved: true,
+			FirstObservedAt: &later, ObservedGeneration: 8, ObservedSpecFingerprint: strings.Repeat("b", 64),
+			PostChangeWindowSeconds: 7200, EvidenceComplete: true, Attribution: repository.VerificationAttributionExactPodUID,
+			Checks: []repository.VerificationCheck{}, Reasons: []string{"no regression detected"}, CheckedAt: later,
+		})
+		if err != nil || verified.Status != repository.VerificationVerified || verified.FirstObservedAt == nil || !verified.FirstObservedAt.Equal(first) || verified.ObservedGeneration != 7 || verified.ObservedSpecFingerprint != strings.Repeat("a", 64) {
+			t.Fatalf("verified=%#v err=%v", verified, err)
+		}
+		read, err := store.GetVerificationOutcome(ctx, record.ID)
+		if err != nil || read.ID != verified.ID || read.Status != repository.VerificationVerified {
+			t.Fatalf("read=%#v err=%v", read, err)
+		}
+		runs, err := store.ListVerificationRuns(ctx, record.ID, 1, 10)
+		if err != nil || runs.Total != 2 || runs.Items[0].ID != verified.ID || runs.Items[1].ID != pending.ID {
+			t.Fatalf("runs=%#v err=%v", runs, err)
+		}
+		outcomes, err := store.ListVerificationOutcomes(ctx, 1, 10)
+		if err != nil || outcomes.Total != 1 || outcomes.Items[0].ID != verified.ID {
+			t.Fatalf("outcomes=%#v err=%v", outcomes, err)
+		}
+		regressedAt := later.Add(time.Hour)
+		regressed, err := store.RecordVerification(ctx, repository.VerificationRun{
+			RecommendationID: record.ID, Status: repository.VerificationRegressed, ConfigurationObserved: true,
+			FirstObservedAt: &first, ObservedGeneration: 7, ObservedSpecFingerprint: strings.Repeat("a", 64),
+			PostChangeWindowSeconds: 10_800, EvidenceComplete: true, Attribution: repository.VerificationAttributionExactPodUID,
+			Checks:  []repository.VerificationCheck{{Name: "OOM kills", Regressed: true, Detail: "one OOM kill"}},
+			Reasons: []string{"one OOM kill"}, CheckedAt: regressedAt,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		claimed, err := store.ClaimRegressionNotification(ctx, record.ID, regressed.CheckedAt, regressedAt.Add(time.Second))
+		if err != nil || !claimed {
+			t.Fatalf("first notification claim=%v err=%v", claimed, err)
+		}
+		if claimed, err = store.ClaimRegressionNotification(ctx, record.ID, regressed.CheckedAt, regressedAt.Add(2*time.Second)); err != nil || claimed {
+			t.Fatalf("duplicate notification claim=%v err=%v", claimed, err)
+		}
+		if _, err := store.RecordVerification(ctx, repository.VerificationRun{
+			RecommendationID: record.ID, Status: repository.VerificationVerified, ConfigurationObserved: true,
+			FirstObservedAt: &first, ObservedGeneration: 7, ObservedSpecFingerprint: strings.Repeat("a", 64),
+			EvidenceComplete: false, Attribution: repository.VerificationAttributionExactPodUID, CheckedAt: later,
+		}); err == nil {
+			t.Fatal("verified outcome with incomplete evidence was accepted")
+		}
+	})
+
 	t.Run("fleet scheduling queue leases and idempotency", func(t *testing.T) {
 		store := newStore(t)
 		base := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
@@ -111,9 +179,16 @@ func Run(t *testing.T, newStore func(*testing.T) repository.Store) {
 		if err != nil || !created {
 			t.Fatalf("manual=%#v created=%v err=%v", manual, created, err)
 		}
-		replay, created, err := store.CreateFleetScan(ctx, request)
+		replayRequest := request
+		replayRequest.ScheduledFor = base.Add(10 * time.Minute)
+		replay, created, err := store.CreateFleetScan(ctx, replayRequest)
 		if err != nil || created || replay.ID != manual.ID {
 			t.Fatalf("replay=%#v created=%v err=%v", replay, created, err)
+		}
+		conflictingRequest := request
+		conflictingRequest.WindowSeconds += 3600
+		if _, _, err := store.CreateFleetScan(ctx, conflictingRequest); !errors.Is(err, repository.ErrIdempotencyConflict) {
+			t.Fatalf("idempotency payload conflict=%v", err)
 		}
 		canceled, err := store.CancelFleetScan(ctx, manual.ID, base.Add(time.Minute))
 		if err != nil || canceled.Status != repository.FleetScanCanceled {
@@ -122,6 +197,80 @@ func Run(t *testing.T, newStore func(*testing.T) repository.Store) {
 		resumed, err := store.ResumeFleetScan(ctx, manual.ID, base.Add(2*time.Minute))
 		if err != nil || resumed.Status != repository.FleetScanQueued {
 			t.Fatalf("resume=%#v err=%v", resumed, err)
+		}
+	})
+
+	t.Run("fleet retries are delayed durable and bounded", func(t *testing.T) {
+		store := newStore(t)
+		base := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+		scan, created, err := store.CreateFleetScan(ctx, repository.FleetScanRequest{Scope: repository.FleetScope{}, WindowSeconds: 24 * 3600, ScheduledFor: base, CreatedBy: "alice", MaxAttempts: 2})
+		if err != nil || !created {
+			t.Fatalf("scan=%#v created=%v err=%v", scan, created, err)
+		}
+		first, err := store.ClaimFleetScan(ctx, "worker-1", base, repository.FleetScanLeaseDuration)
+		if err != nil || first.ID != scan.ID || first.Attempt != 1 {
+			t.Fatalf("first claim=%#v err=%v", first, err)
+		}
+		failure := repository.FleetScanProgress{
+			Expected: 2, Processed: 1, Failed: 1, Status: repository.FleetScanFailed, Error: "metrics unavailable",
+			FailureDetails: []repository.FleetTargetFailure{{Namespace: "shop", Kind: "Deployment", Workload: "checkout", Stage: "analyze", Error: "metrics unavailable"}},
+		}
+		failedAt := base.Add(time.Minute)
+		queued, err := store.UpdateFleetScan(ctx, scan.ID, "worker-1", failedAt, failure)
+		if err != nil || queued.Status != repository.FleetScanQueued || queued.Attempt != 1 || queued.CompletedAt != nil || queued.LeaseOwner != "" || queued.LeaseExpiresAt != nil {
+			t.Fatalf("queued retry=%#v err=%v", queued, err)
+		}
+		if !queued.AvailableAt.Equal(failedAt.Add(repository.FleetScanRetryDelay)) || queued.LastError != failure.Error || len(queued.FailureDetails) != 1 {
+			t.Fatalf("retry diagnostics=%#v", queued)
+		}
+		if _, err := store.ClaimFleetScan(ctx, "worker-2", queued.AvailableAt.Add(-time.Nanosecond), repository.FleetScanLeaseDuration); !errors.Is(err, repository.ErrNotFound) {
+			t.Fatalf("claim before retry delay=%v", err)
+		}
+		second, err := store.ClaimFleetScan(ctx, "worker-2", queued.AvailableAt, repository.FleetScanLeaseDuration)
+		if err != nil || second.Attempt != 2 || second.Status != repository.FleetScanRunning || !second.ScheduledFor.Equal(scan.ScheduledFor) || !second.CreatedAt.Equal(scan.CreatedAt) || second.StartedAt == nil || !second.StartedAt.Equal(base) {
+			t.Fatalf("second claim=%#v err=%v", second, err)
+		}
+		if _, err := store.UpdateFleetScan(ctx, scan.ID, "worker-1", queued.AvailableAt, repository.FleetScanProgress{}); !errors.Is(err, repository.ErrFleetScanConflict) {
+			t.Fatalf("stale owner update=%v", err)
+		}
+		heartbeatAt := queued.AvailableAt.Add(10 * time.Second)
+		heartbeat, err := store.UpdateFleetScan(ctx, scan.ID, "worker-2", heartbeatAt, repository.FleetScanProgress{})
+		if err != nil || heartbeat.LeaseExpiresAt == nil || heartbeat.LeaseExpiresAt.Before(heartbeatAt.Add(repository.FleetScanLeaseDuration)) {
+			t.Fatalf("heartbeat=%#v err=%v", heartbeat, err)
+		}
+		failure.Expected, failure.Processed, failure.Failed = 0, 0, 0
+		failure.FailureDetails = nil
+		terminal, err := store.UpdateFleetScan(ctx, scan.ID, "worker-2", heartbeatAt.Add(time.Second), failure)
+		if err != nil || terminal.Status != repository.FleetScanFailed || terminal.CompletedAt == nil || terminal.Attempt != terminal.MaxAttempts {
+			t.Fatalf("terminal=%#v err=%v", terminal, err)
+		}
+		if _, err := store.ClaimFleetScan(ctx, "worker-3", heartbeatAt.Add(time.Hour), repository.FleetScanLeaseDuration); !errors.Is(err, repository.ErrNotFound) {
+			t.Fatalf("claim after retry budget=%v", err)
+		}
+		resumedAt := heartbeatAt.Add(2 * time.Second)
+		resumed, err := store.ResumeFleetScan(ctx, scan.ID, resumedAt)
+		if err != nil || resumed.Status != repository.FleetScanQueued || resumed.Attempt != 0 || resumed.StartedAt != nil || resumed.CompletedAt != nil || resumed.LastError != "" || resumed.Expected != 0 || resumed.Processed != 0 || resumed.Succeeded != 0 || resumed.Failed != 0 || len(resumed.FailureDetails) != 0 {
+			t.Fatalf("resumed=%#v err=%v", resumed, err)
+		}
+	})
+
+	t.Run("fleet expired leases are safely reclaimed", func(t *testing.T) {
+		store := newStore(t)
+		base := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+		scan, _, err := store.CreateFleetScan(ctx, repository.FleetScanRequest{Scope: repository.FleetScope{}, WindowSeconds: 24 * 3600, ScheduledFor: base, CreatedBy: "alice", MaxAttempts: 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		first, err := store.ClaimFleetScan(ctx, "worker-1", base, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		second, err := store.ClaimFleetScan(ctx, "worker-2", base.Add(time.Minute), time.Minute)
+		if err != nil || second.ID != scan.ID || second.Attempt != 2 || second.LeaseOwner != "worker-2" {
+			t.Fatalf("reclaimed=%#v err=%v", second, err)
+		}
+		if _, err := store.UpdateFleetScan(ctx, scan.ID, "worker-1", base.Add(time.Minute), repository.FleetScanProgress{}); !errors.Is(err, repository.ErrFleetScanConflict) {
+			t.Fatalf("expired owner update=%v first=%#v", err, first)
 		}
 	})
 

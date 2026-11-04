@@ -330,11 +330,11 @@ func (server *apiServer) correlationAnalysis(w http.ResponseWriter, r *http.Requ
 		if record := server.latestRecommendation(r.Context(), subject); record != nil {
 			response["recommendation"] = record
 			if record.ReviewStatus == repository.ReviewApproved {
-				verdict := server.verify(r.Context(), *record)
-				if server.verified.record(verdict) {
-					server.announceRegression(*record, verdict)
+				// Correlation is a GET operation. It may expose an already durable
+				// outcome, but must never refresh evidence or send notifications.
+				if verdict, verificationErr := server.repository.GetVerificationOutcome(r.Context(), record.ID); verificationErr == nil {
+					response["verification"] = verdict
 				}
-				response["verification"] = verdict
 			}
 		}
 	}

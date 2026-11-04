@@ -448,8 +448,9 @@ func TestSavingsUseConfiguredPricesAndLatestRecommendations(t *testing.T) {
 		cfg.CostCPUCoreHour, cfg.CostMemoryGiBHour, cfg.CostCurrency = 0.04, 0.005, "EUR"
 	}, Dependencies{})
 	ctx := context.Background()
+	expires := fixedNow.Add(time.Hour)
 	base := optimizer.Recommendation{Namespace: "shop", Kind: "Deployment", Workload: "api", Container: "app", Replicas: 2, Confidence: "high", Risk: "low",
-		CurrentCPURequestMilli: 1000, CurrentMemoryRequestBytes: 2 << 30}
+		CurrentCPURequestMilli: 1000, CurrentMemoryRequestBytes: 2 << 30, Provenance: optimizer.Provenance{ExpiresAt: &expires}}
 	stale := base
 	stale.CPURequestMilli, stale.MemoryRequestBytes = 100, 1<<30
 	if _, _, err := api.store.CreateRecommendation(ctx, stale, repository.CreateOptions{}); err != nil {
@@ -479,17 +480,109 @@ func TestSavingsUseConfiguredPricesAndLatestRecommendations(t *testing.T) {
 	item := items[0].(map[string]any)
 	// Per replica-hour: current 1 core*0.04 + 2 GiB*0.005 = 0.05,
 	// recommended 0.5*0.04 + 1*0.005 = 0.025; x2 replicas x730 hours.
-	if item["currentMonthlyCost"].(float64) != 73 || item["recommendedMonthlyCost"].(float64) != 36.5 || item["estimatedMonthlySavings"].(float64) != 36.5 || item["currency"] != "EUR" {
+	if item["currentMonthlyCost"].(float64) != 73 || item["recommendedMonthlyCost"].(float64) != 36.5 || item["theoreticalMonthlyChange"].(float64) != 36.5 || item["estimatedMonthlySavings"].(float64) != 36.5 || item["currency"] != "EUR" {
 		t.Fatalf("item=%v", item)
 	}
+	if item["stage"] != savingsStageRecommended || item["stale"] != false || item["costAvailable"] != true {
+		t.Fatalf("item lifecycle=%v", item)
+	}
 	summary := body["summary"].(map[string]any)
-	if summary["estimatedMonthlySavings"].(float64) != 36.5 || summary["approvedMonthlySavings"].(float64) != 0 {
+	if summary["theoreticalMonthlyChange"].(float64) != 36.5 || summary["recommendedMonthlyChange"].(float64) != 36.5 || summary["approvedMonthlyChange"].(float64) != 0 || summary["estimatedMonthlySavings"].(float64) != 36.5 || summary["approvedMonthlySavings"].(float64) != 0 {
 		t.Fatalf("summary=%v", summary)
+	}
+	if realized := summary["realized"].(map[string]any); realized["available"] != false || !strings.Contains(realized["reason"].(string), "counterfactual") {
+		t.Fatalf("realized=%v", realized)
 	}
 
 	_, overview := api.do(t, http.MethodGet, "/api/v1/overview", "alice", "")
 	if overview["estimatedMonthlySavings"].(float64) != 36.5 || overview["currency"] != "EUR" {
 		t.Fatalf("overview savings=%v", overview)
+	}
+}
+
+func TestSavingsLifecycleIsConservativeAndNeverAssumesAReplica(t *testing.T) {
+	api := newTestAPI(t, func(cfg *config.Config) {
+		cfg.CostCPUCoreHour, cfg.CostMemoryGiBHour, cfg.CostCurrency = 0.04, 0.005, "USD"
+	}, Dependencies{})
+	ctx := context.Background()
+	fresh, expired := fixedNow.Add(time.Hour), fixedNow.Add(-time.Hour)
+	base := optimizer.Recommendation{
+		Namespace: "shop", Kind: "Deployment", Container: "app", Replicas: 1, Confidence: "high", Risk: "low",
+		CurrentCPURequestMilli: 1000, CurrentMemoryRequestBytes: 2 << 30,
+		CPURequestMilli: 500, MemoryRequestBytes: 1 << 30,
+		Provenance: optimizer.Provenance{ExpiresAt: &fresh},
+	}
+	create := func(workload string, replicas int32, expiry *time.Time) repository.RecommendationRecord {
+		t.Helper()
+		recommendation := base
+		recommendation.Workload, recommendation.Replicas, recommendation.Provenance.ExpiresAt = workload, replicas, expiry
+		record, _, err := api.store.CreateRecommendation(ctx, recommendation, repository.CreateOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return record
+	}
+	review := func(record repository.RecommendationRecord) {
+		t.Helper()
+		if _, err := api.store.ReviewRecommendation(ctx, record.ID, repository.ReviewDecision{Status: repository.ReviewApproved, Reviewer: "reviewer", At: fixedNow}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	observed := create("observed", 2, &fresh)
+	verified := create("verified", 1, &fresh)
+	stale := create("stale", 1, &expired)
+	zero := create("scaled-zero", 0, &fresh)
+	review(observed)
+	review(verified)
+
+	firstObserved := fixedNow.Add(-2 * time.Hour)
+	for _, outcome := range []repository.VerificationRun{
+		{RecommendationID: observed.ID, Status: repository.VerificationPending, ConfigurationObserved: true, FirstObservedAt: &firstObserved,
+			ObservedGeneration: 2, ObservedSpecFingerprint: strings.Repeat("a", 64), Attribution: repository.VerificationAttributionExactPodUID, CheckedAt: fixedNow},
+		{RecommendationID: verified.ID, Status: repository.VerificationVerified, ConfigurationObserved: true, FirstObservedAt: &firstObserved,
+			ObservedGeneration: 3, ObservedSpecFingerprint: strings.Repeat("b", 64), EvidenceComplete: true, Attribution: repository.VerificationAttributionExactPodUID, CheckedAt: fixedNow},
+	} {
+		if _, err := api.store.RecordVerification(ctx, outcome); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	response, body := api.do(t, http.MethodGet, "/api/v1/savings?pageSize=25", "alice", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	items := body["items"].([]any)
+	byWorkload := make(map[string]map[string]any, len(items))
+	for _, raw := range items {
+		item := raw.(map[string]any)
+		byWorkload[item["workload"].(string)] = item
+	}
+	if item := byWorkload["observed"]; item["stage"] != savingsStageExternallyObserved || item["configurationObserved"] != true || item["verificationStatus"] != repository.VerificationPending {
+		t.Fatalf("observed item=%v", item)
+	}
+	if item := byWorkload["verified"]; item["stage"] != savingsStageVerified || item["evidenceComplete"] != true || item["verificationStatus"] != repository.VerificationVerified {
+		t.Fatalf("verified item=%v", item)
+	}
+	if item := byWorkload["stale"]; item["stage"] != savingsStageTheoretical || item["stale"] != true {
+		t.Fatalf("stale item=%v", item)
+	}
+	if item := byWorkload["scaled-zero"]; item["replicas"].(float64) != 0 || item["costAvailable"] != false || item["currentMonthlyCost"] != nil || !strings.Contains(item["costUnavailableReason"].(string), "will not assume one") {
+		t.Fatalf("scaled-zero item=%v", item)
+	}
+	summary := body["summary"].(map[string]any)
+	for field, want := range map[string]float64{
+		"theoreticalMonthlyChange": 73,
+		"recommendedMonthlyChange": 54.75,
+		"approvedMonthlyChange": 54.75,
+		"externallyObservedMonthlyChange": 54.75,
+		"verifiedMonthlyChange": 18.25,
+	} {
+		if got := summary[field].(float64); got != want {
+			t.Fatalf("%s=%v want %v; summary=%v", field, got, want, summary)
+		}
+	}
+	if summary["pricedRecommendations"].(float64) != 3 || summary["recommendations"].(float64) != 4 {
+		t.Fatalf("summary counts=%v", summary)
 	}
 }
 

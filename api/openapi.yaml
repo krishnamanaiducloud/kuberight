@@ -378,7 +378,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/PolicyScope" }
+            schema: { $ref: "#/components/schemas/PolicySubject" }
       responses:
         "200":
           description: Effective policy and the subject and persisted record that selected it.
@@ -804,14 +804,26 @@ paths:
     get:
       tags: [Inventory]
       operationId: listSavings
-      summary: Request-based monthly cost estimates
+      summary: Request-based monthly cost-change lifecycle
       description: |
-        Uses the newest non-rejected recommendation for each container:
-        requested CPU and memory multiplied by operator-configured unit prices,
-        replicas, and 730 hours. These are estimates, not billing data.
+        Uses the newest non-rejected recommendation for each container. The
+        theoretical amount is requested CPU and memory multiplied by the
+        recorded replica snapshot, operator-configured unit prices, and 730
+        hours. A missing or zero replica snapshot is never coerced to one;
+        that item's monetary fields are omitted.
+
+        The summary is a non-additive lifecycle funnel: theoretical,
+        recommended (fresh and approvable), approved, externally observed
+        (exact workload identity and pod-UID attribution), then verified
+        (complete post-change evidence with no detected regression). Pending
+        or expired recommendations are never represented as observed,
+        verified, or realized savings. Verified is still not realized:
+        `summary.realized.available` remains false without billing allocation
+        and a counterfactual cost baseline.
+
         Returns `status.available=false` until both unit prices are set.
-        Items are sorted by estimated savings, largest first; `order=asc`
-        reverses the order.
+        Items are sorted by theoretical monthly change, largest first, with
+        unpriced items last; `order=asc` reverses the order.
       parameters:
         - $ref: "#/components/parameters/Page"
         - $ref: "#/components/parameters/PageSize"
@@ -2856,7 +2868,7 @@ components:
     SavingsItem:
       type: object
       additionalProperties: false
-      required: [id, namespace, workload, container, replicas, reviewStatus, currentMonthlyCost, recommendedMonthlyCost, estimatedMonthlySavings, currency, createdAt]
+      required: [id, namespace, workload, container, replicas, reviewStatus, stage, stale, approvable, costAvailable, verificationStatus, configurationObserved, evidenceComplete, currency, createdAt]
       properties:
         id: { type: string, description: Recommendation identifier. }
         cluster: { type: string }
@@ -2864,14 +2876,46 @@ components:
         kind: { type: string }
         workload: { type: string }
         container: { type: string }
-        replicas: { type: integer, minimum: 1 }
+        replicas:
+          type: integer
+          minimum: 0
+          description: Recorded snapshot; zero means scale-to-zero or unavailable and is never treated as one.
         reviewStatus:
           $ref: "#/components/schemas/ReviewStatus"
-        currentMonthlyCost: { type: number }
-        recommendedMonthlyCost: { type: number }
+        stage:
+          type: string
+          enum: [theoretical, recommended, approved, externally_observed, verified]
+          description: Highest active lifecycle stage supported by current durable evidence.
+        stale: { type: boolean }
+        approvable: { type: boolean }
+        eligibilityReason:
+          type: string
+          description: Why an item is excluded from the active recommendation funnel.
+        costAvailable: { type: boolean }
+        costUnavailableReason: { type: string }
+        currentMonthlyCost:
+          type: number
+          description: Omitted when the replica snapshot is zero or unavailable.
+        recommendedMonthlyCost:
+          type: number
+          description: Omitted when the replica snapshot is zero or unavailable.
+        theoreticalMonthlyChange:
+          type: number
+          description: Current minus recommended modeled request cost. Negative values are increases. Omitted when unpriced.
         estimatedMonthlySavings:
           type: number
-          description: Negative values are cost increases.
+          deprecated: true
+          description: Compatibility alias for theoreticalMonthlyChange; not realized savings.
+        verificationStatus:
+          type: string
+          enum: [not_checked, unavailable, inconclusive, not_applied, pending, verified, regressed]
+        configurationObserved: { type: boolean }
+        configurationObservedAt: { type: string, format: date-time }
+        checkedAt: { type: string, format: date-time }
+        evidenceComplete: { type: boolean }
+        attribution:
+          type: string
+          enum: [none, exact_pod_uid]
         currency: { type: string, pattern: '^[A-Z]{3}$' }
         createdAt: { type: string, format: date-time }
 
@@ -2891,16 +2935,50 @@ components:
         summary:
           type: object
           additionalProperties: false
-          required: [estimatedMonthlySavings, approvedMonthlySavings, currency, recommendations, truncated, basis]
+          required: [theoreticalMonthlyChange, recommendedMonthlyChange, approvedMonthlyChange, externallyObservedMonthlyChange, verifiedMonthlyChange, estimatedMonthlySavings, approvedMonthlySavings, currency, recommendations, pricedRecommendations, truncated, verificationOutcomesTruncated, basis, realized]
           properties:
-            estimatedMonthlySavings: { type: number }
-            approvedMonthlySavings: { type: number }
+            theoreticalMonthlyChange:
+              type: number
+              description: All priced latest non-rejected recommendations, including inactive or stale advice.
+            recommendedMonthlyChange:
+              type: number
+              description: Fresh, approvable recommendations.
+            approvedMonthlyChange:
+              type: number
+              description: Fresh, approvable recommendations accepted by a reviewer.
+            externallyObservedMonthlyChange:
+              type: number
+              description: Approved target resources observed for the exact workload and pod UIDs.
+            verifiedMonthlyChange:
+              type: number
+              description: Externally observed changes with complete exact-UID evidence and no detected regression.
+            estimatedMonthlySavings:
+              type: number
+              deprecated: true
+              description: Compatibility alias for recommendedMonthlyChange; not realized savings.
+            approvedMonthlySavings:
+              type: number
+              deprecated: true
+              description: Compatibility alias for approvedMonthlyChange; not realized savings.
             currency: { type: string }
             recommendations: { type: integer, minimum: 0 }
+            pricedRecommendations: { type: integer, minimum: 0 }
             truncated:
               type: boolean
               description: True when more than 10,000 recommendations exist and only the newest were included.
+            verificationOutcomesTruncated:
+              type: boolean
+              description: True when observation totals are conservatively undercounted because more than 10,000 latest outcomes exist.
             basis: { type: string }
+            realized:
+              type: object
+              additionalProperties: false
+              required: [available, reason]
+              properties:
+                available:
+                  type: boolean
+                  const: false
+                reason: { type: string }
 
     DependencyStatus:
       type: object
@@ -2929,6 +3007,18 @@ components:
         kind: { type: string, maxLength: 253 }
         workload: { type: string, maxLength: 253 }
         container: { type: string, maxLength: 253 }
+
+    PolicySubject:
+      type: object
+      additionalProperties: false
+      required: [namespace, kind, workload, container]
+      description: Concrete workload/container identity used to resolve the most specific effective policy. The server supplies its configured cluster when omitted.
+      properties:
+        cluster: { type: string, maxLength: 253 }
+        namespace: { type: string, minLength: 1, maxLength: 253 }
+        kind: { type: string, minLength: 1, maxLength: 253 }
+        workload: { type: string, minLength: 1, maxLength: 253 }
+        container: { type: string, minLength: 1, maxLength: 253 }
 
     PolicyRecord:
       type: object
@@ -3030,7 +3120,7 @@ components:
         builtIn: { type: boolean }
         matchedPolicy: { $ref: "#/components/schemas/PolicyRecord" }
         policy: { $ref: "#/components/schemas/Policy" }
-        subject: { $ref: "#/components/schemas/PolicyScope" }
+        subject: { $ref: "#/components/schemas/PolicySubject" }
         precedence:
           type: array
           items: { $ref: "#/components/schemas/PolicyScopeLevel" }

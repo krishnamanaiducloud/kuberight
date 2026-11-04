@@ -118,7 +118,6 @@ func main() {
 		}
 		dependencies.Provider = inventory
 	}
-	dependencies.Verification = httpapi.NewVerificationState()
 	handler, err := httpapi.NewHandler(cfg, dependencies)
 	if err != nil {
 		logger.Error("API initialization failed", "error", err)

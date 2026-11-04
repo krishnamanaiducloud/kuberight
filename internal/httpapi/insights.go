@@ -240,28 +240,58 @@ func (server *apiServer) createForecast(w http.ResponseWriter, r *http.Request) 
 }
 
 type savingsItem struct {
-	RecommendationID        string    `json:"id"`
-	Cluster                 string    `json:"cluster,omitempty"`
-	Namespace               string    `json:"namespace"`
-	Kind                    string    `json:"kind,omitempty"`
-	Workload                string    `json:"workload"`
-	Container               string    `json:"container"`
-	Replicas                int32     `json:"replicas"`
-	ReviewStatus            string    `json:"reviewStatus"`
-	CurrentMonthlyCost      float64   `json:"currentMonthlyCost"`
-	RecommendedMonthlyCost  float64   `json:"recommendedMonthlyCost"`
-	EstimatedMonthlySavings float64   `json:"estimatedMonthlySavings"`
-	Currency                string    `json:"currency"`
-	CreatedAt               time.Time `json:"createdAt"`
+	RecommendationID         string   `json:"id"`
+	Cluster                  string   `json:"cluster,omitempty"`
+	Namespace                string   `json:"namespace"`
+	Kind                     string   `json:"kind,omitempty"`
+	Workload                 string   `json:"workload"`
+	Container                string   `json:"container"`
+	Replicas                 int32    `json:"replicas"`
+	ReviewStatus             string   `json:"reviewStatus"`
+	Stage                    string   `json:"stage"`
+	Stale                    bool     `json:"stale"`
+	Approvable               bool     `json:"approvable"`
+	EligibilityReason        string   `json:"eligibilityReason,omitempty"`
+	CostAvailable            bool     `json:"costAvailable"`
+	CostUnavailableReason    string   `json:"costUnavailableReason,omitempty"`
+	CurrentMonthlyCost       *float64 `json:"currentMonthlyCost,omitempty"`
+	RecommendedMonthlyCost   *float64 `json:"recommendedMonthlyCost,omitempty"`
+	TheoreticalMonthlyChange *float64 `json:"theoreticalMonthlyChange,omitempty"`
+	// EstimatedMonthlySavings is a deprecated compatibility alias for
+	// TheoreticalMonthlyChange. It is not evidence of realized savings.
+	EstimatedMonthlySavings *float64   `json:"estimatedMonthlySavings,omitempty"`
+	VerificationStatus      string     `json:"verificationStatus"`
+	ConfigurationObserved   bool       `json:"configurationObserved"`
+	ConfigurationObservedAt *time.Time `json:"configurationObservedAt,omitempty"`
+	CheckedAt               *time.Time `json:"checkedAt,omitempty"`
+	EvidenceComplete        bool       `json:"evidenceComplete"`
+	Attribution             string     `json:"attribution,omitempty"`
+	Currency                string     `json:"currency"`
+	CreatedAt               time.Time  `json:"createdAt"`
+}
+
+type realizedSavingsAvailability struct {
+	Available bool   `json:"available"`
+	Reason    string `json:"reason"`
 }
 
 type savingsSummary struct {
-	EstimatedMonthlySavings float64 `json:"estimatedMonthlySavings"`
-	ApprovedMonthlySavings  float64 `json:"approvedMonthlySavings"`
-	Currency                string  `json:"currency"`
-	Recommendations         int     `json:"recommendations"`
-	Truncated               bool    `json:"truncated"`
-	Basis                   string  `json:"basis"`
+	TheoreticalMonthlyChange        float64 `json:"theoreticalMonthlyChange"`
+	RecommendedMonthlyChange        float64 `json:"recommendedMonthlyChange"`
+	ApprovedMonthlyChange           float64 `json:"approvedMonthlyChange"`
+	ExternallyObservedMonthlyChange float64 `json:"externallyObservedMonthlyChange"`
+	VerifiedMonthlyChange           float64 `json:"verifiedMonthlyChange"`
+	// Deprecated compatibility aliases. Estimated means the active,
+	// approvable recommendation stage; neither field is realized savings.
+	EstimatedMonthlySavings       float64                     `json:"estimatedMonthlySavings"`
+	ApprovedMonthlySavings        float64                     `json:"approvedMonthlySavings"`
+	Currency                      string                      `json:"currency"`
+	Recommendations               int                         `json:"recommendations"`
+	PricedRecommendations         int                         `json:"pricedRecommendations"`
+	Truncated                     bool                        `json:"truncated"`
+	VerificationOutcomesTruncated bool                        `json:"verificationOutcomesTruncated"`
+	Basis                         string                      `json:"basis"`
+	Realized                      realizedSavingsAvailability `json:"realized"`
 }
 
 func roundCents(value float64) float64 { return math.Round(value*100) / 100 }
@@ -274,14 +304,31 @@ func (server *apiServer) monthlyCost(cpuMilli, memoryBytes int64, replicas int32
 	return perReplica * float64(replicas) * hoursPerMonth
 }
 
-// computeSavings estimates request-based cost changes from the newest
-// recommendation for each container. Rejected recommendations are excluded.
+const (
+	savingsStageTheoretical        = "theoretical"
+	savingsStageRecommended        = "recommended"
+	savingsStageApproved           = "approved"
+	savingsStageExternallyObserved = "externally_observed"
+	savingsStageVerified           = "verified"
+)
+
+// computeSavings models request-based monthly changes from the newest
+// non-rejected recommendation for each container. The lifecycle totals form a
+// strict funnel: an item cannot be approved, observed, or verified unless it
+// is also a fresh, approvable recommendation. Realized infrastructure savings
+// are intentionally unavailable without billing allocation and a counterfactual.
 func (server *apiServer) computeSavings(ctx context.Context, namespace string) ([]savingsItem, savingsSummary, error) {
 	summary := savingsSummary{
 		Currency: server.config.CostCurrency,
-		Basis:    "requested CPU and memory x operator-configured unit prices x 730 hours; not billing data",
+		Basis:    "requested CPU and memory x the recorded replica snapshot x operator-configured unit prices x 730 hours; modeled changes, not billing or realized savings",
+		Realized: realizedSavingsAvailability{
+			Available: false,
+			Reason:    "realized infrastructure savings require billing allocation and a counterfactual cost baseline; neither provider is configured",
+		},
 	}
 	items := make([]savingsItem, 0)
+	recommendationIDs := make(map[string]struct{})
+	now := server.now()
 	for page := 1; ; page++ {
 		result, err := server.repository.ListRecommendations(ctx, repository.ListOptions{
 			Page: page, PageSize: savingsPageSize, Namespace: namespace, LatestOnly: true, Sort: "createdAt", Order: "desc",
@@ -293,20 +340,54 @@ func (server *apiServer) computeSavings(ctx context.Context, namespace string) (
 			if record.ReviewStatus == repository.ReviewRejected {
 				continue
 			}
-			replicas := max(record.Replicas, 1)
-			current := server.monthlyCost(record.CurrentCPURequestMilli, record.CurrentMemoryRequestBytes, replicas)
-			recommended := server.monthlyCost(record.CPURequestMilli, record.MemoryRequestBytes, replicas)
+			approvable, eligibilityReason := record.Approvable()
+			stale := record.Provenance.ExpiresAt == nil || record.Expired(now)
+			if stale {
+				staleReason := "recommendation validity window has expired"
+				if record.Provenance.ExpiresAt == nil {
+					staleReason = "recommendation has no explicit validity window"
+				}
+				if eligibilityReason == "" {
+					eligibilityReason = staleReason
+				} else {
+					eligibilityReason += "; " + staleReason
+				}
+			}
+			active := approvable && !stale
 			item := savingsItem{
 				RecommendationID: record.ID, Cluster: record.Cluster, Namespace: record.Namespace, Kind: record.Kind,
-				Workload: record.Workload, Container: record.Container, Replicas: replicas, ReviewStatus: record.ReviewStatus,
-				CurrentMonthlyCost: roundCents(current), RecommendedMonthlyCost: roundCents(recommended),
-				EstimatedMonthlySavings: roundCents(current - recommended), Currency: server.config.CostCurrency, CreatedAt: record.CreatedAt,
+				Workload: record.Workload, Container: record.Container, Replicas: record.Replicas, ReviewStatus: record.ReviewStatus,
+				Stage: savingsStageTheoretical, Stale: stale, Approvable: approvable, EligibilityReason: eligibilityReason,
+				VerificationStatus: "not_checked", Currency: server.config.CostCurrency, CreatedAt: record.CreatedAt,
 			}
-			summary.EstimatedMonthlySavings += current - recommended
-			if record.ReviewStatus == repository.ReviewApproved {
-				summary.ApprovedMonthlySavings += current - recommended
+			if record.Replicas <= 0 {
+				item.CostUnavailableReason = "the recorded replica snapshot is zero or unavailable; KubeRight will not assume one replica"
+			} else {
+				current := roundCents(server.monthlyCost(record.CurrentCPURequestMilli, record.CurrentMemoryRequestBytes, record.Replicas))
+				recommended := roundCents(server.monthlyCost(record.CPURequestMilli, record.MemoryRequestBytes, record.Replicas))
+				change := roundCents(current - recommended)
+				item.CostAvailable = true
+				item.CurrentMonthlyCost = &current
+				item.RecommendedMonthlyCost = &recommended
+				item.TheoreticalMonthlyChange = &change
+				item.EstimatedMonthlySavings = &change
+				summary.PricedRecommendations++
+				summary.TheoreticalMonthlyChange += change
+				if active {
+					summary.RecommendedMonthlyChange += change
+				}
+				if active && record.ReviewStatus == repository.ReviewApproved {
+					summary.ApprovedMonthlyChange += change
+				}
+			}
+			if active {
+				item.Stage = savingsStageRecommended
+				if record.ReviewStatus == repository.ReviewApproved {
+					item.Stage = savingsStageApproved
+				}
 			}
 			items = append(items, item)
+			recommendationIDs[record.ID] = struct{}{}
 		}
 		if page*savingsPageSize >= result.Total {
 			break
@@ -316,8 +397,61 @@ func (server *apiServer) computeSavings(ctx context.Context, namespace string) (
 			break
 		}
 	}
-	summary.EstimatedMonthlySavings = roundCents(summary.EstimatedMonthlySavings)
-	summary.ApprovedMonthlySavings = roundCents(summary.ApprovedMonthlySavings)
+
+	// Load the latest durable outcomes in one bounded repository page. When the
+	// outcome population exceeds the bound, missing outcomes remain unobserved
+	// and the response discloses the conservative undercount.
+	if len(recommendationIDs) > 0 {
+		outcomes, err := server.repository.ListVerificationOutcomes(ctx, 1, maxSavingsRecords)
+		if err != nil {
+			return nil, savingsSummary{}, err
+		}
+		summary.VerificationOutcomesTruncated = outcomes.Total > len(outcomes.Items)
+		byRecommendation := make(map[string]repository.VerificationOutcome, len(outcomes.Items))
+		for _, outcome := range outcomes.Items {
+			if _, selected := recommendationIDs[outcome.RecommendationID]; selected {
+				byRecommendation[outcome.RecommendationID] = outcome
+			}
+		}
+		for index := range items {
+			item := &items[index]
+			outcome, found := byRecommendation[item.RecommendationID]
+			if !found {
+				continue
+			}
+			item.VerificationStatus = outcome.Status
+			item.CheckedAt = &outcome.CheckedAt
+			item.EvidenceComplete = outcome.EvidenceComplete
+			item.Attribution = outcome.Attribution
+			exactObservation := outcome.ConfigurationObserved && outcome.FirstObservedAt != nil && outcome.Attribution == repository.VerificationAttributionExactPodUID
+			if !exactObservation {
+				continue
+			}
+			item.ConfigurationObserved = true
+			item.ConfigurationObservedAt = outcome.FirstObservedAt
+			if item.Stage != savingsStageApproved {
+				continue
+			}
+			item.Stage = savingsStageExternallyObserved
+			if item.TheoreticalMonthlyChange != nil {
+				summary.ExternallyObservedMonthlyChange += *item.TheoreticalMonthlyChange
+			}
+			if outcome.Status == repository.VerificationVerified && outcome.EvidenceComplete {
+				item.Stage = savingsStageVerified
+				if item.TheoreticalMonthlyChange != nil {
+					summary.VerifiedMonthlyChange += *item.TheoreticalMonthlyChange
+				}
+			}
+		}
+	}
+
+	summary.TheoreticalMonthlyChange = roundCents(summary.TheoreticalMonthlyChange)
+	summary.RecommendedMonthlyChange = roundCents(summary.RecommendedMonthlyChange)
+	summary.ApprovedMonthlyChange = roundCents(summary.ApprovedMonthlyChange)
+	summary.ExternallyObservedMonthlyChange = roundCents(summary.ExternallyObservedMonthlyChange)
+	summary.VerifiedMonthlyChange = roundCents(summary.VerifiedMonthlyChange)
+	summary.EstimatedMonthlySavings = summary.RecommendedMonthlyChange
+	summary.ApprovedMonthlySavings = summary.ApprovedMonthlyChange
 	summary.Recommendations = len(items)
 	return items, summary, nil
 }
@@ -345,8 +479,15 @@ func (server *apiServer) savings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sort.SliceStable(items, func(left, right int) bool {
-		if items[left].EstimatedMonthlySavings != items[right].EstimatedMonthlySavings {
-			return items[left].EstimatedMonthlySavings > items[right].EstimatedMonthlySavings
+		leftChange, rightChange := math.Inf(-1), math.Inf(-1)
+		if items[left].TheoreticalMonthlyChange != nil {
+			leftChange = *items[left].TheoreticalMonthlyChange
+		}
+		if items[right].TheoreticalMonthlyChange != nil {
+			rightChange = *items[right].TheoreticalMonthlyChange
+		}
+		if leftChange != rightChange {
+			return leftChange > rightChange
 		}
 		return items[left].RecommendationID < items[right].RecommendationID
 	})

@@ -119,14 +119,49 @@ func storeApproved(t *testing.T, api testAPI, recommendation optimizer.Recommend
 }
 
 func liveRecommendation() optimizer.Recommendation {
-	spec := checkoutSpec()
+	spec := verificationSpec()
 	container := spec.Containers[0]
+	observationStart, observationEnd := fixedNow.Add(-8*time.Hour), fixedNow.Add(-time.Hour)
+	expires := fixedNow.Add(time.Hour)
 	return optimizer.Recommendation{
-		Namespace: spec.Namespace, Kind: spec.Kind, Workload: spec.Name, Container: container.Name,
+		Cluster: spec.Cluster, Namespace: spec.Namespace, Kind: spec.Kind, Workload: spec.Name, Container: container.Name, Replicas: spec.Replicas,
 		CPURequestMilli: container.CPURequestMilli, CPULimitMilli: container.CPULimitMilli,
 		MemoryRequestBytes: container.MemoryRequestBytes, MemoryLimitBytes: container.MemoryLimitBytes,
-		CurrentCPURequestMilli: 1500, CurrentMemoryRequestBytes: 2 << 30, Confidence: "high", Risk: "low",
+		CurrentCPURequestMilli: 1500, CurrentMemoryRequestBytes: 3 << 30, CurrentCPULimitMilli: 2500, CurrentMemoryLimitBytes: 4 << 30,
+		Confidence: "high", Risk: "low",
+		DataQuality: optimizer.DataQuality{Sufficient: true, ReplicaCoverage: &optimizer.ReplicaCoverage{
+			ExpectedReplicas: spec.Replicas, DiscoveredReplicas: int(spec.Replicas), ObservedReplicas: int(spec.Replicas),
+			CPUObservedReplicas: int(spec.Replicas), MemoryObservedReplicas: int(spec.Replicas), Complete: true,
+		}},
+		Provenance: optimizer.Provenance{
+			WorkloadUID: spec.UID, WorkloadGeneration: 12, SourceSpecFingerprint: strings.Repeat("a", 64),
+			ObservationStart: &observationStart, ObservationEnd: &observationEnd, QueryFingerprint: strings.Repeat("c", 64), ExpiresAt: &expires,
+		},
 	}
+}
+
+func verificationSpec() WorkloadSpec {
+	spec := checkoutSpec()
+	spec.Generation = 13
+	spec.SourceSpecFingerprint = strings.Repeat("b", 64)
+	spec.Replicas = 2
+	spec.MetricIdentity = recommendationIdentity(spec.Replicas)
+	spec.MetricIdentity.Generation = spec.Generation
+	return spec
+}
+
+func verificationUsage() *exactFakeUsage {
+	base := healthyUsage(100)
+	base.history.ReplicaCoverage = &usage.ReplicaCoverage{
+		ExpectedReplicas: 2, DiscoveredReplicas: 2, ObservedReplicas: 2, ActiveReplicas: 2,
+		CPUObservedReplicas: 2, MemoryObservedReplicas: 2, CPUReplicaCoverage: 1, MemoryReplicaCoverage: 1,
+		CPUTemporalCoverage: 1, MemoryTemporalCoverage: 1, Complete: true, Issues: []string{},
+	}
+	base.events = usage.Events{
+		Available: true, ThrottlingAvailable: true,
+		Replicas: []usage.ReplicaEvents{{Pod: "checkout-current-aaaaa", UID: "pod-a", ThrottlingAvailable: true}, {Pod: "checkout-current-bbbbb", UID: "pod-b", ThrottlingAvailable: true}},
+	}
+	return &exactFakeUsage{fakeUsage: base}
 }
 
 const correlationPath = "/api/v1/correlation?namespace=shop&kind=Deployment&workload=checkout&container=api&window=24h"
@@ -137,7 +172,16 @@ func TestCorrelationAnalysisEndpoint(t *testing.T) {
 	source.signals = signalsFor(288)
 	notifier := &recordingNotifier{}
 	api := newTestAPI(t, nil, Dependencies{Provider: fakeInventory{spec: checkoutSpec()}, Usage: source, Forecaster: &backtestingForecaster{coverage: 0.9}, Notifier: notifier})
-	storeApproved(t, api, liveRecommendation(), fixedNow.Add(-6*time.Hour))
+	recommendation := storeApproved(t, api, liveRecommendation(), fixedNow.Add(-6*time.Hour))
+	firstObserved := fixedNow.Add(-2 * time.Hour)
+	if _, err := api.store.RecordVerification(context.Background(), repository.VerificationRun{
+		RecommendationID: recommendation.ID, Status: repository.VerificationRegressed, ConfigurationObserved: true,
+		FirstObservedAt: &firstObserved, ObservedGeneration: 13, ObservedSpecFingerprint: strings.Repeat("b", 64),
+		PostChangeWindowSeconds: 7200, EvidenceComplete: true, Attribution: repository.VerificationAttributionExactPodUID,
+		Checks: []repository.VerificationCheck{}, Reasons: []string{"an exact safety signal regressed"}, CheckedAt: fixedNow,
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	response, body := api.do(t, http.MethodGet, correlationPath, "alice", "")
 	if response.Code != http.StatusOK {
@@ -156,22 +200,16 @@ func TestCorrelationAnalysisEndpoint(t *testing.T) {
 		t.Fatalf("recommendation and current spec missing: %v", body)
 	}
 	verification := body["verification"].(map[string]any)
-	if verification["status"] != VerificationRegressed || verification["applied"] != true {
+	if verification["status"] != VerificationRegressed || verification["configurationObserved"] != true {
 		t.Fatalf("verification %v", verification)
 	}
 	if !strings.Contains(strings.Join(toStrings(body["warnings"]), " "), "requestRate") {
 		t.Fatalf("extra warnings must be surfaced: %v", body["warnings"])
 	}
-	// The regression is announced once, however often it is observed.
+	// GET correlation only reads the durable outcome; it cannot announce it.
 	api.do(t, http.MethodGet, correlationPath, "alice", "")
-	regressions := 0
-	for _, event := range notifier.events {
-		if event.Type == notify.RecommendationRegressed {
-			regressions++
-		}
-	}
-	if regressions != 1 {
-		t.Fatalf("regression announced %d times", regressions)
+	if len(notifier.events) != 0 {
+		t.Fatalf("GET correlation emitted notifications: %+v", notifier.events)
 	}
 	metrics, _ := api.do(t, http.MethodGet, "/metrics", "", "")
 	if !strings.Contains(metrics.Body.String(), "kuberight_recommendation_regressions 1") {
@@ -236,32 +274,63 @@ func TestForecastEvaluationNeedsHistoryAndService(t *testing.T) {
 }
 
 func TestVerificationStatuses(t *testing.T) {
-	source := healthyUsage(100)
-	source.signals = signalsFor(48)
-	api := newTestAPI(t, nil, Dependencies{Provider: fakeInventory{spec: checkoutSpec()}, Usage: source})
+	source := verificationUsage()
+	notifier := &recordingNotifier{}
+	api := newTestAPI(t, nil, Dependencies{Provider: fakeInventory{spec: verificationSpec()}, Usage: source, Notifier: notifier})
 
 	pending := storeApproved(t, api, liveRecommendation(), fixedNow.Add(-10*time.Minute))
-	response, body := api.do(t, http.MethodGet, "/api/v1/recommendations/"+pending.ID+"/verification", "alice", "")
-	if response.Code != http.StatusOK || body["status"] != VerificationPending {
-		t.Fatalf("pending: status=%d body=%v", response.Code, body)
+	path := "/api/v1/recommendations/" + pending.ID + "/verification"
+	response, body := api.do(t, http.MethodGet, path, "alice", "")
+	if response.Code != http.StatusNotFound || body["error"].(map[string]any)["code"] != "verification_not_checked" {
+		t.Fatalf("unchecked GET: status=%d body=%v", response.Code, body)
+	}
+	if runs, err := api.store.ListVerificationRuns(context.Background(), pending.ID, 1, 10); err != nil || runs.Total != 0 {
+		t.Fatalf("GET mutated verification history: runs=%+v err=%v", runs, err)
+	}
+	response, body = api.do(t, http.MethodPost, path+":refresh", "alice", "")
+	if response.Code != http.StatusOK || body["status"] != VerificationPending || body["configurationObserved"] != true {
+		t.Fatalf("pending refresh: status=%d body=%v", response.Code, body)
+	}
+	if response, body = api.do(t, http.MethodGet, path, "alice", ""); response.Code != http.StatusOK || body["status"] != VerificationPending {
+		t.Fatalf("durable GET: status=%d body=%v", response.Code, body)
 	}
 
 	notLive := liveRecommendation()
 	notLive.CPURequestMilli = 700
 	notApplied := storeApproved(t, api, notLive, fixedNow.Add(-5*time.Hour))
-	if _, body := api.do(t, http.MethodGet, "/api/v1/recommendations/"+notApplied.ID+"/verification", "alice", ""); body["status"] != VerificationNotApplied {
-		t.Fatalf("not applied: %v", body)
+	if response, body := api.do(t, http.MethodPost, "/api/v1/recommendations/"+notApplied.ID+"/verification:refresh", "alice", ""); response.Code != http.StatusOK || body["status"] != VerificationNotApplied {
+		t.Fatalf("not applied: status=%d body=%v", response.Code, body)
 	}
 
-	// Clean signals after the change verify.
-	clean := signalsFor(48)
-	clean.Events = nil
-	clean.Throttling = nil
-	source.signals = clean
+	// A prior exact observation makes the next refresh eligible for a verdict.
 	applied := storeApproved(t, api, liveRecommendation(), fixedNow.Add(-5*time.Hour))
-	if _, body := api.do(t, http.MethodGet, "/api/v1/recommendations/"+applied.ID+"/verification", "alice", ""); body["status"] != VerificationVerified {
-		t.Fatalf("verified: %v", body)
+	firstObserved := fixedNow.Add(-2 * time.Hour)
+	if _, err := api.store.RecordVerification(context.Background(), repository.VerificationRun{
+		RecommendationID: applied.ID, Status: repository.VerificationPending, ConfigurationObserved: true,
+		FirstObservedAt: &firstObserved, ObservedGeneration: 13, ObservedSpecFingerprint: strings.Repeat("b", 64),
+		PostChangeWindowSeconds: 0, EvidenceComplete: false, Attribution: repository.VerificationAttributionExactPodUID,
+		Checks: []repository.VerificationCheck{}, Reasons: []string{"waiting for observation"}, CheckedAt: firstObserved,
+	}); err != nil {
+		t.Fatal(err)
 	}
+	if response, body := api.do(t, http.MethodPost, "/api/v1/recommendations/"+applied.ID+"/verification:refresh", "alice", ""); response.Code != http.StatusOK || body["status"] != VerificationVerified || body["evidenceComplete"] != true {
+		t.Fatalf("verified: status=%d body=%v", response.Code, body)
+	}
+
+	// Missing event evidence must be inconclusive, never verified.
+	source.events.Available = false
+	incomplete := storeApproved(t, api, liveRecommendation(), fixedNow.Add(-5*time.Hour))
+	if _, err := api.store.RecordVerification(context.Background(), repository.VerificationRun{
+		RecommendationID: incomplete.ID, Status: repository.VerificationPending, ConfigurationObserved: true,
+		FirstObservedAt: &firstObserved, ObservedGeneration: 13, ObservedSpecFingerprint: strings.Repeat("b", 64),
+		Attribution: repository.VerificationAttributionExactPodUID, Checks: []repository.VerificationCheck{}, Reasons: []string{"waiting"}, CheckedAt: firstObserved,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, body := api.do(t, http.MethodPost, "/api/v1/recommendations/"+incomplete.ID+"/verification:refresh", "alice", ""); body["status"] != VerificationInconclusive || body["evidenceComplete"] != false {
+		t.Fatalf("incomplete evidence was not fail-closed: %v", body)
+	}
+	source.events.Available = true
 
 	record, _, _ := api.store.CreateRecommendation(context.Background(), liveRecommendation(), repository.CreateOptions{CreatedBy: "alice"})
 	if response, _ := api.do(t, http.MethodGet, "/api/v1/recommendations/"+record.ID+"/verification", "alice", ""); response.Code != http.StatusConflict {
@@ -275,19 +344,29 @@ func TestVerificationStatuses(t *testing.T) {
 
 	unavailable := newTestAPI(t, nil, Dependencies{})
 	stored := storeApproved(t, unavailable, liveRecommendation(), fixedNow.Add(-5*time.Hour))
-	if _, body := unavailable.do(t, http.MethodGet, "/api/v1/recommendations/"+stored.ID+"/verification", "alice", ""); body["status"] != VerificationUnavailable {
-		t.Fatalf("unavailable: %v", body)
+	if _, body := unavailable.do(t, http.MethodPost, "/api/v1/recommendations/"+stored.ID+"/verification:refresh", "alice", ""); body["status"] != VerificationUnavailable {
+		t.Fatalf("unavailable refresh: %v", body)
+	}
+	if len(notifier.events) != 0 {
+		t.Fatalf("non-regressed verification emitted notifications: %+v", notifier.events)
 	}
 }
 
 func TestVerifierPassesOverApprovedRecommendations(t *testing.T) {
-	source := healthyUsage(100)
-	source.signals = signalsFor(48)
-	state := NewVerificationState()
+	source := verificationUsage()
+	source.events.OOMKills = 1
 	notifier := &recordingNotifier{}
-	dependencies := Dependencies{Provider: fakeInventory{spec: checkoutSpec()}, Usage: source, Notifier: notifier, Verification: state}
+	dependencies := Dependencies{Provider: fakeInventory{spec: verificationSpec()}, Usage: source, Notifier: notifier}
 	api := newTestAPI(t, nil, dependencies)
-	storeApproved(t, api, liveRecommendation(), fixedNow.Add(-5*time.Hour))
+	record := storeApproved(t, api, liveRecommendation(), fixedNow.Add(-5*time.Hour))
+	firstObserved := fixedNow.Add(-2 * time.Hour)
+	if _, err := api.store.RecordVerification(context.Background(), repository.VerificationRun{
+		RecommendationID: record.ID, Status: repository.VerificationPending, ConfigurationObserved: true,
+		FirstObservedAt: &firstObserved, ObservedGeneration: 13, ObservedSpecFingerprint: strings.Repeat("b", 64),
+		Attribution: repository.VerificationAttributionExactPodUID, Checks: []repository.VerificationCheck{}, Reasons: []string{"waiting"}, CheckedAt: firstObserved,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	dependencies.Repository, dependencies.Access, dependencies.Now = api.store, api.access, func() time.Time { return fixedNow }
 	cfg := fallbackConfig()
 	cfg.VerificationInterval = time.Minute
@@ -301,6 +380,9 @@ func TestVerifierPassesOverApprovedRecommendations(t *testing.T) {
 	verifier.Pass(context.Background())
 	if len(notifier.events) != 1 || notifier.events[0].Type != notify.RecommendationRegressed {
 		t.Fatalf("one regression event expected: %+v", notifier.events)
+	}
+	if outcome, err := api.store.GetVerificationOutcome(context.Background(), record.ID); err != nil || outcome.Status != VerificationRegressed || !outcome.EvidenceComplete {
+		t.Fatalf("durable outcome=%+v err=%v", outcome, err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

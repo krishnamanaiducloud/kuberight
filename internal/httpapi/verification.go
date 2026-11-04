@@ -2,137 +2,128 @@ package httpapi
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
 	"net/http"
 	"sort"
-	"sync"
 	"time"
 
 	"github.com/kuberight/kuberight/internal/config"
 	"github.com/kuberight/kuberight/internal/notify"
 	"github.com/kuberight/kuberight/internal/repository"
-	"github.com/kuberight/kuberight/internal/stats"
 	"github.com/kuberight/kuberight/internal/usage"
 )
 
-// Verification statuses.
+// Verification statuses are aliases of the durable repository contract.
 const (
-	VerificationUnavailable = "unavailable"
-	VerificationNotApplied  = "not_applied"
-	VerificationPending     = "pending"
-	VerificationVerified    = "verified"
-	VerificationRegressed   = "regressed"
+	VerificationUnavailable  = repository.VerificationUnavailable
+	VerificationInconclusive = repository.VerificationInconclusive
+	VerificationNotApplied   = repository.VerificationNotApplied
+	VerificationPending      = repository.VerificationPending
+	VerificationVerified     = repository.VerificationVerified
+	VerificationRegressed    = repository.VerificationRegressed
 )
 
 const (
-	// minimumPostChange is how much post-change history a verdict needs.
-	minimumPostChange = time.Hour
-	// appliedTolerance accepts live values within 2% of the approved ones,
-	// because quantities are often rewritten in a different unit.
+	minimumPostChange       = time.Hour
+	maximumPostChange       = 7 * 24 * time.Hour
 	appliedTolerance        = 0.02
 	maxVerificationsPerPass = 200
 )
 
-// VerificationCheck compares one signal before and after the change.
-type VerificationCheck struct {
-	Name      string   `json:"name"`
-	Before    *float64 `json:"before,omitempty"`
-	After     *float64 `json:"after,omitempty"`
-	Regressed bool     `json:"regressed"`
-	Detail    string   `json:"detail"`
-}
+// VerificationCheck and Verification keep the public API tied to exactly the
+// same evidence shape that is persisted. There is no process-local verdict.
+type VerificationCheck = repository.VerificationCheck
+type Verification = repository.VerificationOutcome
 
-// Verification is the post-change verdict for an approved recommendation.
-type Verification struct {
-	RecommendationID string              `json:"recommendationId"`
-	Status           string              `json:"status"`
-	Applied          bool                `json:"applied"`
-	AppliedAt        *time.Time          `json:"appliedAt,omitempty"`
-	AppliedAtSource  string              `json:"appliedAtSource,omitempty"`
-	PostChangeWindow string              `json:"postChangeWindow,omitempty"`
-	Checks           []VerificationCheck `json:"checks"`
-	Reasons          []string            `json:"reasons"`
-	CheckedAt        time.Time           `json:"checkedAt"`
-}
-
-// VerificationState holds the latest verdict per recommendation for /metrics
-// and remembers which regressions were already announced.
-type VerificationState struct {
-	mu        sync.Mutex
-	latest    map[string]Verification
-	announced map[string]bool
-}
-
-// NewVerificationState returns an empty state.
-func NewVerificationState() *VerificationState {
-	return &VerificationState{latest: map[string]Verification{}, announced: map[string]bool{}}
-}
-
-// record stores a verdict and reports whether it is a regression that has
-// not been announced yet.
-func (state *VerificationState) record(result Verification) bool {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	state.latest[result.RecommendationID] = result
-	if result.Status != VerificationRegressed {
-		return false
-	}
-	if state.announced[result.RecommendationID] {
-		return false
-	}
-	state.announced[result.RecommendationID] = true
-	return true
-}
-
-func (state *VerificationState) render(w http.ResponseWriter) {
-	state.mu.Lock()
-	counts := map[string]int{}
-	for _, result := range state.latest {
-		counts[result.Status]++
-	}
-	state.mu.Unlock()
-	_, _ = fmt.Fprintln(w, "# HELP kuberight_recommendation_verifications Approved recommendations by post-change verification status.")
-	_, _ = fmt.Fprintln(w, "# TYPE kuberight_recommendation_verifications gauge")
-	for _, status := range []string{VerificationVerified, VerificationRegressed, VerificationPending, VerificationNotApplied, VerificationUnavailable} {
-		_, _ = fmt.Fprintf(w, "kuberight_recommendation_verifications{status=%q} %d\n", status, counts[status])
-	}
-	_, _ = fmt.Fprintln(w, "# HELP kuberight_recommendation_regressions Applied recommendations followed by a regression.")
-	_, _ = fmt.Fprintln(w, "# TYPE kuberight_recommendation_regressions gauge")
-	_, _ = fmt.Fprintf(w, "kuberight_recommendation_regressions %d\n", counts[VerificationRegressed])
-}
-
-func (server *apiServer) recommendationVerification(w http.ResponseWriter, r *http.Request) {
+func (server *apiServer) recommendationForVerification(w http.ResponseWriter, r *http.Request, verb string) (repository.RecommendationRecord, bool) {
 	id := r.PathValue("id")
 	if !validRecommendationID(id) {
 		respondError(w, r, http.StatusBadRequest, "invalid_id", "recommendation identifier is invalid")
-		return
+		return repository.RecommendationRecord{}, false
 	}
 	record, err := server.repository.GetRecommendation(r.Context(), id)
 	if errors.Is(err, repository.ErrNotFound) {
 		respondError(w, r, http.StatusNotFound, "not_found", "recommendation was not found")
-		return
+		return repository.RecommendationRecord{}, false
 	}
 	if err != nil {
 		server.repositoryFailure(w, r, "get recommendation", err)
-		return
+		return repository.RecommendationRecord{}, false
 	}
-	if !server.authorize(w, r, AccessAttributes{Verb: "get", Resource: "recommendations", Namespace: record.Namespace, Name: id}) {
-		return
+	if !server.authorize(w, r, AccessAttributes{Verb: verb, Resource: "recommendations", Namespace: record.Namespace, Name: id}) {
+		return repository.RecommendationRecord{}, false
 	}
 	if record.ReviewStatus != repository.ReviewApproved {
 		respondError(w, r, http.StatusConflict, "not_approved", "only approved recommendations are verified after the change")
+		return repository.RecommendationRecord{}, false
+	}
+	return record, true
+}
+
+// recommendationVerification is deliberately read-only. A missing outcome
+// means no durable verification has run yet; GET never queries dependencies,
+// appends evidence, or emits a webhook.
+func (server *apiServer) recommendationVerification(w http.ResponseWriter, r *http.Request) {
+	record, ok := server.recommendationForVerification(w, r, "get")
+	if !ok {
 		return
 	}
-	result := server.verify(r.Context(), record)
-	if server.verified.record(result) {
-		server.announceRegression(record, result)
+	result, err := server.repository.GetVerificationOutcome(r.Context(), record.ID)
+	if errors.Is(err, repository.ErrNotFound) {
+		respondError(w, r, http.StatusNotFound, "verification_not_checked", "no durable verification outcome exists; request an explicit refresh")
+		return
+	}
+	if err != nil {
+		server.repositoryFailure(w, r, "get recommendation verification", err)
+		return
 	}
 	respondJSON(w, http.StatusOK, result)
 }
 
-func (server *apiServer) announceRegression(record repository.RecommendationRecord, result Verification) {
+// refreshRecommendationVerification performs and durably records one
+// verification attempt. Notifications occur only after the outcome is stored
+// and its regression notification is atomically claimed.
+func (server *apiServer) refreshRecommendationVerification(w http.ResponseWriter, r *http.Request) {
+	record, ok := server.recommendationForVerification(w, r, "update")
+	if !ok {
+		return
+	}
+	result, err := server.refreshVerification(r.Context(), record)
+	if err != nil {
+		server.repositoryFailure(w, r, "refresh recommendation verification", err)
+		return
+	}
+	respondJSON(w, http.StatusOK, result)
+}
+
+func (server *apiServer) refreshVerification(ctx context.Context, record repository.RecommendationRecord) (repository.VerificationOutcome, error) {
+	var previous *repository.VerificationOutcome
+	stored, err := server.repository.GetVerificationOutcome(ctx, record.ID)
+	if err == nil {
+		previous = &stored
+	} else if !errors.Is(err, repository.ErrNotFound) {
+		return repository.VerificationOutcome{}, err
+	}
+	run := server.verify(ctx, record, previous)
+	result, err := server.repository.RecordVerification(ctx, run)
+	if err != nil {
+		return repository.VerificationOutcome{}, err
+	}
+	if result.Status == VerificationRegressed {
+		claimed, claimErr := server.repository.ClaimRegressionNotification(ctx, record.ID, result.CheckedAt, server.now().UTC())
+		if claimErr != nil {
+			server.logger.Error("verification regression notification claim failed", "recommendation_id", record.ID, "error", claimErr)
+		} else if claimed {
+			server.announceRegression(record, result)
+		}
+	}
+	return result, nil
+}
+
+func (server *apiServer) announceRegression(record repository.RecommendationRecord, result repository.VerificationOutcome) {
 	server.logger.Warn("applied recommendation regressed", "recommendation_id", record.ID, "namespace", record.Namespace, "workload", record.Workload, "container", record.Container, "reasons", result.Reasons)
 	server.notify(notify.RecommendationRegressed, record, "kuberight", joinLimited(result.Reasons, 3))
 }
@@ -151,80 +142,213 @@ func joinLimited(values []string, limit int) string {
 	return text
 }
 
-// verify decides whether the approved values are live and, once enough
-// post-change history exists, compares it with the history the
-// recommendation was based on.
-func (server *apiServer) verify(ctx context.Context, record repository.RecommendationRecord) Verification {
-	result := Verification{RecommendationID: record.ID, Checks: []VerificationCheck{}, Reasons: []string{}, CheckedAt: server.now().UTC()}
+func validSHA256(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+func preserveFirstObservation(run *repository.VerificationRun, previous *repository.VerificationOutcome) {
+	if previous == nil || previous.FirstObservedAt == nil {
+		return
+	}
+	first := previous.FirstObservedAt.UTC()
+	run.FirstObservedAt = &first
+	run.ObservedGeneration = previous.ObservedGeneration
+	run.ObservedSpecFingerprint = previous.ObservedSpecFingerprint
+}
+
+func (server *apiServer) inconclusive(run *repository.VerificationRun, reason string) repository.VerificationRun {
+	run.Status = VerificationInconclusive
+	run.Reasons = append(run.Reasons, reason)
+	return *run
+}
+
+// verify computes one fail-closed run. A verified/regressed verdict requires
+// immutable workload provenance, an unchanged first-observed target spec, and
+// complete Prometheus evidence attributed to exact pod UIDs.
+func (server *apiServer) verify(ctx context.Context, record repository.RecommendationRecord, previous *repository.VerificationOutcome) repository.VerificationRun {
+	now := server.now().UTC().Truncate(time.Second)
+	run := repository.VerificationRun{
+		RecommendationID: record.ID,
+		Status:           VerificationUnavailable,
+		Attribution:      repository.VerificationAttributionNone,
+		Checks:           []repository.VerificationCheck{},
+		Reasons:          []string{},
+		CheckedAt:        now,
+	}
+	preserveFirstObservation(&run, previous)
+
+	if record.Source != repository.SourcePrometheus {
+		return server.inconclusive(&run, "only Prometheus-backed recommendations have independently verifiable evidence")
+	}
+	provenance := record.Provenance
+	if provenance.ExpiresAt == nil || provenance.WorkloadUID == "" || provenance.WorkloadGeneration <= 0 ||
+		!validSHA256(provenance.SourceSpecFingerprint) || !validSHA256(provenance.QueryFingerprint) ||
+		provenance.ObservationStart == nil || provenance.ObservationEnd == nil {
+		return server.inconclusive(&run, "the recommendation lacks complete immutable workload and observation provenance")
+	}
+	if record.DataQuality.ReplicaCoverage == nil || !record.DataQuality.ReplicaCoverage.Complete {
+		return server.inconclusive(&run, "the recommendation was not calculated from complete exact-replica evidence")
+	}
 	resolver, ok := server.provider.(WorkloadResolver)
-	if server.usage == nil || server.provider == nil || !ok {
-		result.Status = VerificationUnavailable
-		result.Reasons = append(result.Reasons, "verification needs both Prometheus and the Kubernetes inventory")
-		return result
+	exactSource, exact := server.usage.(attributedUsageSource)
+	if server.provider == nil || !ok || server.usage == nil || !exact {
+		run.Status = VerificationUnavailable
+		run.Reasons = append(run.Reasons, "verification requires Kubernetes inventory and exact pod-UID Prometheus attribution")
+		return run
 	}
 	spec, err := resolver.Workload(ctx, record.Namespace, record.Kind, record.Workload)
 	if err != nil {
-		result.Status = VerificationUnavailable
-		result.Reasons = append(result.Reasons, "the live workload could not be read")
-		return result
+		run.Status = VerificationUnavailable
+		run.Reasons = append(run.Reasons, "the live workload could not be read")
+		return run
+	}
+	if spec.Cluster != record.Cluster || spec.UID != provenance.WorkloadUID {
+		return server.inconclusive(&run, "the workload was recreated or moved; its immutable identity no longer matches the recommendation")
+	}
+	if spec.Generation < provenance.WorkloadGeneration || !validSHA256(spec.SourceSpecFingerprint) {
+		return server.inconclusive(&run, "the live workload generation or spec fingerprint is invalid")
+	}
+	if spec.Generation == provenance.WorkloadGeneration && spec.SourceSpecFingerprint != provenance.SourceSpecFingerprint {
+		return server.inconclusive(&run, "the live spec changed without a matching Kubernetes generation")
 	}
 	live, found := spec.Container(record.Container)
 	if !found {
-		result.Status = VerificationUnavailable
-		result.Reasons = append(result.Reasons, "the container no longer exists in the workload")
-		return result
+		return server.inconclusive(&run, "the container no longer exists in the workload")
 	}
 	if !matches(live.CPURequestMilli, record.CPURequestMilli) || !matches(live.MemoryRequestBytes, record.MemoryRequestBytes) ||
 		!matches(live.CPULimitMilli, record.CPULimitMilli) || !matches(live.MemoryLimitBytes, record.MemoryLimitBytes) {
-		result.Status = VerificationNotApplied
-		result.Reasons = append(result.Reasons, "the live requests and limits do not match the approved values yet")
-		return result
+		run.Status = VerificationNotApplied
+		run.Reasons = append(run.Reasons, "the live requests and limits do not match the approved target values")
+		return run
 	}
-	result.Applied = true
 
-	appliedAt, source := server.appliedAt(ctx, record)
-	result.AppliedAt, result.AppliedAtSource = &appliedAt, source
-	now := server.now().UTC().Truncate(time.Second)
-	post := now.Sub(appliedAt)
-	result.PostChangeWindow = post.Truncate(time.Minute).String()
-	if post < minimumPostChange {
-		result.Status = VerificationPending
-		result.Reasons = append(result.Reasons, fmt.Sprintf("only %s of post-change history exists; %s is needed", post.Truncate(time.Minute), minimumPostChange))
-		return result
+	targetChanged := record.CPURequestMilli != record.CurrentCPURequestMilli || record.MemoryRequestBytes != record.CurrentMemoryRequestBytes ||
+		record.CPULimitMilli != record.CurrentCPULimitMilli || record.MemoryLimitBytes != record.CurrentMemoryLimitBytes
+	if targetChanged && (spec.Generation <= provenance.WorkloadGeneration || spec.SourceSpecFingerprint == provenance.SourceSpecFingerprint) {
+		return server.inconclusive(&run, "the target values are visible but Kubernetes provenance does not prove a new workload spec")
 	}
+	if previous != nil && previous.FirstObservedAt != nil &&
+		(spec.Generation != previous.ObservedGeneration || spec.SourceSpecFingerprint != previous.ObservedSpecFingerprint) {
+		return server.inconclusive(&run, "the workload spec changed after the target configuration was first observed")
+	}
+	if spec.MetricIdentity == nil || spec.MetricIdentity.UID != spec.UID || spec.MetricIdentity.Generation != spec.Generation {
+		return server.inconclusive(&run, "the live workload has no exact metric identity for its current UID and generation")
+	}
+	identity := spec.MetricIdentity.ForContainer(record.Container)
+	if identity.ExpectedReplicas != spec.Replicas {
+		return server.inconclusive(&run, "the exact metric identity does not cover the live desired replica count")
+	}
+
+	run.ConfigurationObserved = true
+	run.Attribution = repository.VerificationAttributionExactPodUID
+	if run.FirstObservedAt == nil {
+		first := now
+		run.FirstObservedAt = &first
+		run.ObservedGeneration = spec.Generation
+		run.ObservedSpecFingerprint = spec.SourceSpecFingerprint
+	}
+	postChange := now.Sub(*run.FirstObservedAt)
+	if postChange < 0 {
+		return server.inconclusive(&run, "the persisted first observation is later than this verification attempt")
+	}
+	run.PostChangeWindowSeconds = int64(postChange / time.Second)
+	if postChange < minimumPostChange {
+		run.Status = VerificationPending
+		run.Reasons = append(run.Reasons, fmt.Sprintf("only %s of exact post-change observation exists; %s is required", postChange.Truncate(time.Minute), minimumPostChange))
+		return run
+	}
+
+	windowDuration := min(postChange, maximumPostChange)
+	queryWindow := usage.Window{Duration: windowDuration, Step: chartStep(windowDuration, server.config.RecommendationStep), End: now}
 	subject := usage.Subject{Namespace: record.Namespace, Kind: record.Kind, Workload: record.Workload, Container: record.Container}
-	if err := subject.Validate(); err != nil {
-		result.Status = VerificationUnavailable
-		result.Reasons = append(result.Reasons, "the recommendation's workload identity is invalid")
-		return result
-	}
-	window := min(post, 7*24*time.Hour)
-	step := chartStep(window, server.config.RecommendationStep)
-	before := usage.Window{Duration: window, Step: step, End: appliedAt}
-	if end := record.Provenance.ObservationEnd; end != nil && end.Before(appliedAt) {
-		before.End = *end
-	}
-	after := usage.Window{Duration: window, Step: step, End: now}
-	afterSignals, err := server.usage.Signals(ctx, subject, after, usage.LatencyTemplate(server.config.LatencyQuery))
+	history, err := exactSource.HistoryForIdentity(ctx, subject, identity, queryWindow)
 	if err != nil {
-		result.Status = VerificationUnavailable
-		result.Reasons = append(result.Reasons, "post-change usage could not be read")
-		return result
+		return server.inconclusive(&run, "exact post-change CPU and memory history could not be read")
 	}
-	beforeSignals, beforeErr := server.usage.Signals(ctx, subject, before, usage.LatencyTemplate(server.config.LatencyQuery))
-	if beforeErr != nil {
-		beforeSignals = usage.Signals{}
+	events, err := exactSource.EventsForIdentity(ctx, subject, identity, queryWindow)
+	if err != nil {
+		return server.inconclusive(&run, "exact post-change restart, OOM, and throttling evidence could not be read")
 	}
-	result.Checks = compareSignals(record, beforeSignals, afterSignals, window)
-	for _, check := range result.Checks {
+	if reasons := incompleteVerificationEvidence(history, events, identity, spec, record); len(reasons) > 0 {
+		run.Status = VerificationInconclusive
+		run.Reasons = append(run.Reasons, reasons...)
+		return run
+	}
+
+	run.EvidenceComplete = true
+	run.Checks = postChangeChecks(record, history, events, windowDuration)
+	for _, check := range run.Checks {
 		if check.Regressed {
-			result.Reasons = append(result.Reasons, check.Detail)
+			run.Reasons = append(run.Reasons, check.Detail)
 		}
 	}
-	if len(result.Reasons) > 0 {
-		result.Status = VerificationRegressed
+	if len(run.Reasons) > 0 {
+		run.Status = VerificationRegressed
 	} else {
-		result.Status = VerificationVerified
+		run.Status = VerificationVerified
+		run.Reasons = append(run.Reasons, "no safety regression was detected in the complete exact post-change evidence")
+	}
+	return run
+}
+
+func incompleteVerificationEvidence(history usage.History, events usage.Events, identity usage.WorkloadIdentity, spec WorkloadSpec, record repository.RecommendationRecord) []string {
+	reasons := []string{}
+	if len(history.Warnings) > 0 {
+		reasons = append(reasons, "Prometheus returned warnings for the exact post-change history")
+	}
+	for _, series := range []usage.Series{history.CPU, history.Memory} {
+		blocking, _ := series.QualityIssues()
+		reasons = append(reasons, blocking...)
+		if len(series.Points) == 0 {
+			reasons = append(reasons, series.Resource+" post-change history is empty")
+		}
+	}
+	coverage := history.ReplicaCoverage
+	if coverage == nil {
+		reasons = append(reasons, "exact replica coverage is missing")
+	} else {
+		if !coverage.Complete || len(coverage.Issues) > 0 || coverage.MissingReplicas > 0 {
+			reasons = append(reasons, "exact replica coverage is incomplete")
+		}
+		if coverage.ExpectedReplicas != spec.Replicas || coverage.ObservedReplicas < int(spec.Replicas) ||
+			coverage.CPUObservedReplicas < int(spec.Replicas) || coverage.MemoryObservedReplicas < int(spec.Replicas) {
+			reasons = append(reasons, "CPU and memory do not cover every desired replica")
+		}
+	}
+	if !events.Available {
+		reasons = append(reasons, "restart and OOM evidence is unavailable")
+	}
+	if record.CPULimitMilli > 0 && !events.ThrottlingAvailable {
+		reasons = append(reasons, "CPU throttling evidence is unavailable for the limited container")
+	}
+	expected := make(map[string]string, len(identity.Pods))
+	for _, pod := range identity.Pods {
+		expected[pod.Name] = pod.UID
+	}
+	if len(events.Replicas) != len(expected) {
+		reasons = append(reasons, "event evidence does not cover every exact pod UID")
+	} else {
+		for _, replica := range events.Replicas {
+			if expected[replica.Pod] != replica.UID {
+				reasons = append(reasons, "event evidence contains a pod outside the exact workload identity")
+				break
+			}
+		}
+	}
+	return sortedUnique(reasons)
+}
+
+func sortedUnique(values []string) []string {
+	sort.Strings(values)
+	result := values[:0]
+	for _, value := range values {
+		if len(result) == 0 || result[len(result)-1] != value {
+			result = append(result, value)
+		}
 	}
 	return result
 }
@@ -236,105 +360,83 @@ func matches(live, approved int64) bool {
 	return math.Abs(float64(live-approved)) <= float64(approved)*appliedTolerance
 }
 
-// appliedAt estimates when the approved values went live: the first rollout
-// after the review for Deployments, otherwise the review time itself, which
-// is the earliest the change can have been made.
-func (server *apiServer) appliedAt(ctx context.Context, record repository.RecommendationRecord) (time.Time, string) {
-	reviewed := record.CreatedAt
-	if record.ReviewedAt != nil {
-		reviewed = *record.ReviewedAt
-	}
-	reviewed = reviewed.UTC().Truncate(time.Second)
-	subject := usage.Subject{Namespace: record.Namespace, Kind: record.Kind, Workload: record.Workload, Container: record.Container}
-	if record.Kind == "Deployment" && subject.Validate() == nil {
-		if rollouts, err := server.usage.Rollouts(ctx, subject, reviewed, server.now()); err == nil && len(rollouts) > 0 {
-			sort.Slice(rollouts, func(left, right int) bool { return rollouts[left].Timestamp.Before(rollouts[right].Timestamp) })
-			return rollouts[0].Timestamp.UTC(), "first rollout after the approval"
-		}
-	}
-	return reviewed, "approval time (the change cannot be older)"
-}
-
 func ratioPointer(value float64) *float64 {
 	rounded := math.Round(value*10_000) / 10_000
 	return &rounded
 }
 
-func eventCount(signals usage.Signals, kind string) int64 {
-	total := int64(0)
-	for _, event := range signals.Events {
-		if event.Kind == kind {
-			total += max(1, event.Count)
-		}
+func maximum(values []float64) float64 {
+	result := 0.0
+	for _, value := range values {
+		result = math.Max(result, value)
 	}
-	return total
+	return result
 }
 
-// compareSignals applies the regression rules: any OOM kill after a memory
-// change, throttling that rose by five points or more, more restarts per
-// hour, and latency 25% higher.
-func compareSignals(record repository.RecommendationRecord, before, after usage.Signals, window time.Duration) []VerificationCheck {
-	checks := []VerificationCheck{}
+// postChangeChecks use absolute safety signals plus the recommendation's
+// durable pre-change throttling baseline. Missing signals never reach here.
+func postChangeChecks(record repository.RecommendationRecord, history usage.History, events usage.Events, window time.Duration) []repository.VerificationCheck {
 	hours := math.Max(window.Hours(), 1)
-
-	oomBefore, oomAfter := eventCount(before, usage.EventOOMKill), eventCount(after, usage.EventOOMKill)
-	checks = append(checks, VerificationCheck{
-		Name: "OOM kills", Before: ratioPointer(float64(oomBefore)), After: ratioPointer(float64(oomAfter)),
-		Regressed: oomAfter > 0 && oomAfter >= oomBefore,
-		Detail:    fmt.Sprintf("%d OOM kill(s) after the change, %d before", oomAfter, oomBefore),
-	})
-
-	restartsBefore, restartsAfter := float64(eventCount(before, usage.EventRestart))/hours, float64(eventCount(after, usage.EventRestart))/hours
-	checks = append(checks, VerificationCheck{
-		Name: "Restarts per hour", Before: ratioPointer(restartsBefore), After: ratioPointer(restartsAfter),
-		Regressed: restartsAfter > 0 && restartsAfter >= 2*math.Max(restartsBefore, 1/hours),
-		Detail:    fmt.Sprintf("restarts per hour went from %.2f to %.2f", restartsBefore, restartsAfter),
-	})
-
-	if after.Throttling != nil {
-		throttlingAfter, _ := stats.Mean(after.Throttling.Values())
-		throttlingBefore := 0.0
-		if before.Throttling != nil {
-			throttlingBefore, _ = stats.Mean(before.Throttling.Values())
-		}
-		checks = append(checks, VerificationCheck{
-			Name: "CPU throttling", Before: ratioPointer(throttlingBefore), After: ratioPointer(throttlingAfter),
-			Regressed: throttlingAfter >= 0.05 && throttlingAfter-throttlingBefore >= 0.05,
-			Detail:    fmt.Sprintf("throttled periods went from %.1f%% to %.1f%%", throttlingBefore*100, throttlingAfter*100),
+	oomAfter := float64(events.OOMKills)
+	restartsAfter := float64(events.Restarts) / hours
+	checks := []repository.VerificationCheck{
+		{Name: "OOM kills", After: ratioPointer(oomAfter), Regressed: events.OOMKills > 0, Detail: fmt.Sprintf("%d OOM kill(s) occurred after the target configuration was observed", events.OOMKills)},
+		{Name: "Restarts per hour", After: ratioPointer(restartsAfter), Regressed: events.Restarts > 0, Detail: fmt.Sprintf("%.2f restart(s) per hour occurred after the target configuration was observed", restartsAfter)},
+	}
+	if events.ThrottlingAvailable {
+		before := record.CPUThrottlingRatio
+		after := events.ThrottlingRatio
+		checks = append(checks, repository.VerificationCheck{
+			Name: "CPU throttling", Before: ratioPointer(before), After: ratioPointer(after),
+			Regressed: after >= 0.05 && after-before >= 0.05,
+			Detail:    fmt.Sprintf("throttled periods changed from %.1f%% before analysis to %.1f%% after the target was observed", before*100, after*100),
 		})
 	}
-
-	if after.Latency != nil && before.Latency != nil {
-		latencyBefore, beforeCount := stats.Mean(before.Latency.Values())
-		latencyAfter, afterCount := stats.Mean(after.Latency.Values())
-		if beforeCount > 0 && afterCount > 0 && latencyBefore > 0 {
-			change := (latencyAfter - latencyBefore) / latencyBefore
-			checks = append(checks, VerificationCheck{
-				Name: "Latency", Before: ratioPointer(latencyBefore), After: ratioPointer(latencyAfter),
-				Regressed: change >= 0.25,
-				Detail:    fmt.Sprintf("mean latency changed %+.0f%%", change*100),
-			})
-		}
-	}
-
+	peakMemory := maximum(history.Memory.Values())
+	requestRatio := 0.0
 	if record.MemoryRequestBytes > 0 {
-		share := stats.Quantile(after.Memory.Values(), 1)
-		checks = append(checks, VerificationCheck{
-			Name: "Peak memory vs request", After: ratioPointer(share / float64(record.MemoryRequestBytes)),
-			Detail: fmt.Sprintf("peak memory reached %.0f%% of the new request", share/float64(record.MemoryRequestBytes)*100),
+		requestRatio = peakMemory / float64(record.MemoryRequestBytes)
+	}
+	checks = append(checks, repository.VerificationCheck{
+		Name: "Peak memory vs request", After: ratioPointer(requestRatio),
+		Detail: fmt.Sprintf("peak memory reached %.0f%% of the approved request", requestRatio*100),
+	})
+	if record.MemoryLimitBytes > 0 {
+		limitRatio := peakMemory / float64(record.MemoryLimitBytes)
+		checks = append(checks, repository.VerificationCheck{
+			Name: "Peak memory vs limit", After: ratioPointer(limitRatio), Regressed: limitRatio >= 0.95,
+			Detail: fmt.Sprintf("peak memory reached %.0f%% of the approved limit", limitRatio*100),
 		})
 	}
 	return checks
 }
 
-// Verifier periodically verifies approved recommendations, updates the
-// shared state on /metrics, and announces each regression once.
-type Verifier struct {
-	server *apiServer
+// renderVerificationMetrics derives gauges from durable outcomes, so restarts
+// and multiple API replicas cannot lose or disagree about latest verdicts.
+func (server *apiServer) renderVerificationMetrics(ctx context.Context, w http.ResponseWriter) {
+	counts := map[string]int{}
+	result, err := server.repository.ListVerificationOutcomes(ctx, 1, 10_000)
+	if err != nil {
+		server.logger.Error("verification metrics could not list outcomes", "error", err)
+	} else {
+		for _, outcome := range result.Items {
+			counts[outcome.Status]++
+		}
+	}
+	_, _ = fmt.Fprintln(w, "# HELP kuberight_recommendation_verifications Approved recommendations by durable post-change verification status.")
+	_, _ = fmt.Fprintln(w, "# TYPE kuberight_recommendation_verifications gauge")
+	for _, status := range []string{VerificationVerified, VerificationRegressed, VerificationPending, VerificationNotApplied, VerificationInconclusive, VerificationUnavailable} {
+		_, _ = fmt.Fprintf(w, "kuberight_recommendation_verifications{status=%q} %d\n", status, counts[status])
+	}
+	_, _ = fmt.Fprintln(w, "# HELP kuberight_recommendation_regressions Applied recommendations followed by a durable exact-evidence regression.")
+	_, _ = fmt.Fprintln(w, "# TYPE kuberight_recommendation_regressions gauge")
+	_, _ = fmt.Fprintf(w, "kuberight_recommendation_regressions %d\n", counts[VerificationRegressed])
 }
 
-// NewVerifier builds a verifier from the API's dependencies. Share
-// dependencies.Verification with the handler so results reach /metrics.
+// Verifier periodically refreshes approved recommendations. Every attempt is
+// append-only and the latest outcome is durable.
+type Verifier struct{ server *apiServer }
+
 func NewVerifier(cfg config.Config, dependencies Dependencies) (*Verifier, error) {
 	server, err := newAPIServer(cfg, dependencies)
 	if err != nil {
@@ -343,7 +445,6 @@ func NewVerifier(cfg config.Config, dependencies Dependencies) (*Verifier, error
 	return &Verifier{server: server}, nil
 }
 
-// Run verifies every interval until the context ends.
 func (verifier *Verifier) Run(ctx context.Context) {
 	interval := verifier.server.config.VerificationInterval
 	if interval <= 0 {
@@ -361,7 +462,6 @@ func (verifier *Verifier) Run(ctx context.Context) {
 	}
 }
 
-// Pass verifies the newest approved recommendation of each container once.
 func (verifier *Verifier) Pass(ctx context.Context) int {
 	server := verifier.server
 	checked := 0
@@ -377,9 +477,8 @@ func (verifier *Verifier) Pass(ctx context.Context) int {
 			if ctx.Err() != nil || checked >= maxVerificationsPerPass {
 				return checked
 			}
-			verdict := server.verify(ctx, record)
-			if server.verified.record(verdict) {
-				server.announceRegression(record, verdict)
+			if _, err := server.refreshVerification(ctx, record); err != nil {
+				server.logger.Warn("verification refresh failed", "recommendation_id", record.ID, "error", err)
 			}
 			checked++
 		}

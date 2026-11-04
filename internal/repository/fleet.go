@@ -25,6 +25,9 @@ const (
 	FleetScanFailed    = "failed"
 	FleetScanCanceled  = "canceled"
 
+	// FleetScanLeaseDuration is shared by workers and repository heartbeat
+	// updates so a heartbeat never silently changes the claim lease policy.
+	FleetScanLeaseDuration = 5 * time.Minute
 	// FleetScanRetryDelay is deliberately bounded and deterministic so a
 	// transient executor failure is retried without creating a hot queue loop.
 	FleetScanRetryDelay = 30 * time.Second
@@ -238,6 +241,12 @@ func ValidateFleetScanProgress(progress FleetScanProgress) error {
 		return ErrFleetScanConflict
 	}
 	if progress.Status == FleetScanCompleted && (progress.Processed != progress.Expected || progress.Succeeded+progress.Failed != progress.Processed) {
+		return ErrFleetScanConflict
+	}
+	if progress.Status == FleetScanCompleted && progress.Error != "" {
+		return ErrFleetScanConflict
+	}
+	if progress.Status == FleetScanFailed && strings.TrimSpace(progress.Error) == "" {
 		return ErrFleetScanConflict
 	}
 	if len(progress.Error) > 4096 || !utf8.ValidString(progress.Error) || len(progress.FailureDetails) > MaxFleetFailureDetails {

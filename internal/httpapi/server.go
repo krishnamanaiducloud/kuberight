@@ -80,13 +80,9 @@ type Dependencies struct {
 	Notifier   notify.Notifier
 	Logger     *slog.Logger
 	Now        func() time.Time
-	// Verification is shared with the background verifier so its results
-	// appear on /metrics. A handler without one creates its own.
-	Verification *VerificationState
 }
 
 type apiServer struct {
-	verified   *VerificationState
 	config     config.Config
 	access     AccessController
 	repository repository.Store
@@ -157,10 +153,6 @@ func newAPIServer(cfg config.Config, dependencies Dependencies) (*apiServer, err
 		logger:     logger,
 		metrics:    newAPIMetrics(),
 		now:        now,
-		verified:   dependencies.Verification,
-	}
-	if server.verified == nil {
-		server.verified = NewVerificationState()
 	}
 	return server, nil
 }
@@ -192,6 +184,7 @@ func (server *apiServer) routes() (http.Handler, error) {
 	mux.HandleFunc("GET /api/v1/metrics/signals", server.signals)
 	mux.HandleFunc("GET /api/v1/correlation", server.correlationAnalysis)
 	mux.HandleFunc("GET /api/v1/recommendations/{id}/verification", server.recommendationVerification)
+	mux.HandleFunc("POST /api/v1/recommendations/{id}/verification:refresh", server.refreshRecommendationVerification)
 	mux.HandleFunc("GET /api/v1/policies", server.listPolicies)
 	mux.HandleFunc("POST /api/v1/policies", server.createPolicy)
 	mux.HandleFunc("POST /api/v1/policies:resolve", server.resolvePolicy)
@@ -377,7 +370,7 @@ func resourceName(resource string) string {
 
 func (server *apiServer) prometheusMetrics(w http.ResponseWriter, r *http.Request) {
 	server.metrics.render(w)
-	server.verified.render(w)
+	server.renderVerificationMetrics(r.Context(), w)
 	server.renderIntegrationMetrics(r.Context(), w)
 }
 

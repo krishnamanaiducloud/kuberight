@@ -386,7 +386,7 @@ func (store *Store) CancelFleetScan(ctx context.Context, id string, now time.Tim
 	return cancelScan(ctx, store.pool, id, now)
 }
 func resumeScan(ctx context.Context, db queryer, id string, now time.Time) (repository.FleetScan, error) {
-	return mutateScanState(ctx, db, "UPDATE fleet_scans SET status='queued',available_at=$2,attempt=0,cancellation_at=NULL,completed_at=NULL,last_error='',lease_owner='',lease_expires_at=NULL WHERE id=$1 AND status IN ('canceled','failed') RETURNING "+scanColumns, id, now)
+	return mutateScanState(ctx, db, "UPDATE fleet_scans SET status='queued',available_at=$2,attempt=0,expected=0,processed=0,succeeded=0,failed=0,cancellation_at=NULL,started_at=NULL,completed_at=NULL,last_error='',failure_details='[]'::jsonb,lease_owner='',lease_expires_at=NULL WHERE id=$1 AND status IN ('canceled','failed') RETURNING "+scanColumns, id, now)
 }
 func (store *Store) ResumeFleetScan(ctx context.Context, id string, now time.Time) (repository.FleetScan, error) {
 	return resumeScan(ctx, store.pool, id, now)
@@ -451,7 +451,7 @@ func (store *Store) ClaimFleetScan(ctx context.Context, worker string, now time.
 	if strings.TrimSpace(worker) == "" || len(worker) > 128 || lease < time.Minute || lease > time.Hour {
 		return repository.FleetScan{}, repository.ErrFleetScanConflict
 	}
-	record, err := scanFleetScan(store.pool.QueryRow(ctx, `WITH candidate AS (SELECT id FROM fleet_scans WHERE available_at<=$1 AND attempt<max_attempts AND (status='queued' OR (status='running' AND lease_expires_at<=$1)) ORDER BY available_at,id FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE fleet_scans f SET status='running',lease_owner=$2,lease_expires_at=$3,attempt=f.attempt+1,started_at=COALESCE(f.started_at,$1) FROM candidate WHERE f.id=candidate.id RETURNING `+scanColumns, now.UTC(), worker, now.UTC().Add(lease)))
+	record, err := scanFleetScan(store.pool.QueryRow(ctx, `WITH candidate AS (SELECT id AS candidate_id FROM fleet_scans WHERE available_at<=$1 AND attempt<max_attempts AND (status='queued' OR (status='running' AND lease_expires_at<=$1)) ORDER BY available_at,id FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE fleet_scans f SET status='running',lease_owner=$2,lease_expires_at=$3,attempt=f.attempt+1,started_at=COALESCE(f.started_at,$1) FROM candidate WHERE f.id=candidate.candidate_id RETURNING `+scanColumns, now.UTC(), worker, now.UTC().Add(lease)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return repository.FleetScan{}, repository.ErrNotFound
 	}
@@ -474,10 +474,10 @@ expected=$5,processed=$6,succeeded=$7,failed=$8,last_error=$9,failure_details=$1
 status=CASE WHEN $4='running' THEN 'running' WHEN $4='completed' THEN 'completed' WHEN attempt<max_attempts THEN 'queued' ELSE 'failed' END,
 available_at=CASE WHEN $4='failed' AND attempt<max_attempts THEN $12 ELSE available_at END,
 lease_owner=CASE WHEN $4='running' THEN lease_owner ELSE '' END,
-lease_expires_at=CASE WHEN $4='running' THEN $3 ELSE NULL END,
+lease_expires_at=CASE WHEN $4='running' THEN GREATEST(lease_expires_at,$3) ELSE NULL END,
 completed_at=CASE WHEN $4='running' OR ($4='failed' AND attempt<max_attempts) THEN NULL ELSE $2 END
 WHERE id=$1 AND status='running' AND lease_owner=$10 AND lease_expires_at>=$2 RETURNING `+scanColumns,
-		id, now.UTC(), now.UTC().Add(5*time.Minute), status, p.Expected, p.Processed, p.Succeeded, p.Failed, p.Error, worker, failurePayload, now.UTC().Add(repository.FleetScanRetryDelay)))
+		id, now.UTC(), now.UTC().Add(repository.FleetScanLeaseDuration), status, p.Expected, p.Processed, p.Succeeded, p.Failed, p.Error, worker, failurePayload, now.UTC().Add(repository.FleetScanRetryDelay)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		if _, getErr := getScan(ctx, store.pool, id); errors.Is(getErr, repository.ErrNotFound) {
 			return repository.FleetScan{}, getErr

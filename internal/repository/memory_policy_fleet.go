@@ -456,9 +456,15 @@ func (memory *Memory) resumeFleetScan(id string, now time.Time) (FleetScan, erro
 	record.Status = FleetScanQueued
 	record.AvailableAt = now.UTC()
 	record.Attempt = 0
+	record.Expected = 0
+	record.Processed = 0
+	record.Succeeded = 0
+	record.Failed = 0
 	record.CancellationAt = nil
 	record.CompletedAt = nil
+	record.StartedAt = nil
 	record.LastError = ""
+	record.FailureDetails = nil
 	memory.state.scans[id] = record
 	return cloneFleetScan(record), nil
 }
@@ -563,7 +569,10 @@ func (memory *Memory) UpdateFleetScan(ctx context.Context, id, worker string, no
 	record.LastError = progress.Error
 	record.FailureDetails = append([]FleetTargetFailure(nil), progress.FailureDetails...)
 	if progress.Status == "" {
-		expires := now.UTC().Add(5 * time.Minute)
+		expires := now.UTC().Add(FleetScanLeaseDuration)
+		if record.LeaseExpiresAt.After(expires) {
+			expires = *record.LeaseExpiresAt
+		}
 		record.LeaseExpiresAt = &expires
 	} else if progress.Status == FleetScanCompleted {
 		completed := now.UTC()

@@ -36,7 +36,7 @@ export function formatPercent(value: number): string {
   return `${value > 0 ? '+' : ''}${value.toFixed(1)}%`
 }
 
-const dateColumns = new Set(['createdAt', 'reviewedAt', 'updatedAt', 'timestamp', 'generatedAt'])
+const dateColumns = new Set(['createdAt', 'reviewedAt', 'updatedAt', 'timestamp', 'generatedAt', 'configurationObservedAt', 'checkedAt'])
 
 /** Formats a table cell from its column name, so units are always visible. */
 export function formatCell(column: string, value: unknown, currency?: string): string {
@@ -44,7 +44,7 @@ export function formatCell(column: string, value: unknown, currency?: string): s
   if (typeof value === 'number') {
     if (/Bytes$/.test(column)) return value === 0 ? 'unset' : formatBytes(value)
     if (/Milli$/.test(column)) return value === 0 ? 'unset' : formatMillicores(value)
-    if (/(Cost|Savings)$/.test(column)) return formatCurrency(value, currency ?? 'USD')
+    if (/(Cost|Savings|MonthlyChange)$/.test(column)) return formatCurrency(value, currency ?? 'USD')
     if (/Percent$/.test(column)) return formatPercent(value)
     return value.toLocaleString()
   }

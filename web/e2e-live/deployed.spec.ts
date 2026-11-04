@@ -29,7 +29,7 @@ test('uses the deployed API and renders live Kubernetes inventory', async ({ pag
 
   await page.goto('/')
   await expect(page.getByRole('heading', { level: 1, name: 'Rightsize with evidence, not instinct.' })).toBeVisible()
-  await page.getByRole('link', { name: 'Workloads' }).click()
+  await page.goto('/workloads?scope=all')
   await expect(page.getByRole('heading', { level: 1, name: 'Workloads' })).toBeVisible()
   await expect(page.getByText('kuberight', { exact: true }).first()).toBeVisible()
 
