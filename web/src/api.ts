@@ -90,6 +90,44 @@ export type RecommendationProvenance = {
   expiresAt?: string
 }
 
+export type ReplicaQuality = {
+  pod: string
+  uid: string
+  phase?: string
+  active: boolean
+  cpuCoverage: number
+  memoryCoverage: number
+}
+
+export type ReplicaCoverage = {
+  expectedReplicas: number
+  discoveredReplicas: number
+  observedReplicas: number
+  missingReplicas: number
+  activeReplicas: number
+  terminatedReplicas: number
+  cpuObservedReplicas: number
+  memoryObservedReplicas: number
+  cpuReplicaCoverage: number
+  memoryReplicaCoverage: number
+  cpuTemporalCoverage: number
+  memoryTemporalCoverage: number
+  cpuImbalanceRatio?: number
+  memoryImbalanceRatio?: number
+  complete: boolean
+  replicas?: ReplicaQuality[]
+}
+
+export type ReplicaEvents = {
+  pod: string
+  uid: string
+  restarts: number
+  oomKills: number
+  throttlingAvailable: boolean
+  throttlingRatio: number
+  throttlingPeakRatio: number
+}
+
 export type RecommendationRecord = {
   id: string
   cluster?: string
@@ -118,7 +156,7 @@ export type RecommendationRecord = {
   spikes?: SpikeProfile
   trends?: Trends
   backtest?: Backtest
-  dataQuality: { cpuSampleCount: number; memorySampleCount: number; minimumRequired: number; sufficient: boolean; issues: string[] }
+  dataQuality: { cpuSampleCount: number; memorySampleCount: number; minimumRequired: number; sufficient: boolean; issues: string[]; replicaCoverage?: ReplicaCoverage }
   estimatedCpuChangePercent?: number
   estimatedMemoryChangePercent?: number
   reason: string
@@ -349,7 +387,7 @@ export type RecommendationPreview = {
   source?: 'prometheus'
   window: string
   step: string
-  events: { available: boolean; restarts: number; oomKills: number; throttlingAvailable: boolean; throttlingRatio: number; throttlingPeakRatio: number }
+  events: { available: boolean; restarts: number; oomKills: number; throttlingAvailable: boolean; throttlingRatio: number; throttlingPeakRatio: number; replicas?: ReplicaEvents[] }
 }
 
 export type EfficiencyRow = {

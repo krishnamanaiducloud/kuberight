@@ -1,4 +1,27 @@
 {{- if .Values.ml.enabled }}
+{{- if and .Values.ml.persistence.enabled (not .Values.ml.persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "kuberight.fullname" . }}-ml-models
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kuberight.mlLabels" . | nindent 4 }}
+  {{- with .Values.ml.persistence.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  accessModes:
+    {{- toYaml .Values.ml.persistence.accessModes | nindent 4 }}
+  {{- with .Values.ml.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.ml.persistence.size | quote }}
+---
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -56,6 +79,10 @@ spec:
               value: "8081"
             - name: KUBERIGHT_ML_LISTEN_ADDR
               value: ":8081"
+            {{- if .Values.ml.persistence.enabled }}
+            - name: KUBERIGHT_ML_MODEL_DIR
+              value: /var/lib/kuberight-ml/models
+            {{- end }}
             {{- with .Values.ml.apiKey.existingSecret }}
             - name: KUBERIGHT_ML_API_KEY
               valueFrom:
@@ -91,10 +118,19 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            {{- if .Values.ml.persistence.enabled }}
+            - name: models
+              mountPath: /var/lib/kuberight-ml/models
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir:
             sizeLimit: 256Mi
+        {{- if .Values.ml.persistence.enabled }}
+        - name: models
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-ml-models" (include "kuberight.fullname" .)) .Values.ml.persistence.existingClaim | quote }}
+        {{- end }}
       {{- if .Values.topologySpreadConstraints.enabled }}
       topologySpreadConstraints:
         - maxSkew: {{ .Values.topologySpreadConstraints.maxSkew }}

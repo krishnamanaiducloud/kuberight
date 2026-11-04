@@ -138,6 +138,7 @@ func (provider *KubernetesProvider) Workload(ctx context.Context, namespace, kin
 	provider.applyHPA(ctx, &spec)
 	provider.applyKEDA(ctx, &spec)
 	provider.applyVPA(ctx, &spec)
+	spec.MetricIdentity = provider.workloadMetricIdentity(ctx, spec, identity)
 	return spec, nil
 }
 

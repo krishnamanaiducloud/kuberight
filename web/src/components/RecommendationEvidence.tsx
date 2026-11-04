@@ -40,6 +40,7 @@ export function RecommendationEvidence({ record, source, compact = false, now }:
   const state = recommendationEvidenceState(normalized, now)
   const provenance = normalized.provenance
   const quality = normalized.dataQuality
+  const replicas = quality?.replicaCoverage
   return (
     <Box>
       <Typography variant="subtitle2" sx={{ mb: 0.75 }}>Evidence &amp; freshness</Typography>
@@ -53,6 +54,8 @@ export function RecommendationEvidence({ record, source, compact = false, now }:
         )}
         {provenance?.expiresAt && <Fact label="Valid until"><time dateTime={provenance.expiresAt}>{formatDate(provenance.expiresAt)}</time></Fact>}
         {quality && <Fact label="Accepted samples">CPU {quality.cpuSampleCount.toLocaleString()} · memory {quality.memorySampleCount.toLocaleString()}</Fact>}
+        {replicas && <Fact label="Replica evidence">{replicas.observedReplicas} of {replicas.expectedReplicas} observed · {replicas.complete ? 'complete' : 'incomplete'}</Fact>}
+        {replicas && <Fact label="Temporal coverage">CPU {Math.round(replicas.cpuTemporalCoverage * 100)}% · memory {Math.round(replicas.memoryTemporalCoverage * 100)}%</Fact>}
         {provenance?.workloadGeneration !== undefined && <Fact label="Workload identity">Generation {provenance.workloadGeneration}{record.cluster ? ` · ${record.cluster}` : ''}</Fact>}
         {provenance?.optimizerVersion && <Fact label="Optimizer">{provenance.optimizerVersion}</Fact>}
         {record.createdAt && <Fact label="Generated">{formatDate(record.createdAt)}</Fact>}
@@ -64,6 +67,15 @@ export function RecommendationEvidence({ record, source, compact = false, now }:
           {provenance.sourceSpecFingerprint && <Chip size="small" variant="outlined" label={`Spec ${provenance.sourceSpecFingerprint.slice(0, 12)}…`} />}
           {provenance.queryFingerprint && <Chip size="small" variant="outlined" label={`Query ${provenance.queryFingerprint.slice(0, 12)}…`} />}
           {provenance.policyFingerprint && <Chip size="small" variant="outlined" label={`Policy ${provenance.policyFingerprint.slice(0, 12)}…`} />}
+        </Stack>
+      )}
+      {!compact && replicas && (
+        <Stack direction="row" gap={0.75} flexWrap="wrap" sx={{ mt: 1.25 }} aria-label="Replica completeness">
+          <Chip size="small" variant="outlined" color={replicas.complete ? 'success' : 'error'} label={replicas.complete ? 'All expected replicas covered' : `${replicas.missingReplicas} replica${replicas.missingReplicas === 1 ? '' : 's'} missing`} />
+          <Chip size="small" variant="outlined" label={`CPU population ${Math.round(replicas.cpuReplicaCoverage * 100)}%`} />
+          <Chip size="small" variant="outlined" label={`Memory population ${Math.round(replicas.memoryReplicaCoverage * 100)}%`} />
+          {replicas.cpuImbalanceRatio !== undefined && replicas.cpuImbalanceRatio > 0 && <Chip size="small" variant="outlined" label={`CPU busiest/quietest P95 ${replicas.cpuImbalanceRatio.toFixed(2)}×`} />}
+          {replicas.memoryImbalanceRatio !== undefined && replicas.memoryImbalanceRatio > 0 && <Chip size="small" variant="outlined" label={`Memory busiest/quietest P95 ${replicas.memoryImbalanceRatio.toFixed(2)}×`} />}
         </Stack>
       )}
     </Box>

@@ -14,3 +14,15 @@
 **/node_modules.*
 bin
 examples
+CLAUDE.md
+CODEX.md
+AGENTS.md
+**/CLAUDE.md
+**/CODEX.md
+**/AGENTS.md
+.claude
+.codex
+.cursor
+**/.claude
+**/.codex
+**/.cursor

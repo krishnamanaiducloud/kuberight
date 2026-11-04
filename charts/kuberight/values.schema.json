@@ -374,7 +374,7 @@
     "ml": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "apiKey", "replicaCount", "image", "imagePullSecrets", "service", "resources", "podAnnotations", "podLabels", "podSecurityContext", "securityContext", "autoscaling", "podDisruptionBudget", "networkPolicy", "nodeSelector", "tolerations", "affinity", "extraEnv"],
+      "required": ["enabled", "apiKey", "replicaCount", "image", "imagePullSecrets", "service", "persistence", "resources", "podAnnotations", "podLabels", "podSecurityContext", "securityContext", "autoscaling", "podDisruptionBudget", "networkPolicy", "nodeSelector", "tolerations", "affinity", "extraEnv"],
       "properties": {
         "enabled": { "type": "boolean" },
         "apiKey": {
@@ -395,6 +395,24 @@
           "required": ["port", "annotations"],
           "properties": {
             "port": { "$ref": "#/definitions/port" },
+            "annotations": { "$ref": "#/definitions/stringMap" }
+          }
+        },
+        "persistence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "existingClaim", "storageClass", "accessModes", "size", "annotations"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "existingClaim": { "$ref": "#/definitions/optionalName" },
+            "storageClass": { "type": "string", "maxLength": 253 },
+            "accessModes": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "type": "string", "enum": ["ReadWriteOnce", "ReadOnlyMany", "ReadWriteMany", "ReadWriteOncePod"] }
+            },
+            "size": { "type": "string", "pattern": "^[1-9][0-9]*(Ei|Pi|Ti|Gi|Mi|Ki|E|P|T|G|M|K)?$" },
             "annotations": { "$ref": "#/definitions/stringMap" }
           }
         },

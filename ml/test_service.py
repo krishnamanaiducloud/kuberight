@@ -223,7 +223,7 @@ def test_persistence_and_metadata_endpoint(settings: service.Settings, client: T
     assert list(settings.model_dir.rglob("latest.json"))
 
 
-def test_repeated_persistence_uses_unique_traceable_versions(
+def test_repeated_identical_forecast_reuses_validated_persisted_model(
     settings: service.Settings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -248,18 +248,20 @@ def test_repeated_persistence_uses_unique_traceable_versions(
     assert first.status_code == second.status_code == 200
     first_version = first.json()["modelVersion"]
     second_version = second.json()["modelVersion"]
-    assert first_version != second_version
+    assert first_version == second_version
+    assert first.json()["modelMetadata"]["reused"] is False
+    assert second.json()["modelMetadata"]["reused"] is True
     metadata_paths = [
         path for path in settings.model_dir.rglob("*.json") if path.name != "latest.json"
     ]
-    assert len(metadata_paths) == 2
+    assert len(metadata_paths) == 1
     metadata = [json.loads(path.read_text(encoding="utf-8")) for path in metadata_paths]
     input_digests = {item["inputDigest"] for item in metadata}
     assert len(input_digests) == 1
     input_digest = input_digests.pop()
     assert input_digest[:20] in first_version
     assert input_digest[:20] in second_version
-    assert len(list(settings.model_dir.rglob("*.joblib"))) == 2
+    assert len(list(settings.model_dir.rglob("*.joblib"))) == 1
 
 
 def test_model_input_digest_covers_request_and_model_configuration(
@@ -336,6 +338,26 @@ def test_model_store_refuses_to_overwrite_an_existing_version(tmp_path: Path) ->
         "version": "v1",
         "marker": "original",
     }
+
+
+def test_corrupt_persisted_model_is_refused_and_retrained(
+    settings: service.Settings, client: TestClient
+) -> None:
+    payload = {
+        "samples": _samples(),
+        "horizon": 3,
+        "series_id": "corrupt-model",
+        "persist": True,
+    }
+    first = client.post("/api/v1/forecast", json=payload)
+    assert first.status_code == 200, first.text
+    artifact = next(settings.model_dir.rglob("*.joblib"))
+    artifact.write_bytes(b"not-a-trusted-joblib-artifact")
+
+    second = client.post("/api/v1/forecast", json=payload)
+    assert second.status_code == 200, second.text
+    assert second.json()["modelMetadata"]["reused"] is False
+    assert second.json()["modelVersion"] != first.json()["modelVersion"]
 
 
 def test_fit_failure_reports_and_persists_final_baseline_mae(

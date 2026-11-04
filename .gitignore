@@ -25,3 +25,17 @@ bin/
 web/vite.config.js
 web/vite.config.d.ts
 **/*.md
+
+# Local AI-agent instructions and session artifacts must never be published.
+CLAUDE.md
+CODEX.md
+AGENTS.md
+**/CLAUDE.md
+**/CODEX.md
+**/AGENTS.md
+.claude/
+.codex/
+.cursor/
+**/.claude/
+**/.codex/
+**/.cursor/

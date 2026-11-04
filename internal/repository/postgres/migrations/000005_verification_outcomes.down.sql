@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS recommendation_verification_outcomes;
+DROP TRIGGER IF EXISTS recommendation_verification_runs_append_only ON recommendation_verification_runs;
+DROP TABLE IF EXISTS recommendation_verification_runs;

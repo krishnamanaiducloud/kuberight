@@ -120,7 +120,10 @@ app.kubernetes.io/component: ml
 {{- fail "serviceAccount.automountServiceAccountToken must be true when Kubernetes inventory or authentication is enabled" -}}
 {{- end -}}
 {{- if and .Values.ml.enabled (or (gt (int .Values.ml.replicaCount) 1) .Values.ml.autoscaling.enabled) -}}
-{{- fail "ml.replicaCount > 1 and ml.autoscaling.enabled are unsupported while model storage is pod-local" -}}
+{{- fail "ml.replicaCount > 1 and ml.autoscaling.enabled are unsupported while the model store is single-writer" -}}
+{{- end -}}
+{{- if and .Values.ml.persistence.enabled (empty .Values.ml.persistence.accessModes) -}}
+{{- fail "ml.persistence.accessModes must contain at least one access mode when persistence is enabled" -}}
 {{- end -}}
 {{- if and .Values.route.enabled .Values.route.tls.enabled (ne .Values.route.tls.termination "edge") -}}
 {{- fail "route.tls.termination must be edge because KubeRight serves HTTP behind the Route" -}}

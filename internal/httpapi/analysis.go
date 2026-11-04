@@ -2,10 +2,13 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"math"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/kuberight/kuberight/internal/correlation"
@@ -76,7 +79,7 @@ func (server *apiServer) assessmentContext(ctx context.Context, input *optimizer
 	if input.Policy != nil && input.Policy.TrendHorizonDays > 0 {
 		policy.TrendHorizonDays = input.Policy.TrendHorizonDays
 	}
-	if forecasted, warning := server.demandForecast(ctx, history, policy.TrendHorizonDays); forecasted != nil {
+	if forecasted, warning := server.demandForecast(ctx, history, policy.TrendHorizonDays, spec, input.Container); forecasted != nil {
 		input.Forecast = forecasted
 	} else if warning != "" {
 		warnings = append(warnings, warning)
@@ -117,18 +120,26 @@ func forecastPeak(response forecast.Response) (peak, upper float64) {
 // demandForecast asks the forecasting service for CPU and memory over the
 // trend horizon. It is optional: any failure leaves sizing to history and
 // trends and is reported as a warning.
-func (server *apiServer) demandForecast(ctx context.Context, history usage.History, horizonDays int) (*optimizer.ForecastContext, string) {
+func (server *apiServer) demandForecast(ctx context.Context, history usage.History, horizonDays int, spec WorkloadSpec, container string) (*optimizer.ForecastContext, string) {
 	if server.forecaster == nil {
 		return nil, ""
 	}
 	horizon := min(168, max(1, horizonDays*24))
 	cpu, cpuTimes := hourlyPeaks(history.CPU, 0.001)
 	memory, memoryTimes := hourlyPeaks(history.Memory, 1)
-	cpuResponse, err := server.forecaster.Forecast(ctx, forecast.Request{Samples: cpu, Timestamps: cpuTimes, Horizon: horizon, IntervalSeconds: 3600, Resource: "cpu", ConfidenceLevel: forecastIntervalLevel})
+	cpuSeriesID := forecastSeriesID(spec, container, "cpu")
+	cpuResponse, err := server.forecaster.Forecast(ctx, forecast.Request{
+		Samples: cpu, Timestamps: cpuTimes, Horizon: horizon, IntervalSeconds: 3600, Resource: "cpu", ConfidenceLevel: forecastIntervalLevel,
+		SeriesID: cpuSeriesID, Persist: cpuSeriesID != "",
+	})
 	if err != nil {
 		return nil, "the demand forecast was unavailable (" + forecastFailure(err) + "); sizing used history and trends only"
 	}
-	memoryResponse, err := server.forecaster.Forecast(ctx, forecast.Request{Samples: memory, Timestamps: memoryTimes, Horizon: horizon, IntervalSeconds: 3600, Resource: "memory", ConfidenceLevel: forecastIntervalLevel})
+	memorySeriesID := forecastSeriesID(spec, container, "memory")
+	memoryResponse, err := server.forecaster.Forecast(ctx, forecast.Request{
+		Samples: memory, Timestamps: memoryTimes, Horizon: horizon, IntervalSeconds: 3600, Resource: "memory", ConfidenceLevel: forecastIntervalLevel,
+		SeriesID: memorySeriesID, Persist: memorySeriesID != "",
+	})
 	if err != nil {
 		return nil, "the memory forecast was unavailable (" + forecastFailure(err) + "); sizing used history and trends only"
 	}
@@ -148,6 +159,18 @@ func (server *apiServer) demandForecast(ctx context.Context, history usage.Histo
 		result.EmpiricalCoverage = &coverage
 	}
 	return result, ""
+}
+
+// forecastSeriesID deliberately hashes the live workload UID and its complete
+// scope. The forecasting service can persist this opaque identity without
+// leaking names, and a deleted/recreated workload receives a different model.
+func forecastSeriesID(spec WorkloadSpec, container, resource string) string {
+	if strings.TrimSpace(spec.UID) == "" || strings.TrimSpace(container) == "" || (resource != "cpu" && resource != "memory") {
+		return ""
+	}
+	identity := strings.Join([]string{spec.Cluster, spec.Namespace, spec.Kind, spec.UID, container, resource}, "\x00")
+	digest := sha256.Sum256([]byte(identity))
+	return "kuberight-" + hex.EncodeToString(digest[:])
 }
 
 func forecastFailure(err error) string {

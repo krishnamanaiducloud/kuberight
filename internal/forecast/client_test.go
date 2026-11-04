@@ -32,13 +32,13 @@ func TestForecastSendsContractAndValidatesResponse(t *testing.T) {
 			return
 		}
 		var request map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request["interval_seconds"].(float64) != 3600 || request["resource"] != "cpu" {
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request["interval_seconds"].(float64) != 3600 || request["resource"] != "cpu" || request["series_id"] != "kuberight-series" || request["persist"] != true {
 			http.Error(w, "bad body", http.StatusBadRequest)
 			return
 		}
 		_, _ = w.Write([]byte(`{"predictions":[1,2],"confidenceIntervals":[{"lower":0.5,"upper":1.5},{"lower":1,"upper":3}],"model":"m","modelVersion":"v","fallbackUsed":false,"fallbackReasons":[],"confidence":0.8,"generatedAt":"2026-10-01T00:00:00Z","experimental":true,"warning":"w","drift":{"detected":false}}`))
 	})
-	response, err := client.Forecast(context.Background(), Request{Samples: []float64{1, 2, 3}, Horizon: 2, IntervalSeconds: 3600, Resource: "cpu", ConfidenceLevel: 0.9})
+	response, err := client.Forecast(context.Background(), Request{Samples: []float64{1, 2, 3}, Horizon: 2, IntervalSeconds: 3600, Resource: "cpu", ConfidenceLevel: 0.9, SeriesID: "kuberight-series", Persist: true})
 	if err != nil {
 		t.Fatal(err)
 	}

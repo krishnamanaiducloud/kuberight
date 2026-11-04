@@ -209,9 +209,13 @@ type Input struct {
 	Replicas int32 `json:"replicas,omitempty"`
 	// DataQualityIssues are problems found by the metric source. Any issue
 	// blocks reductions, exactly as insufficient sample coverage does.
-	DataQualityIssues []string           `json:"dataQualityIssues,omitempty"`
-	Autoscaling       AutoscalingContext `json:"autoscaling,omitempty"`
-	Policy            *Policy            `json:"policy,omitempty"`
+	DataQualityIssues []string `json:"dataQualityIssues,omitempty"`
+	// ReplicaCoverage is evidence that every expected replica was represented
+	// by exact pod-UID metrics. It is optional for the low-level calculate API
+	// and always populated by live Kubernetes/Prometheus generation.
+	ReplicaCoverage *ReplicaCoverage   `json:"replicaCoverage,omitempty"`
+	Autoscaling     AutoscalingContext `json:"autoscaling,omitempty"`
+	Policy          *Policy            `json:"policy,omitempty"`
 	// Provenance binds a recommendation to the workload and observations from
 	// which it was calculated. It is optional for the low-level calculate API;
 	// live Prometheus generation always supplies it.
@@ -255,11 +259,44 @@ type Percentiles struct {
 }
 
 type DataQuality struct {
-	CPUSampleCount    int      `json:"cpuSampleCount"`
-	MemorySampleCount int      `json:"memorySampleCount"`
-	MinimumRequired   int      `json:"minimumRequired"`
-	Sufficient        bool     `json:"sufficient"`
-	Issues            []string `json:"issues"`
+	CPUSampleCount    int              `json:"cpuSampleCount"`
+	MemorySampleCount int              `json:"memorySampleCount"`
+	MinimumRequired   int              `json:"minimumRequired"`
+	Sufficient        bool             `json:"sufficient"`
+	Issues            []string         `json:"issues"`
+	ReplicaCoverage   *ReplicaCoverage `json:"replicaCoverage,omitempty"`
+}
+
+// ReplicaQuality is the per-pod completeness retained with a recommendation.
+// Raw samples stay in the metric history; this compact evidence is durable.
+type ReplicaQuality struct {
+	Pod            string  `json:"pod"`
+	UID            string  `json:"uid"`
+	Phase          string  `json:"phase,omitempty"`
+	Active         bool    `json:"active"`
+	CPUCoverage    float64 `json:"cpuCoverage"`
+	MemoryCoverage float64 `json:"memoryCoverage"`
+}
+
+// ReplicaCoverage records population, temporal coverage, and imbalance for
+// the exact pod UIDs used to calculate a recommendation.
+type ReplicaCoverage struct {
+	ExpectedReplicas       int32            `json:"expectedReplicas"`
+	DiscoveredReplicas     int              `json:"discoveredReplicas"`
+	ObservedReplicas       int              `json:"observedReplicas"`
+	MissingReplicas        int              `json:"missingReplicas"`
+	ActiveReplicas         int              `json:"activeReplicas"`
+	TerminatedReplicas     int              `json:"terminatedReplicas"`
+	CPUObservedReplicas    int              `json:"cpuObservedReplicas"`
+	MemoryObservedReplicas int              `json:"memoryObservedReplicas"`
+	CPUReplicaCoverage     float64          `json:"cpuReplicaCoverage"`
+	MemoryReplicaCoverage  float64          `json:"memoryReplicaCoverage"`
+	CPUTemporalCoverage    float64          `json:"cpuTemporalCoverage"`
+	MemoryTemporalCoverage float64          `json:"memoryTemporalCoverage"`
+	CPUImbalanceRatio      float64          `json:"cpuImbalanceRatio,omitempty"`
+	MemoryImbalanceRatio   float64          `json:"memoryImbalanceRatio,omitempty"`
+	Complete               bool             `json:"complete"`
+	Replicas               []ReplicaQuality `json:"replicas,omitempty"`
 }
 
 type Recommendation struct {
@@ -431,6 +468,43 @@ func validateInput(input Input, policy Policy) error {
 	for _, issue := range input.DataQualityIssues {
 		if strings.TrimSpace(issue) == "" || len(issue) > 256 {
 			return errors.New("data-quality issues must contain 1 to 256 characters")
+		}
+	}
+	if coverage := input.ReplicaCoverage; coverage != nil {
+		counts := []int{
+			int(coverage.ExpectedReplicas), coverage.DiscoveredReplicas, coverage.ObservedReplicas, coverage.MissingReplicas,
+			coverage.ActiveReplicas, coverage.TerminatedReplicas, coverage.CPUObservedReplicas, coverage.MemoryObservedReplicas,
+		}
+		for _, count := range counts {
+			if count < 0 || count > 100_000 {
+				return errors.New("replica coverage counts must be between 0 and 100000")
+			}
+		}
+		for _, ratio := range []float64{coverage.CPUReplicaCoverage, coverage.MemoryReplicaCoverage, coverage.CPUTemporalCoverage, coverage.MemoryTemporalCoverage} {
+			if math.IsNaN(ratio) || math.IsInf(ratio, 0) || ratio < 0 || ratio > 1 {
+				return errors.New("replica coverage ratios must be between 0 and 1")
+			}
+		}
+		for _, ratio := range []float64{coverage.CPUImbalanceRatio, coverage.MemoryImbalanceRatio} {
+			if math.IsNaN(ratio) || math.IsInf(ratio, 0) || ratio < 0 {
+				return errors.New("replica imbalance ratios cannot be negative")
+			}
+		}
+		if len(coverage.Replicas) > 256 {
+			return errors.New("replica coverage may contain at most 256 pods")
+		}
+		for _, replica := range coverage.Replicas {
+			if replica.Pod == "" || len(replica.Pod) > 253 || replica.UID == "" || len(replica.UID) > 128 ||
+				math.IsNaN(replica.CPUCoverage) || replica.CPUCoverage < 0 || replica.CPUCoverage > 1 ||
+				math.IsNaN(replica.MemoryCoverage) || replica.MemoryCoverage < 0 || replica.MemoryCoverage > 1 {
+				return errors.New("replica quality contains invalid identity or coverage")
+			}
+		}
+		if input.Replicas > 0 && coverage.ExpectedReplicas != input.Replicas {
+			return errors.New("replica coverage expected count must match the workload replica count")
+		}
+		if coverage.Complete && (coverage.MissingReplicas != 0 || coverage.CPUReplicaCoverage < 0.8 || coverage.MemoryReplicaCoverage < 0.8 || coverage.CPUTemporalCoverage < 0.8 || coverage.MemoryTemporalCoverage < 0.8) {
+			return errors.New("complete replica coverage is inconsistent with missing replicas or coverage below 80 percent")
 		}
 	}
 	provenance := input.Provenance
@@ -618,6 +692,7 @@ func Recommend(input Input) (Recommendation, error) {
 		MinimumRequired:   policy.MinimumSamples,
 		Sufficient:        sampleCount >= policy.MinimumSamples && input.SampleIntervalSeconds > 0,
 		Issues:            []string{},
+		ReplicaCoverage:   input.ReplicaCoverage,
 	}
 	warnings := []string{}
 	if sampleCount < policy.MinimumSamples {
@@ -629,6 +704,10 @@ func Recommend(input Input) (Recommendation, error) {
 	if len(input.DataQualityIssues) > 0 {
 		quality.Sufficient = false
 		quality.Issues = append(quality.Issues, input.DataQualityIssues...)
+	}
+	if input.ReplicaCoverage != nil && !input.ReplicaCoverage.Complete {
+		quality.Sufficient = false
+		quality.Issues = append(quality.Issues, "exact per-replica metric coverage is incomplete")
 	}
 	if len(input.CPUSamplesMilli) != len(input.MemorySamplesBytes) {
 		quality.Sufficient = false

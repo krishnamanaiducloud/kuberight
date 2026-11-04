@@ -496,12 +496,12 @@ func TestSavingsUseConfiguredPricesAndLatestRecommendations(t *testing.T) {
 func TestForecastConvertsUnitsAndTimestamps(t *testing.T) {
 	source := healthyUsage(100)
 	forecaster := &fakeForecaster{}
-	api := newTestAPI(t, nil, Dependencies{Usage: source, Forecaster: forecaster})
+	api := newTestAPI(t, nil, Dependencies{Provider: fakeInventory{spec: checkoutSpec()}, Usage: source, Forecaster: forecaster})
 	response, body := api.do(t, http.MethodPost, "/api/v1/forecasts", "alice", `{"namespace":"shop","kind":"Deployment","workload":"checkout","container":"api","resource":"cpu","horizon":3}`)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
-	if forecaster.request.IntervalSeconds != 3600 || forecaster.request.Resource != "cpu" || len(forecaster.request.Samples) != 100 || forecaster.request.Samples[0] != 0.2 {
+	if forecaster.request.IntervalSeconds != 3600 || forecaster.request.Resource != "cpu" || len(forecaster.request.Samples) != 100 || forecaster.request.Samples[0] != 0.2 || !forecaster.request.Persist || !strings.HasPrefix(forecaster.request.SeriesID, "kuberight-") {
 		t.Fatalf("forecast request = %#v", forecaster.request)
 	}
 	points := body["forecast"].([]any)

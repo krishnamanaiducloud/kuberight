@@ -34,6 +34,14 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - name: Reject tracked AI instruction and session artifacts
+        shell: bash
+        run: |
+          forbidden="$(git ls-files | grep -Ei '(^|/)(CLAUDE|CODEX|AGENTS)\.md$|(^|/)\.(claude|codex|cursor)(/|$)' || true)"
+          if [[ -n "$forbidden" ]]; then
+            printf 'Forbidden tracked agent artifacts:\n%s\n' "$forbidden" >&2
+            exit 1
+          fi
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
@@ -85,7 +93,9 @@ jobs:
       - run: python -m ruff check ml
       - run: python -m mypy --config-file ml/pyproject.toml ml
       - name: Validate OpenAPI contract
-        run: openapi-spec-validator api/openapi.yaml
+        run: |
+          openapi-spec-validator api/openapi.yaml
+          python scripts/verify-openapi-contract.py
       - name: Unit tests with coverage
         run: python -m pytest ml --cov=ml --cov-report=term-missing --cov-report=xml:coverage-python.xml --cov-fail-under=90
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -97,7 +107,7 @@ jobs:
   frontend:
     name: Frontend lint, types, tests, build
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -113,6 +123,19 @@ jobs:
       - run: npm test --prefix web
       - run: npm run build --prefix web
       - run: npm audit --prefix web --audit-level=high
+      - name: Browser contract and accessibility tests
+        run: |
+          npm exec --prefix web playwright install -- --with-deps chromium
+          npm run test:e2e --prefix web
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: browser-contract-evidence
+          path: |
+            web/playwright-report
+            web/test-results
+          if-no-files-found: error
+          retention-days: 14
 
   dependencies:
     name: Dependency vulnerabilities
@@ -347,18 +370,54 @@ jobs:
           kubectl_version: v1.35.8
       - name: Install images into disposable Kind cluster
         run: |
+          kubectl create namespace kuberight
+          kubectl -n kuberight create secret generic kuberight-e2e-auth \
+            --from-literal=token=ci-live-browser-token-at-least-32-characters
           kind load docker-image kuberight:ci kuberight-ml:ci --name kuberight-integration
           helm upgrade --install kuberight charts/kuberight \
-            --namespace kuberight --create-namespace --wait --timeout 5m \
+            --namespace kuberight --wait --timeout 5m \
             --set image.repository=kuberight --set image.tag=ci --set image.pullPolicy=Never \
             --set replicaCount=1 --set podDisruptionBudget.enabled=false \
             --set topologySpreadConstraints.enabled=false \
+            --set auth.mode=static --set auth.staticToken.existingSecret=kuberight-e2e-auth \
             --set ml.enabled=true --set ml.image.repository=kuberight-ml \
             --set ml.image.tag=ci --set ml.image.pullPolicy=Never \
             --set ml.replicaCount=1 --set ml.podDisruptionBudget.enabled=false
           kubectl -n kuberight rollout status deployment/kuberight --timeout=2m
           kubectl -n kuberight rollout status deployment/kuberight-ml --timeout=2m
           kubectl -n kuberight get pods,services
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Live deployed-app browser and accessibility test
+        shell: bash
+        env:
+          KUBERIGHT_E2E_BASE_URL: http://127.0.0.1:18084
+          KUBERIGHT_E2E_TOKEN: ci-live-browser-token-at-least-32-characters
+        run: |
+          set -euo pipefail
+          kubectl -n kuberight port-forward service/kuberight 18084:8080 >/tmp/kuberight-port-forward.log 2>&1 &
+          port_forward_pid=$!
+          trap 'kill "$port_forward_pid" 2>/dev/null || true; cat /tmp/kuberight-port-forward.log' EXIT
+          for _ in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:18084/healthz >/dev/null; then break; fi
+            sleep 1
+          done
+          curl --fail --silent --show-error http://127.0.0.1:18084/readyz >/dev/null
+          npm ci --prefix web
+          npm exec --prefix web playwright install -- --with-deps chromium
+          npm run test:e2e:live --prefix web
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: browser-live-kind-evidence
+          path: |
+            web/playwright-live-report
+            web/test-results-live
+          if-no-files-found: error
+          retention-days: 14
 
   containers_arm64:
     name: Build, scan, and execute ARM64 images

@@ -14,6 +14,7 @@ import logging
 import math
 import os
 import re
+import stat
 import tempfile
 import threading
 import time
@@ -49,6 +50,7 @@ MAX_CALIBRATION_FACTOR = 3.0
 CALIBRATION_TOLERANCE = 0.10
 SERIES_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+MAX_MODEL_ARTIFACT_BYTES = 64 * 1024 * 1024
 
 logger = logging.getLogger("kuberight.ml")
 if not logger.handlers:
@@ -311,6 +313,7 @@ class ModelMetadata(BaseModel):
     trained_at: datetime = Field(serialization_alias="trainedAt")
     training_samples: int = Field(serialization_alias="trainingSamples")
     persisted: bool
+    reused: bool = False
 
 
 class ForecastResponse(BaseModel):
@@ -592,25 +595,98 @@ class ModelStore:
                 obsolete.with_suffix(".joblib").unlink(missing_ok=True)
 
     def latest_metadata(self, series_id: str) -> dict[str, Any] | None:
-        series_dir = self.root / self._series_key(series_id)
+        with self._lock:
+            try:
+                _, _, payload = self._latest_metadata(series_id)
+                return payload
+            except FileNotFoundError:
+                return None
+            except (OSError, ValueError, KeyError, json.JSONDecodeError):
+                logger.exception(
+                    "failed to read model metadata",
+                    extra={"series_key": self._series_key(series_id)},
+                )
+                return None
+
+    def _latest_metadata(self, series_id: str) -> tuple[Path, Path, dict[str, Any]]:
+        series_dir = (self.root / self._series_key(series_id)).resolve()
+        if series_dir.parent != self.root:
+            raise ValueError("model series path escaped the configured store")
         pointer_path = series_dir / "latest.json"
-        try:
-            pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
-            filename = pointer["metadata"]
-            if not isinstance(filename, str) or Path(filename).name != filename:
-                raise ValueError("invalid metadata pointer")
-            metadata_path = series_dir / filename
-            payload = json.loads(metadata_path.read_text(encoding="utf-8"))
-            if payload.get("seriesId") != series_id:
-                raise ValueError("model metadata identity mismatch")
-            return payload
-        except FileNotFoundError:
-            return None
-        except (OSError, ValueError, KeyError, json.JSONDecodeError):
-            logger.exception(
-                "failed to read model metadata", extra={"series_key": self._series_key(series_id)}
-            )
-            return None
+        if pointer_path.is_symlink():
+            raise ValueError("model pointer must not be a symbolic link")
+        pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+        filename = pointer["metadata"]
+        if not isinstance(filename, str) or Path(filename).name != filename:
+            raise ValueError("invalid metadata pointer")
+        metadata_path = series_dir / filename
+        if metadata_path.is_symlink() or metadata_path.resolve().parent != series_dir:
+            raise ValueError("model metadata path is unsafe")
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if payload.get("seriesId") != series_id or payload.get("version") != pointer.get("version"):
+            raise ValueError("model metadata identity mismatch")
+        return series_dir, metadata_path, payload
+
+    def load_latest(
+        self, series_id: str, expected_input_digest: str, resource: str
+    ) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        """Load only an exact, locally-created model artifact.
+
+        joblib uses Python pickle internally, so files are accepted only from
+        the private configured store, through the atomic pointer, with strict
+        path, permission, size, identity, schema, and digest validation.
+        """
+        with self._lock:
+            try:
+                series_dir, metadata_path, metadata = self._latest_metadata(series_id)
+                if (
+                    metadata.get("featureSchema") != MODEL_SCHEMA_VERSION
+                    or metadata.get("inputDigest") != expected_input_digest
+                    or metadata.get("resource") != resource
+                ):
+                    return None
+                version = metadata.get("version")
+                if not isinstance(version, str) or not version:
+                    raise ValueError("model version is invalid")
+                artifact_path = series_dir / f"{version}.joblib"
+                if artifact_path.is_symlink() or artifact_path.resolve().parent != series_dir:
+                    raise ValueError("model artifact path is unsafe")
+                metadata_stat = metadata_path.stat()
+                artifact_stat = artifact_path.stat()
+                if not stat.S_ISREG(metadata_stat.st_mode) or not stat.S_ISREG(artifact_stat.st_mode):
+                    raise ValueError("model files must be regular files")
+                if artifact_stat.st_size <= 0 or artifact_stat.st_size > MAX_MODEL_ARTIFACT_BYTES:
+                    raise ValueError("model artifact size is outside the accepted bounds")
+                if os.name == "posix" and (
+                    metadata_stat.st_mode & 0o022 or artifact_stat.st_mode & 0o022
+                ):
+                    raise ValueError("model files must not be group- or world-writable")
+                try:
+                    artifact = joblib.load(artifact_path)
+                except Exception as exc:
+                    raise ValueError("model artifact could not be decoded") from exc
+                if not isinstance(artifact, dict):
+                    raise ValueError("model artifact payload is invalid")
+                estimator = artifact.get("estimator")
+                if (
+                    artifact.get("artifact_schema") != 1
+                    or artifact.get("feature_schema") != MODEL_SCHEMA_VERSION
+                    or artifact.get("input_digest") != expected_input_digest
+                    or artifact.get("version") != version
+                    or artifact.get("model_name") != metadata.get("name")
+                    or (estimator is not None and not isinstance(estimator, Pipeline))
+                    or (artifact.get("model_name") == "ridge-autoregression-v1" and estimator is None)
+                ):
+                    raise ValueError("model artifact integrity validation failed")
+                return artifact, metadata
+            except FileNotFoundError:
+                return None
+            except (OSError, ValueError, KeyError, json.JSONDecodeError, EOFError):
+                logger.exception(
+                    "refused persisted model artifact",
+                    extra={"series_key": self._series_key(series_id)},
+                )
+                return None
 
 
 def _detect_seasonality(
@@ -1138,6 +1214,39 @@ class ForecastEngine:
         input_digest = _model_input_digest(request, self.settings, period, model_name)
         version = _new_model_version(input_digest, now)
         persisted = False
+        reused = False
+        model_trained_at = now
+        model_training_samples = len(values)
+        if request.persist and request.series_id is not None:
+            loaded = self.store.load_latest(request.series_id, input_digest, request.resource)
+            if loaded is not None:
+                artifact, stored_metadata = loaded
+                try:
+                    deadline.check()
+                    stored_estimator = artifact.get("estimator")
+                    if model_name == "ridge-autoregression-v1":
+                        if not isinstance(stored_estimator, Pipeline):
+                            raise ValueError("persisted ridge model has no valid estimator")
+                        predictions = _recursive_model_forecast(
+                            stored_estimator, values, request.horizon, period
+                        )
+                        final_model = stored_estimator
+                    version = str(stored_metadata["version"])
+                    trained_at = stored_metadata.get("trainedAt")
+                    if isinstance(trained_at, str):
+                        model_trained_at = datetime.fromisoformat(trained_at)
+                    model_training_samples = int(
+                        stored_metadata.get("trainingSamples", len(values))
+                    )
+                    persisted = True
+                    reused = True
+                except (_DeadlineExceeded, ValueError, TypeError, KeyError):
+                    logger.exception("persisted model could not be reused; retraining")
+                    version = _new_model_version(input_digest, now)
+                    model_trained_at = now
+                    model_training_samples = len(values)
+                    persisted = False
+                    reused = False
         metadata_payload = {
             "seriesId": request.series_id,
             "name": model_name,
@@ -1154,7 +1263,7 @@ class ForecastEngine:
             "driftDetected": drift.detected,
             "retrainingRecommended": drift.detected or low_confidence,
         }
-        if request.persist and request.series_id is not None:
+        if request.persist and request.series_id is not None and not reused:
             try:
                 deadline.check()
                 self.store.save(
@@ -1245,9 +1354,10 @@ class ForecastEngine:
                 name=model_name,
                 version=version,
                 feature_schema=MODEL_SCHEMA_VERSION,
-                trained_at=now,
-                training_samples=len(values),
+                trained_at=model_trained_at,
+                training_samples=model_training_samples,
                 persisted=persisted,
+                reused=reused,
             ),
             calibration=calibration,
             generated_at=now,

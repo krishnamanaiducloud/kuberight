@@ -205,7 +205,7 @@ export function DataPage({ title, description, endpoint, columnKeys, actions, ch
           <Stack direction={{ xs: 'column', md: 'row' }} gap={1.5} sx={{ mb: 2 }}>
             <TextField
               size="small"
-              label="Search verified records"
+              label="Search records"
               value={search}
               onChange={(event) => updateSearchParam('q', event.target.value)}
               sx={{ minWidth: { md: 320 } }}
@@ -219,7 +219,7 @@ export function DataPage({ title, description, endpoint, columnKeys, actions, ch
               {recommendationPage && <MenuItem value="risk">Risk</MenuItem>}
             </Select>}
             <Box sx={{ flexGrow: 1 }} />
-            <Typography variant="body2" color="text.secondary" sx={{ alignSelf: 'center' }}>{query.isFetching ? 'Refreshing…' : `${total} verified record${total === 1 ? '' : 's'}`}</Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ alignSelf: 'center' }}>{query.isFetching ? 'Refreshing…' : `${total} record${total === 1 ? '' : 's'}`}</Typography>
           </Stack>
 
           {query.isLoading ? (
@@ -227,7 +227,7 @@ export function DataPage({ title, description, endpoint, columnKeys, actions, ch
           ) : items.length === 0 && !query.error ? (
             <Box sx={{ textAlign: 'center', py: 8 }}>
               <CircularProgress size={28} variant="determinate" value={100} sx={{ color: 'text.secondary', mb: 2 }} />
-              <Typography variant="h6">No verified records</Typography>
+              <Typography variant="h6">No records</Typography>
               <Typography color="text.secondary">KubeRight will not substitute demo data for a missing or empty provider response.</Typography>
               {(search || namespace) && <Button sx={{ mt: 1 }} onClick={() => {
                 setSearchParams((current) => {

@@ -192,9 +192,18 @@ func (server *apiServer) createForecast(w http.ResponseWriter, r *http.Request) 
 		samples[index] = point.Value / scale
 		timestamps[index] = point.Timestamp
 	}
+	seriesID := ""
+	if resolver, ok := server.provider.(WorkloadResolver); ok {
+		if spec, resolveErr := resolver.Workload(r.Context(), subject.Namespace, subject.Kind, subject.Workload); resolveErr == nil {
+			if _, found := spec.Container(subject.Container); found {
+				seriesID = forecastSeriesID(spec, subject.Container, request.Resource)
+			}
+		}
+	}
 	response, err := server.forecaster.Forecast(r.Context(), forecast.Request{
 		Samples: samples, Timestamps: timestamps, Horizon: request.Horizon,
 		IntervalSeconds: int(step / time.Second), Resource: request.Resource, ConfidenceLevel: request.ConfidenceLevel,
+		SeriesID: seriesID, Persist: seriesID != "",
 	})
 	switch {
 	case errors.Is(err, forecast.ErrBusy):

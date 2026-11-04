@@ -41,6 +41,90 @@ func Run(t *testing.T, newStore func(*testing.T) repository.Store) {
 	t.Helper()
 	ctx := context.Background()
 
+	t.Run("policy precedence versioning and persistence", func(t *testing.T) {
+		store := newStore(t)
+		policy := optimizer.DefaultPolicy()
+		create := func(name string, scope repository.PolicyScope, priority int) repository.PolicyRecord {
+			record, err := store.CreatePolicy(ctx, repository.PolicyMutation{Name: name, Scope: scope, Priority: priority, Enabled: true, Policy: policy, Actor: "alice"})
+			if err != nil {
+				t.Fatalf("create %s: %v", name, err)
+			}
+			return record
+		}
+		create("global", repository.PolicyScope{Level: repository.PolicyScopeGlobal}, 100)
+		create("namespace", repository.PolicyScope{Level: repository.PolicyScopeNamespace, Namespace: "shop"}, -100)
+		workload := create("workload", repository.PolicyScope{Level: repository.PolicyScopeWorkload, Namespace: "shop", Kind: "Deployment", Workload: "checkout"}, 0)
+		container := create("container", repository.PolicyScope{Level: repository.PolicyScopeContainer, Namespace: "shop", Kind: "Deployment", Workload: "checkout", Container: "api"}, 0)
+		resolved, err := store.ResolvePolicy(ctx, repository.PolicyScope{Cluster: "prod", Namespace: "shop", Kind: "deployment", Workload: "checkout", Container: "api"})
+		if err != nil || resolved.ID != container.ID {
+			t.Fatalf("resolved=%#v err=%v", resolved, err)
+		}
+		updated, err := store.UpdatePolicy(ctx, workload.ID, workload.Version, repository.PolicyMutation{Name: "workload-v2", Scope: workload.Scope, Enabled: true, Policy: policy, Actor: "bob"})
+		if err != nil || updated.Version != 2 || updated.UpdatedBy != "bob" {
+			t.Fatalf("updated=%#v err=%v", updated, err)
+		}
+		if _, err := store.UpdatePolicy(ctx, workload.ID, workload.Version, repository.PolicyMutation{Name: "stale", Scope: workload.Scope, Enabled: true, Policy: policy, Actor: "bob"}); !errors.Is(err, repository.ErrPolicyConflict) {
+			t.Fatalf("stale update=%v", err)
+		}
+		list, err := store.ListPolicies(ctx, repository.PolicyListOptions{Page: 1, PageSize: 20, Namespace: "shop"})
+		if err != nil || list.Total != 4 {
+			t.Fatalf("list=%#v err=%v", list, err)
+		}
+		if err := store.DeletePolicy(ctx, container.ID, container.Version); err != nil {
+			t.Fatal(err)
+		}
+		resolved, err = store.ResolvePolicy(ctx, repository.PolicyScope{Namespace: "shop", Kind: "Deployment", Workload: "checkout", Container: "api"})
+		if err != nil || resolved.ID != workload.ID {
+			t.Fatalf("fallback=%#v err=%v", resolved, err)
+		}
+	})
+
+	t.Run("fleet scheduling queue leases and idempotency", func(t *testing.T) {
+		store := newStore(t)
+		base := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+		schedule, err := store.CreateFleetSchedule(ctx, repository.FleetScheduleMutation{Name: "hourly", Enabled: true, IntervalSeconds: 3600, WindowSeconds: 7 * 24 * 3600, Scope: repository.FleetScope{Namespaces: []string{"shop"}, Kinds: []string{"Deployment"}}, NextRunAt: base, Actor: "alice"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		scans, err := store.EnqueueDueFleetScans(ctx, base, 10)
+		if err != nil || len(scans) != 1 || scans[0].ScheduleID != schedule.ID {
+			t.Fatalf("scans=%#v err=%v", scans, err)
+		}
+		if duplicate, err := store.EnqueueDueFleetScans(ctx, base, 10); err != nil || len(duplicate) != 0 {
+			t.Fatalf("duplicate=%#v err=%v", duplicate, err)
+		}
+		claimed, err := store.ClaimFleetScan(ctx, "worker-1", base, 5*time.Minute)
+		if err != nil || claimed.ID != scans[0].ID || claimed.Attempt != 1 || claimed.Status != repository.FleetScanRunning {
+			t.Fatalf("claimed=%#v err=%v", claimed, err)
+		}
+		progress := repository.FleetScanProgress{Expected: 3, Processed: 2, Succeeded: 1, Failed: 1}
+		if _, err := store.UpdateFleetScan(ctx, claimed.ID, "worker-2", base.Add(time.Minute), progress); !errors.Is(err, repository.ErrFleetScanConflict) {
+			t.Fatalf("wrong-owner update=%v", err)
+		}
+		progress.Processed, progress.Succeeded, progress.Failed, progress.Status = 3, 2, 1, repository.FleetScanCompleted
+		completed, err := store.UpdateFleetScan(ctx, claimed.ID, "worker-1", base.Add(time.Minute), progress)
+		if err != nil || completed.Status != repository.FleetScanCompleted || completed.CompletedAt == nil {
+			t.Fatalf("completed=%#v err=%v", completed, err)
+		}
+		request := repository.FleetScanRequest{Scope: repository.FleetScope{}, WindowSeconds: 24 * 3600, ScheduledFor: base, CreatedBy: "alice", IdempotencyKey: "manual-1", MaxAttempts: 3}
+		manual, created, err := store.CreateFleetScan(ctx, request)
+		if err != nil || !created {
+			t.Fatalf("manual=%#v created=%v err=%v", manual, created, err)
+		}
+		replay, created, err := store.CreateFleetScan(ctx, request)
+		if err != nil || created || replay.ID != manual.ID {
+			t.Fatalf("replay=%#v created=%v err=%v", replay, created, err)
+		}
+		canceled, err := store.CancelFleetScan(ctx, manual.ID, base.Add(time.Minute))
+		if err != nil || canceled.Status != repository.FleetScanCanceled {
+			t.Fatalf("cancel=%#v err=%v", canceled, err)
+		}
+		resumed, err := store.ResumeFleetScan(ctx, manual.ID, base.Add(2*time.Minute))
+		if err != nil || resumed.Status != repository.FleetScanQueued {
+			t.Fatalf("resume=%#v err=%v", resumed, err)
+		}
+	})
+
 	t.Run("create assigns identity and pending review", func(t *testing.T) {
 		store := newStore(t)
 		record, created, err := store.CreateRecommendation(ctx, Recommendation("shop", "api", "app", "low"), repository.CreateOptions{CreatedBy: "alice", Source: repository.SourcePrometheus})

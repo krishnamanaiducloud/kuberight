@@ -32,6 +32,36 @@ const (
 	recommendationValidity = 24 * time.Hour
 )
 
+// attributedUsageSource is implemented by the Prometheus source. It binds
+// every sample to pod UIDs resolved from immutable Kubernetes owner chains.
+type attributedUsageSource interface {
+	HistoryForIdentity(context.Context, usage.Subject, usage.WorkloadIdentity, usage.Window) (usage.History, error)
+	EventsForIdentity(context.Context, usage.Subject, usage.WorkloadIdentity, usage.Window) (usage.Events, error)
+}
+
+func recommendationReplicaCoverage(coverage *usage.ReplicaCoverage) *optimizer.ReplicaCoverage {
+	if coverage == nil {
+		return nil
+	}
+	result := &optimizer.ReplicaCoverage{
+		ExpectedReplicas: coverage.ExpectedReplicas, DiscoveredReplicas: coverage.DiscoveredReplicas,
+		ObservedReplicas: coverage.ObservedReplicas, MissingReplicas: coverage.MissingReplicas,
+		ActiveReplicas: coverage.ActiveReplicas, TerminatedReplicas: coverage.TerminatedReplicas,
+		CPUObservedReplicas: coverage.CPUObservedReplicas, MemoryObservedReplicas: coverage.MemoryObservedReplicas,
+		CPUReplicaCoverage: coverage.CPUReplicaCoverage, MemoryReplicaCoverage: coverage.MemoryReplicaCoverage,
+		CPUTemporalCoverage: coverage.CPUTemporalCoverage, MemoryTemporalCoverage: coverage.MemoryTemporalCoverage,
+		CPUImbalanceRatio: coverage.CPUImbalanceRatio, MemoryImbalanceRatio: coverage.MemoryImbalanceRatio,
+		Complete: coverage.Complete, Replicas: make([]optimizer.ReplicaQuality, 0, len(coverage.Observations)),
+	}
+	for _, replica := range coverage.Observations {
+		result.Replicas = append(result.Replicas, optimizer.ReplicaQuality{
+			Pod: replica.Pod, UID: replica.UID, Phase: replica.Phase, Active: replica.Active,
+			CPUCoverage: replica.CPU.Quality.Coverage, MemoryCoverage: replica.Memory.Quality.Coverage,
+		})
+	}
+	return result
+}
+
 func (server *apiServer) repositoryFailure(w http.ResponseWriter, r *http.Request, operation string, err error) {
 	server.logger.Error("repository operation failed", "request_id", requestIDFromContext(r.Context()), "operation", operation, "error", err)
 	if errors.Is(err, context.DeadlineExceeded) {
@@ -232,6 +262,10 @@ func (server *apiServer) resolveWorkload(w http.ResponseWriter, r *http.Request,
 }
 
 func (server *apiServer) usageFailure(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, usage.ErrAttributionIncomplete) {
+		respondError(w, r, http.StatusUnprocessableEntity, "metric_attribution_incomplete", err.Error())
+		return
+	}
 	if errors.Is(err, usage.ErrNoData) {
 		respondError(w, r, http.StatusUnprocessableEntity, "no_usage_data", "Prometheus has no CPU or memory usage for this container in the requested window")
 		return
@@ -286,23 +320,74 @@ func (server *apiServer) generateRecommendation(w http.ResponseWriter, r *http.R
 	if !ok {
 		return
 	}
+	matchedPolicy := ""
+	if policy == nil {
+		record, policyErr := server.repository.ResolvePolicy(r.Context(), repository.PolicyScope{
+			Cluster: spec.Cluster, Namespace: spec.Namespace, Kind: spec.Kind, Workload: spec.Name, Container: container.Name,
+		})
+		switch {
+		case policyErr == nil:
+			resolved := record.Policy
+			policy = &resolved
+			matchedPolicy = record.Name + " (" + record.ID + ")"
+		case errors.Is(policyErr, repository.ErrNotFound):
+			// No persisted match means the optimizer's balanced default.
+		default:
+			server.repositoryFailure(w, r, "resolve recommendation policy", policyErr)
+			return
+		}
+	}
 	// Use a second-aligned endpoint everywhere: Prometheus range parameters,
 	// provenance timestamps, expiry, and the query fingerprint must describe
 	// exactly the same observation window.
 	queryWindow := usage.Window{Duration: window, Step: step, End: server.now().UTC().Truncate(time.Second)}
-	history, err := server.usage.History(r.Context(), subject, queryWindow)
+	var (
+		history          usage.History
+		events           usage.Events
+		metricIdentity   *usage.WorkloadIdentity
+		exactSource      attributedUsageSource
+		exactAttribution bool
+	)
+	if spec.MetricIdentity != nil {
+		identity := spec.MetricIdentity.ForContainer(container.Name)
+		metricIdentity = &identity
+		exactSource, exactAttribution = server.usage.(attributedUsageSource)
+		if !exactAttribution {
+			server.usageFailure(w, r, fmt.Errorf("%w: the configured metric source cannot query exact pod UIDs", usage.ErrAttributionIncomplete))
+			return
+		}
+		history, err = exactSource.HistoryForIdentity(r.Context(), subject, identity, queryWindow)
+	} else {
+		// Non-Kubernetes test and extension providers can retain the legacy
+		// interface. The built-in Kubernetes provider always supplies identity.
+		history, err = server.usage.History(r.Context(), subject, queryWindow)
+	}
 	if err != nil {
 		server.usageFailure(w, r, err)
 		return
 	}
 
 	warnings := []string{}
-	events, err := server.usage.Events(r.Context(), subject, queryWindow)
+	if matchedPolicy != "" {
+		warnings = append(warnings, "effective persisted policy: "+matchedPolicy)
+	}
+	eventQualityIssues := []string{}
+	if exactAttribution {
+		events, err = exactSource.EventsForIdentity(r.Context(), subject, *metricIdentity, queryWindow)
+	} else {
+		events, err = server.usage.Events(r.Context(), subject, queryWindow)
+	}
 	if err != nil {
 		server.logger.Warn("restart and OOM query failed", "request_id", requestIDFromContext(r.Context()), "error", err)
 		warnings = append(warnings, "restart and OOM history could not be read; review container events before applying")
+		if exactAttribution {
+			eventQualityIssues = append(eventQualityIssues, "per-replica restart and OOM history could not be verified")
+		}
 	} else if !events.Available {
 		warnings = append(warnings, "restart and OOM history is unavailable because kube-state-metrics series were not found")
+		if exactAttribution {
+			eventQualityIssues = append(eventQualityIssues, "per-replica restart and OOM history is unavailable")
+		}
 	}
 	if events.ThrottlingAvailable && events.ThrottlingRatio == 0 {
 		warnings = append(warnings, "no CPU throttling was observed in the window")
@@ -330,6 +415,10 @@ func (server *apiServer) generateRecommendation(w http.ResponseWriter, r *http.R
 	blockingCPU, informationalCPU := history.CPU.QualityIssues()
 	blockingCPU = append(blockingCPU, rolloutIssues...)
 	blockingMemory, informationalMemory := history.Memory.QualityIssues()
+	replicaIssues := []string{}
+	if history.ReplicaCoverage != nil {
+		replicaIssues = append(replicaIssues, history.ReplicaCoverage.Issues...)
+	}
 	input := optimizer.Input{
 		Cluster: spec.Cluster, Namespace: spec.Namespace, Kind: spec.Kind, Workload: spec.Name, Container: container.Name,
 		Criticality:      request.Criticality,
@@ -343,7 +432,8 @@ func (server *apiServer) generateRecommendation(w http.ResponseWriter, r *http.R
 		ObservedCPUThrottlingPeakRatio: events.ThrottlingPeakRatio,
 		SamplesStartTime:               firstSampleTime(history.CPU),
 		Replicas:                       spec.Replicas,
-		DataQualityIssues:              append(blockingCPU, blockingMemory...),
+		DataQualityIssues:              append(append(append(blockingCPU, blockingMemory...), replicaIssues...), eventQualityIssues...),
+		ReplicaCoverage:                recommendationReplicaCoverage(history.ReplicaCoverage),
 		Autoscaling: optimizer.AutoscalingContext{
 			HPAUtilizationBased: spec.HPAUtilizationBased,
 			VPAControlsCPU:      container.VPAControlsCPU,
@@ -362,6 +452,14 @@ func (server *apiServer) generateRecommendation(w http.ResponseWriter, r *http.R
 			ExpiresAt:               timePointer(queryWindow.End.Add(recommendationValidity)),
 		},
 		RecentRollout: recentRollout,
+	}
+	if exactAttribution {
+		fingerprint, fingerprintErr := usage.AttributedRecommendationQueryFingerprint(subject, *metricIdentity, queryWindow)
+		if fingerprintErr != nil {
+			server.usageFailure(w, r, fingerprintErr)
+			return
+		}
+		input.Provenance.QueryFingerprint = fingerprint
 	}
 	warnings = append(warnings, server.assessmentContext(r.Context(), &input, spec, history)...)
 	recommendation, err := optimizer.Recommend(input)
@@ -387,7 +485,7 @@ func (server *apiServer) generateRecommendation(w http.ResponseWriter, r *http.R
 	if request.DryRun {
 		respondJSON(w, http.StatusOK, map[string]any{
 			"dryRun": true, "recommendation": recommendation, "source": repository.SourcePrometheus,
-			"window": window.String(), "step": step.String(), "events": events,
+			"window": window.String(), "step": step.String(), "events": events, "replicaCoverage": history.ReplicaCoverage,
 		})
 		return
 	}

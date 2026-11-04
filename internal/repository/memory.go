@@ -36,10 +36,19 @@ type Memory struct {
 }
 
 type memoryState struct {
-	records     []storedRecommendation
-	byID        map[string]int
-	idempotency map[string]idempotencyRecord
-	audit       []AuditEvent
+	records          []storedRecommendation
+	byID             map[string]int
+	idempotency      map[string]idempotencyRecord
+	audit            []AuditEvent
+	verificationOutcomes map[string]VerificationOutcome
+	verificationRuns     []VerificationRun
+	policies         map[string]PolicyRecord
+	policyOrder      []string
+	schedules        map[string]FleetSchedule
+	scheduleOrder    []string
+	scans            map[string]FleetScan
+	scanOrder        []string
+	fleetIdempotency map[string]string
 }
 
 type storedRecommendation struct {
@@ -61,8 +70,13 @@ func NewMemory(maximumRecords int) *Memory {
 	return &Memory{
 		maximumRecords: maximumRecords,
 		state: memoryState{
-			byID:        make(map[string]int),
-			idempotency: make(map[string]idempotencyRecord),
+			byID:             make(map[string]int),
+			idempotency:      make(map[string]idempotencyRecord),
+			verificationOutcomes: make(map[string]VerificationOutcome),
+			policies:         make(map[string]PolicyRecord),
+			schedules:        make(map[string]FleetSchedule),
+			scans:            make(map[string]FleetScan),
+			fleetIdempotency: make(map[string]string),
 		},
 		now: time.Now,
 	}
@@ -98,16 +112,43 @@ func cloneRecord(record RecommendationRecord) RecommendationRecord {
 
 func (state memoryState) clone() memoryState {
 	cloned := memoryState{
-		records:     append([]storedRecommendation(nil), state.records...),
-		byID:        make(map[string]int, len(state.byID)),
-		idempotency: make(map[string]idempotencyRecord, len(state.idempotency)),
-		audit:       append([]AuditEvent(nil), state.audit...),
+		records:          append([]storedRecommendation(nil), state.records...),
+		byID:             make(map[string]int, len(state.byID)),
+		idempotency:      make(map[string]idempotencyRecord, len(state.idempotency)),
+		audit:            append([]AuditEvent(nil), state.audit...),
+		verificationOutcomes: make(map[string]VerificationOutcome, len(state.verificationOutcomes)),
+		verificationRuns:     make([]VerificationRun, len(state.verificationRuns)),
+		policies:         make(map[string]PolicyRecord, len(state.policies)),
+		policyOrder:      append([]string(nil), state.policyOrder...),
+		schedules:        make(map[string]FleetSchedule, len(state.schedules)),
+		scheduleOrder:    append([]string(nil), state.scheduleOrder...),
+		scans:            make(map[string]FleetScan, len(state.scans)),
+		scanOrder:        append([]string(nil), state.scanOrder...),
+		fleetIdempotency: make(map[string]string, len(state.fleetIdempotency)),
 	}
 	for key, value := range state.byID {
 		cloned.byID[key] = value
 	}
 	for key, value := range state.idempotency {
 		cloned.idempotency[key] = value
+	}
+	for key, value := range state.verificationOutcomes {
+		cloned.verificationOutcomes[key] = cloneVerificationOutcome(value)
+	}
+	for index, value := range state.verificationRuns {
+		cloned.verificationRuns[index] = cloneVerificationRun(value)
+	}
+	for key, value := range state.policies {
+		cloned.policies[key] = value
+	}
+	for key, value := range state.schedules {
+		cloned.schedules[key] = cloneFleetSchedule(value)
+	}
+	for key, value := range state.scans {
+		cloned.scans[key] = cloneFleetScan(value)
+	}
+	for key, value := range state.fleetIdempotency {
+		cloned.fleetIdempotency[key] = value
 	}
 	return cloned
 }
@@ -161,6 +202,14 @@ func (memory *Memory) create(recommendation optimizer.Recommendation, options Cr
 	if len(state.records) == memory.maximumRecords {
 		evicted := state.records[0]
 		delete(state.byID, evicted.record.ID)
+		delete(state.verificationOutcomes, evicted.record.ID)
+		retainedRuns := state.verificationRuns[:0]
+		for _, run := range state.verificationRuns {
+			if run.RecommendationID != evicted.record.ID {
+				retainedRuns = append(retainedRuns, run)
+			}
+		}
+		state.verificationRuns = retainedRuns
 		if evicted.idempotencyKey != "" {
 			delete(state.idempotency, evicted.idempotencyKey)
 		}

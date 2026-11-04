@@ -14,11 +14,13 @@ import (
 
 	"github.com/kuberight/kuberight/internal/benchmark"
 	"github.com/kuberight/kuberight/internal/config"
+	"github.com/kuberight/kuberight/internal/fleet"
 	"github.com/kuberight/kuberight/internal/forecast"
 	"github.com/kuberight/kuberight/internal/httpapi"
 	"github.com/kuberight/kuberight/internal/metrics"
 	"github.com/kuberight/kuberight/internal/notify"
 	"github.com/kuberight/kuberight/internal/provider"
+	"github.com/kuberight/kuberight/internal/repository"
 	"github.com/kuberight/kuberight/internal/repository/postgres"
 	"github.com/kuberight/kuberight/internal/usage"
 )
@@ -71,6 +73,10 @@ func main() {
 	if store != nil {
 		defer store.Close()
 		dependencies.Repository = store
+	} else {
+		// The handler and background fleet workers must share the same fallback
+		// store. Production still warns because this state is process-local.
+		dependencies.Repository = repository.NewMemory(10_000)
 	}
 	if cfg.PrometheusURL != "" {
 		client, clientErr := metrics.NewPrometheusClient(metrics.PrometheusOptions{
@@ -122,6 +128,20 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+	if cfg.OperationMode != config.ModeObserve && dependencies.Usage != nil && dependencies.Provider != nil {
+		fleetExecutor, fleetErr := httpapi.NewFleetScanExecutor(cfg, dependencies)
+		if fleetErr != nil {
+			logger.Error("fleet scan worker initialization failed", "error", fleetErr)
+			os.Exit(1)
+		}
+		owner, hostnameErr := os.Hostname()
+		if hostnameErr != nil || owner == "" {
+			owner = "kuberight"
+		}
+		owner = fmt.Sprintf("%.96s-%d", owner, os.Getpid())
+		go fleet.NewScheduler(dependencies.Repository, logger).Run(ctx)
+		go fleet.NewWorker(dependencies.Repository, fleetExecutor, owner, logger).Run(ctx)
+	}
 	// Post-change verification needs live usage and the live workload spec.
 	if cfg.VerificationInterval > 0 && dependencies.Usage != nil && dependencies.Provider != nil {
 		verifier, verifierErr := httpapi.NewVerifier(cfg, dependencies)

@@ -19,5 +19,8 @@ Inventory RBAC is namespace scoped to {{ .Release.Namespace }}.
 WARNING: API horizontal scaling is unsupported in this preview. Recommendation, idempotency, and audit state is process-local, so replicas do not share a consistent store.
 {{- end }}
 {{- if and .Values.ml.enabled (or (gt (int .Values.ml.replicaCount) 1) .Values.ml.autoscaling.enabled) }}
-WARNING: ML horizontal scaling is unsupported in this preview. The supplied deployment stores models on each pod's ephemeral local filesystem.
+WARNING: ML horizontal scaling is unsupported because the supplied model store is single-writer.
+{{- end }}
+{{- if and .Values.ml.enabled (not .Values.ml.persistence.enabled) }}
+NOTICE: ML model persistence is disabled; model artifacts are lost when the ML pod is replaced.
 {{- end }}

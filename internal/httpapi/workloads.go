@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/kuberight/kuberight/internal/optimizer"
+	"github.com/kuberight/kuberight/internal/usage"
 )
 
 var (
@@ -50,6 +51,10 @@ type WorkloadSpec struct {
 	KEDATriggers        []string `json:"kedaTriggers,omitempty"`
 	OverheadCPUMilli    int64    `json:"overheadCpuMilli,omitempty"`
 	OverheadMemoryBytes int64    `json:"overheadMemoryBytes,omitempty"`
+	// MetricIdentity is populated by the Kubernetes provider and deliberately
+	// excluded from inventory JSON. Live recommendation generation uses it to
+	// bind Prometheus samples to exact workload and pod UIDs.
+	MetricIdentity *usage.WorkloadIdentity `json:"-"`
 }
 
 // InitContainerSpec is an init container's configured resources.

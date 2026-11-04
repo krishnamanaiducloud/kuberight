@@ -7,7 +7,15 @@ const live: EvidenceRecord = {
   source: 'prometheus',
   cluster: 'prod-us',
   createdAt: '2026-11-01T11:05:00Z',
-  dataQuality: { cpuSampleCount: 1900, memorySampleCount: 1898, minimumRequired: 30, sufficient: true, issues: [] },
+  dataQuality: {
+    cpuSampleCount: 1900, memorySampleCount: 1898, minimumRequired: 30, sufficient: true, issues: [],
+    replicaCoverage: {
+      expectedReplicas: 3, discoveredReplicas: 3, observedReplicas: 3, missingReplicas: 0,
+      activeReplicas: 3, terminatedReplicas: 0, cpuObservedReplicas: 3, memoryObservedReplicas: 3,
+      cpuReplicaCoverage: 1, memoryReplicaCoverage: 1, cpuTemporalCoverage: 0.99, memoryTemporalCoverage: 0.98,
+      cpuImbalanceRatio: 1.2, memoryImbalanceRatio: 1.1, complete: true,
+    },
+  },
   provenance: {
     workloadUid: '6b4f8c9a', workloadGeneration: 14, workloadResourceVersion: '8821',
     sourceSpecFingerprint: 'a'.repeat(64), queryFingerprint: 'b'.repeat(64), policyFingerprint: 'c'.repeat(64),
@@ -22,6 +30,8 @@ describe('recommendation evidence', () => {
     expect(screen.getByText('Evidence valid')).toBeInTheDocument()
     expect(screen.getByText(/Generation 14 · prod-us/)).toBeInTheDocument()
     expect(screen.getByText('CPU 1,900 · memory 1,898')).toBeInTheDocument()
+    expect(screen.getByText('3 of 3 observed · complete')).toBeInTheDocument()
+    expect(screen.getByLabelText('Replica completeness')).toHaveTextContent('All expected replicas covered')
     expect(screen.getByText('Optimizer')).toBeInTheDocument()
     expect(screen.getByLabelText('Technical provenance')).toHaveTextContent('Spec aaaaaaaaaaaa…')
   })

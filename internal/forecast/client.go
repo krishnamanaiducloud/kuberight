@@ -38,6 +38,12 @@ type Request struct {
 	IntervalSeconds int         `json:"interval_seconds"`
 	Resource        string      `json:"resource"`
 	ConfidenceLevel float64     `json:"confidence_level"`
+	// SeriesID is an opaque, stable workload-UID/container/resource identity.
+	// Persist asks the service to retain and safely reuse model state for that
+	// exact identity. Callers must leave both unset when workload UID evidence
+	// is unavailable so recreated same-name workloads cannot share a model.
+	SeriesID string `json:"series_id,omitempty"`
+	Persist  bool   `json:"persist,omitempty"`
 }
 
 // Interval is a forecast confidence interval.
@@ -66,6 +72,19 @@ type Response struct {
 	DataQuality         json.RawMessage `json:"dataQuality,omitempty"`
 	Retraining          json.RawMessage `json:"retraining,omitempty"`
 	Calibration         *Calibration    `json:"calibration,omitempty"`
+	ModelMetadata       *ModelMetadata  `json:"modelMetadata,omitempty"`
+}
+
+// ModelMetadata describes the versioned model artifact selected by the
+// forecasting service.
+type ModelMetadata struct {
+	Name            string    `json:"name"`
+	Version         string    `json:"version"`
+	FeatureSchema   string    `json:"featureSchema"`
+	TrainedAt       time.Time `json:"trainedAt"`
+	TrainingSamples int       `json:"trainingSamples"`
+	Persisted       bool      `json:"persisted"`
+	Reused          bool      `json:"reused,omitempty"`
 }
 
 // Calibration is interval coverage measured on held-out data. Intervals are

@@ -137,13 +137,14 @@ func (series Series) QualityIssues() (blocking []string, informational []string)
 
 // History holds CPU and memory usage for one container.
 type History struct {
-	Subject  Subject   `json:"subject"`
-	Start    time.Time `json:"start"`
-	End      time.Time `json:"end"`
-	Step     string    `json:"step"`
-	CPU      Series    `json:"cpu"`
-	Memory   Series    `json:"memory"`
-	Warnings []string  `json:"warnings"`
+	Subject         Subject          `json:"subject"`
+	Start           time.Time        `json:"start"`
+	End             time.Time        `json:"end"`
+	Step            string           `json:"step"`
+	CPU             Series           `json:"cpu"`
+	Memory          Series           `json:"memory"`
+	ReplicaCoverage *ReplicaCoverage `json:"replicaCoverage,omitempty"`
+	Warnings        []string         `json:"warnings"`
 }
 
 // Events counts restarts and OOM kills over a window. Available is false
@@ -159,6 +160,9 @@ type Events struct {
 	ThrottlingRatio     float64 `json:"throttlingRatio"`
 	// ThrottlingPeakRatio is the P95 of per-interval throttling over the window.
 	ThrottlingPeakRatio float64 `json:"throttlingPeakRatio"`
+	// Replicas retains evidence by exact pod UID when attributed queries are
+	// used. It is omitted by legacy, name-pattern history callers.
+	Replicas []ReplicaEvents `json:"replicas,omitempty"`
 }
 
 // RangeQuerier is the subset of the Prometheus client used by Source.

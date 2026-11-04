@@ -289,7 +289,9 @@ ml:
   apiKey:
     existingSecret: ""
     key: api-key
-  # Persisted models use a pod-local filesystem in the supplied chart.
+  # A single ML replica is enforced because model updates use a local
+  # single-writer store. Enable persistence to retain validated models across
+  # pod restarts, or bind an externally provisioned claim.
   replicaCount: 1
   image:
     repository: mohankrishna999/kuberight-ml
@@ -299,6 +301,14 @@ ml:
   imagePullSecrets: []
   service:
     port: 8081
+    annotations: {}
+  persistence:
+    enabled: false
+    existingClaim: ""
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+    size: 1Gi
     annotations: {}
   resources:
     requests:
@@ -320,7 +330,7 @@ ml:
       drop:
         - ALL
   autoscaling:
-    # Horizontal scaling is unsupported while model storage is pod-local.
+    # Horizontal scaling is unsupported while the model store is single-writer.
     enabled: false
     minReplicas: 1
     maxReplicas: 1

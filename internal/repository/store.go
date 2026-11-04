@@ -164,6 +164,8 @@ type AuditRepository interface {
 type Transaction interface {
 	RecommendationRepository
 	AuditRepository
+	PolicyRepository
+	FleetRepository
 }
 
 // Store is the context-aware durable persistence boundary.
@@ -175,6 +177,7 @@ type Transaction interface {
 // one all-or-nothing boundary.
 type Store interface {
 	Transaction
+	VerificationRepository
 	InTransaction(ctx context.Context, fn func(context.Context, Transaction) error) error
 	// Ready reports whether the store can currently serve requests.
 	Ready(ctx context.Context) error
