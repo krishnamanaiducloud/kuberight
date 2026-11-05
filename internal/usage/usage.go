@@ -144,7 +144,11 @@ type History struct {
 	CPU             Series           `json:"cpu"`
 	Memory          Series           `json:"memory"`
 	ReplicaCoverage *ReplicaCoverage `json:"replicaCoverage,omitempty"`
-	Warnings        []string         `json:"warnings"`
+	// Warnings are messages returned by Prometheus.
+	Warnings []string `json:"warnings"`
+	// Notes are informational findings derived by KubeRight, such as the
+	// number of revisions or excluded ambiguous steps in the window.
+	Notes []string `json:"notes,omitempty"`
 }
 
 // Events counts restarts and OOM kills over a window. Available is false

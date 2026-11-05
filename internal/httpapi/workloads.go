@@ -25,6 +25,9 @@ type ContainerSpec struct {
 	MemoryLimitBytes   int64  `json:"memoryLimitBytes"`
 	VPAControlsCPU     bool   `json:"vpaControlsCpu"`
 	VPAControlsMemory  bool   `json:"vpaControlsMemory"`
+	// Runtime is a detected managed runtime, such as a JVM, whose memory use
+	// follows its own configuration.
+	Runtime *optimizer.RuntimeContext `json:"runtime,omitempty"`
 }
 
 // WorkloadSpec is the live configuration needed to generate a recommendation.
@@ -55,6 +58,10 @@ type WorkloadSpec struct {
 	// excluded from inventory JSON. Live recommendation generation uses it to
 	// bind Prometheus samples to exact workload and pod UIDs.
 	MetricIdentity *usage.WorkloadIdentity `json:"-"`
+	// Labels and Annotations are the workload object's metadata, used for
+	// automation opt-out and GitOps ownership. They are not serialized.
+	Labels      map[string]string `json:"-"`
+	Annotations map[string]string `json:"-"`
 }
 
 // InitContainerSpec is an init container's configured resources.

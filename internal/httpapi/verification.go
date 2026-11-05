@@ -239,6 +239,9 @@ func (server *apiServer) verify(ctx context.Context, record repository.Recommend
 		return server.inconclusive(&run, "the live workload has no exact metric identity for its current UID and generation")
 	}
 	identity := spec.MetricIdentity.ForContainer(record.Container)
+	// Post-change evidence comes only from the pods that exist now. Replicas
+	// that ran before the change used the previous requests and limits.
+	identity.LivePodsOnly = true
 	if identity.ExpectedReplicas != spec.Replicas {
 		return server.inconclusive(&run, "the exact metric identity does not cover the live desired replica count")
 	}

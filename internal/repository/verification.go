@@ -195,4 +195,3 @@ func cloneVerificationOutcome(outcome VerificationOutcome) VerificationOutcome {
 	}
 	return outcome
 }
-

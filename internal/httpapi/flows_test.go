@@ -530,8 +530,8 @@ func TestSavingsLifecycleIsConservativeAndNeverAssumesAReplica(t *testing.T) {
 	}
 	observed := create("observed", 2, &fresh)
 	verified := create("verified", 1, &fresh)
-	stale := create("stale", 1, &expired)
-	zero := create("scaled-zero", 0, &fresh)
+	create("stale", 1, &expired)
+	create("scaled-zero", 0, &fresh)
 	review(observed)
 	review(verified)
 
@@ -571,11 +571,11 @@ func TestSavingsLifecycleIsConservativeAndNeverAssumesAReplica(t *testing.T) {
 	}
 	summary := body["summary"].(map[string]any)
 	for field, want := range map[string]float64{
-		"theoreticalMonthlyChange": 73,
-		"recommendedMonthlyChange": 54.75,
-		"approvedMonthlyChange": 54.75,
+		"theoreticalMonthlyChange":        73,
+		"recommendedMonthlyChange":        54.75,
+		"approvedMonthlyChange":           54.75,
 		"externallyObservedMonthlyChange": 54.75,
-		"verifiedMonthlyChange": 18.25,
+		"verifiedMonthlyChange":           18.25,
 	} {
 		if got := summary[field].(float64); got != want {
 			t.Fatalf("%s=%v want %v; summary=%v", field, got, want, summary)

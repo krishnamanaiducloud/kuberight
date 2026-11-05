@@ -147,4 +147,3 @@ func (memory *Memory) ClaimRegressionNotification(ctx context.Context, recommend
 	memory.state.verificationOutcomes[recommendationID] = cloneVerificationOutcome(outcome)
 	return true, nil
 }
-

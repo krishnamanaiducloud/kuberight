@@ -16,6 +16,9 @@ const (
 	StatusHold             = "hold"
 	StatusInsufficientData = "insufficient_data"
 	StatusUnsupported      = "unsupported"
+	// StatusNoChange means the current requests and limits are already within
+	// the minimum meaningful change of the recommendation: right-sized.
+	StatusNoChange = "no_change"
 )
 
 // Check outcomes.
@@ -646,6 +649,7 @@ type facts struct {
 	forecastUsed                                bool
 	confidenceScore                             float64
 	risk                                        string
+	stability                                   *Stability
 }
 
 func assess(input Input, values sizing, fact facts) *Assessment {
@@ -751,6 +755,12 @@ func assess(input Input, values sizing, fact facts) *Assessment {
 		assessment.StatusReasons = append([]string{}, fact.quality.Issues...)
 	case failed > 0:
 		assessment.Status = StatusHold
+	case fact.stability != nil && !fact.stability.Changed && len(fact.stability.ReductionsHeld) > 0:
+		assessment.Status = StatusHold
+		assessment.StatusReasons = append(assessment.StatusReasons, fact.stability.ReductionsHeld...)
+	case fact.stability != nil && !fact.stability.Changed:
+		assessment.Status = StatusNoChange
+		assessment.StatusReasons = append(assessment.StatusReasons, "the current requests and limits are within the minimum meaningful change of the recommendation")
 	default:
 		assessment.Status = StatusRecommend
 	}

@@ -36,19 +36,19 @@ type Memory struct {
 }
 
 type memoryState struct {
-	records          []storedRecommendation
-	byID             map[string]int
-	idempotency      map[string]idempotencyRecord
-	audit            []AuditEvent
+	records              []storedRecommendation
+	byID                 map[string]int
+	idempotency          map[string]idempotencyRecord
+	audit                []AuditEvent
 	verificationOutcomes map[string]VerificationOutcome
 	verificationRuns     []VerificationRun
-	policies         map[string]PolicyRecord
-	policyOrder      []string
-	schedules        map[string]FleetSchedule
-	scheduleOrder    []string
-	scans            map[string]FleetScan
-	scanOrder        []string
-	fleetIdempotency map[string]string
+	policies             map[string]PolicyRecord
+	policyOrder          []string
+	schedules            map[string]FleetSchedule
+	scheduleOrder        []string
+	scans                map[string]FleetScan
+	scanOrder            []string
+	fleetIdempotency     map[string]string
 }
 
 type storedRecommendation struct {
@@ -70,13 +70,13 @@ func NewMemory(maximumRecords int) *Memory {
 	return &Memory{
 		maximumRecords: maximumRecords,
 		state: memoryState{
-			byID:             make(map[string]int),
-			idempotency:      make(map[string]idempotencyRecord),
+			byID:                 make(map[string]int),
+			idempotency:          make(map[string]idempotencyRecord),
 			verificationOutcomes: make(map[string]VerificationOutcome),
-			policies:         make(map[string]PolicyRecord),
-			schedules:        make(map[string]FleetSchedule),
-			scans:            make(map[string]FleetScan),
-			fleetIdempotency: make(map[string]string),
+			policies:             make(map[string]PolicyRecord),
+			schedules:            make(map[string]FleetSchedule),
+			scans:                make(map[string]FleetScan),
+			fleetIdempotency:     make(map[string]string),
 		},
 		now: time.Now,
 	}
@@ -112,19 +112,19 @@ func cloneRecord(record RecommendationRecord) RecommendationRecord {
 
 func (state memoryState) clone() memoryState {
 	cloned := memoryState{
-		records:          append([]storedRecommendation(nil), state.records...),
-		byID:             make(map[string]int, len(state.byID)),
-		idempotency:      make(map[string]idempotencyRecord, len(state.idempotency)),
-		audit:            append([]AuditEvent(nil), state.audit...),
+		records:              append([]storedRecommendation(nil), state.records...),
+		byID:                 make(map[string]int, len(state.byID)),
+		idempotency:          make(map[string]idempotencyRecord, len(state.idempotency)),
+		audit:                append([]AuditEvent(nil), state.audit...),
 		verificationOutcomes: make(map[string]VerificationOutcome, len(state.verificationOutcomes)),
 		verificationRuns:     make([]VerificationRun, len(state.verificationRuns)),
-		policies:         make(map[string]PolicyRecord, len(state.policies)),
-		policyOrder:      append([]string(nil), state.policyOrder...),
-		schedules:        make(map[string]FleetSchedule, len(state.schedules)),
-		scheduleOrder:    append([]string(nil), state.scheduleOrder...),
-		scans:            make(map[string]FleetScan, len(state.scans)),
-		scanOrder:        append([]string(nil), state.scanOrder...),
-		fleetIdempotency: make(map[string]string, len(state.fleetIdempotency)),
+		policies:             make(map[string]PolicyRecord, len(state.policies)),
+		policyOrder:          append([]string(nil), state.policyOrder...),
+		schedules:            make(map[string]FleetSchedule, len(state.schedules)),
+		scheduleOrder:        append([]string(nil), state.scheduleOrder...),
+		scans:                make(map[string]FleetScan, len(state.scans)),
+		scanOrder:            append([]string(nil), state.scanOrder...),
+		fleetIdempotency:     make(map[string]string, len(state.fleetIdempotency)),
 	}
 	for key, value := range state.byID {
 		cloned.byID[key] = value

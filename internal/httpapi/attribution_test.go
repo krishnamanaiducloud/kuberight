@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kuberight/kuberight/internal/metrics"
 	"github.com/kuberight/kuberight/internal/usage"
 )
 
@@ -63,9 +62,8 @@ func TestGenerateCarriesExactReplicaCoverageAndBlocksIncompleteReduction(t *test
 	}}
 	observation := func(pod, uid string) usage.ReplicaObservation {
 		return usage.ReplicaObservation{
-			Pod: pod, UID: uid, Phase: "Running", Active: true, CreatedAt: fixedNow.Add(-9 * 24 * time.Hour),
-			CPU:    usage.Series{Resource: "cpu", Unit: "millicores", Quality: metrics.DataQuality{Coverage: 1}},
-			Memory: usage.Series{Resource: "memory", Unit: "bytes", Quality: metrics.DataQuality{Coverage: 1}},
+			Pod: pod, UID: uid, Phase: "Running", Live: true, Active: true, CreatedAt: fixedNow.Add(-9 * 24 * time.Hour),
+			RunningSamples: 2016, CPUSamples: 2016, MemorySamples: 2016, CPUCoverage: 1, MemoryCoverage: 1,
 		}
 	}
 	base.history.ReplicaCoverage = &usage.ReplicaCoverage{

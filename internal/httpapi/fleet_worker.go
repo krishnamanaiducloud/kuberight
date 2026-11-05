@@ -227,6 +227,19 @@ func (executor *FleetScanExecutor) effectivePolicy(ctx context.Context, scan rep
 	return &policy, nil
 }
 
+// fleetDelayNotice is the execution delay after which a recommendation
+// records that its scan ran late.
+const fleetDelayNotice = 15 * time.Minute
+
+// fleetExecutionDelay is how long after its scheduled time a scan target was
+// analyzed.
+func fleetExecutionDelay(scan repository.FleetScan, executedAt time.Time) time.Duration {
+	if scan.ScheduledFor.IsZero() || executedAt.Before(scan.ScheduledFor) {
+		return 0
+	}
+	return executedAt.Sub(scan.ScheduledFor)
+}
+
 func (executor *FleetScanExecutor) analyze(ctx context.Context, scan repository.FleetScan, spec WorkloadSpec, container ContainerSpec) error {
 	if spec.Cluster == "" {
 		spec.Cluster = executor.server.config.ClusterID
@@ -239,59 +252,28 @@ func (executor *FleetScanExecutor) analyze(ctx context.Context, scan repository.
 		return err
 	}
 	subject := usage.Subject{Namespace: spec.Namespace, Kind: spec.Kind, Workload: spec.Name, Container: container.Name}
-	observationEnd := scan.CreatedAt.UTC().Truncate(time.Second)
-	if observationEnd.IsZero() {
-		observationEnd = scan.ScheduledFor.UTC().Truncate(time.Second)
-	}
-	window := usage.Window{Duration: time.Duration(scan.WindowSeconds) * time.Second, Step: executor.server.config.RecommendationStep, End: observationEnd}
-	var history usage.History
-	var events usage.Events
-	if spec.MetricIdentity != nil {
-		source, ok := executor.server.usage.(attributedUsageSource)
-		if !ok {
-			return fmt.Errorf("%w: exact pod UID queries are unavailable", usage.ErrAttributionIncomplete)
-		}
-		identity := spec.MetricIdentity.ForContainer(container.Name)
-		history, err = source.HistoryForIdentity(ctx, subject, identity, window)
-		if err == nil {
-			events, err = source.EventsForIdentity(ctx, subject, identity, window)
-		}
-	} else {
-		history, err = executor.server.usage.History(ctx, subject, window)
-		if err == nil {
-			events, err = executor.server.usage.Events(ctx, subject, window)
-		}
-	}
+	// The observation window ends when this target is actually analyzed, not
+	// when the scan was created or scheduled. A delayed or retried scan
+	// therefore never stores advice from a stale window; the delay is
+	// recorded instead.
+	executedAt := executor.server.now().UTC().Truncate(time.Second)
+	window := usage.Window{Duration: time.Duration(scan.WindowSeconds) * time.Second, Step: executor.server.config.RecommendationStep, End: executedAt}
+	evidence, err := executor.server.collectEvidence(ctx, subject, spec, container, policy, window, "")
 	if err != nil {
 		return err
 	}
-	cpuIssues, _ := history.CPU.QualityIssues()
-	memoryIssues, _ := history.Memory.QualityIssues()
-	qualityIssues := append(cpuIssues, memoryIssues...)
-	if history.ReplicaCoverage != nil {
-		qualityIssues = append(qualityIssues, history.ReplicaCoverage.Issues...)
-	}
-	input := optimizer.Input{
-		Cluster: spec.Cluster, Namespace: spec.Namespace, Kind: spec.Kind, Workload: spec.Name, Container: container.Name,
-		CPURequestsMilli: container.CPURequestMilli, MemoryRequestsBytes: container.MemoryRequestBytes, CPULimitMilli: container.CPULimitMilli, MemoryLimitBytes: container.MemoryLimitBytes,
-		CPUSamplesMilli: history.CPU.Values(), MemorySamplesBytes: history.Memory.Values(), SampleIntervalSeconds: int64(window.Step / time.Second),
-		ObservedContainerRestarts: events.Restarts, ObservedOOMKills: events.OOMKills, ObservedCPUThrottlingRatio: events.ThrottlingRatio, ObservedCPUThrottlingPeakRatio: events.ThrottlingPeakRatio,
-		SamplesStartTime: firstSampleTime(history.CPU), Replicas: spec.Replicas, DataQualityIssues: qualityIssues, ReplicaCoverage: recommendationReplicaCoverage(history.ReplicaCoverage), Policy: policy,
-		Autoscaling: optimizer.AutoscalingContext{HPAUtilizationBased: spec.HPAUtilizationBased, VPAControlsCPU: container.VPAControlsCPU, VPAControlsMemory: container.VPAControlsMemory, KEDAEnabled: spec.KEDAEnabled},
-		Provenance:  optimizer.Provenance{WorkloadUID: spec.UID, WorkloadGeneration: spec.Generation, WorkloadResourceVersion: spec.ResourceVersion, SourceSpecFingerprint: spec.SourceSpecFingerprint, ObservationStart: observationStart(history, window), ObservationEnd: timePointer(window.End), QueryFingerprint: usage.RecommendationQueryFingerprint(subject, window), ExpiresAt: timePointer(window.End.Add(recommendationValidity))},
-	}
-	if spec.MetricIdentity != nil {
-		identity := spec.MetricIdentity.ForContainer(container.Name)
-		fingerprint, fingerprintErr := usage.AttributedRecommendationQueryFingerprint(subject, identity, window)
-		if fingerprintErr != nil {
-			return fingerprintErr
-		}
-		input.Provenance.QueryFingerprint = fingerprint
-	}
-	executor.server.assessmentContext(ctx, &input, spec, history)
-	recommendation, err := optimizer.Recommend(input)
+	recommendation, err := optimizer.Recommend(evidence.input)
 	if err != nil {
 		return err
+	}
+	if assessment := recommendation.Assessment; assessment != nil && assessment.ValidForSeconds > 0 {
+		expires := window.End.Add(time.Duration(assessment.ValidForSeconds) * time.Second)
+		recommendation.Provenance.ExpiresAt = &expires
+	}
+	recommendation.Warnings = append(evidence.warnings, recommendation.Warnings...)
+	recommendation.Warnings = append(recommendation.Warnings, evidence.informational...)
+	if delay := fleetExecutionDelay(scan, executedAt); delay >= fleetDelayNotice {
+		recommendation.Warnings = append(recommendation.Warnings, fmt.Sprintf("fleet scan scheduled for %s ran %s late; the observation window ends at execution time %s", scan.ScheduledFor.UTC().Format(time.RFC3339), delay.Truncate(time.Second), executedAt.Format(time.RFC3339)))
 	}
 	identity := sha256.Sum256([]byte(strings.Join([]string{"kuberight-fleet-target/v1", scan.ID, spec.Cluster, spec.UID, subject.Namespace, subject.Kind, subject.Workload, subject.Container}, "\x00")))
 	scanFingerprint := scan.RequestFingerprint

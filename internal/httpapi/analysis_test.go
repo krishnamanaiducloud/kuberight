@@ -317,6 +317,12 @@ func TestVerificationStatuses(t *testing.T) {
 		t.Fatalf("verified: status=%d body=%v", response.Code, body)
 	}
 
+	// Post-change evidence must come only from current pods: replicas that
+	// ran before the change used the previous requests and limits.
+	if !source.historyIdentity.LivePodsOnly || !source.eventsIdentity.LivePodsOnly {
+		t.Fatalf("verification used historical attribution: history=%+v events=%+v", source.historyIdentity, source.eventsIdentity)
+	}
+
 	// Missing event evidence must be inconclusive, never verified.
 	source.events.Available = false
 	incomplete := storeApproved(t, api, liveRecommendation(), fixedNow.Add(-5*time.Hour))

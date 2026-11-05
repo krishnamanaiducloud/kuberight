@@ -58,6 +58,16 @@ type Policy struct {
 	// sized above observed peaks, or "remove", which recommends removing CPU
 	// limits so requests alone govern CPU share and throttling cannot occur.
 	CPULimitStrategy string `json:"cpuLimitStrategy,omitempty"`
+	// MinimumChangeRatio suppresses changes smaller than this share of the
+	// current value, from 0.01 to 0.5 (hysteresis). Zero selects 0.05.
+	MinimumChangeRatio float64 `json:"minimumChangeRatio,omitempty"`
+	// CooldownHours holds reductions for this long after the container's
+	// requests or limits last changed, from 1 to 720. Zero selects 24.
+	CooldownHours int `json:"cooldownHours,omitempty"`
+	// RequiredObservations is how many consistent recommendations, including
+	// this one and at least an hour apart, must agree on a reduction before
+	// it is offered, from 1 to 5. Zero selects 1.
+	RequiredObservations int `json:"requiredObservations,omitempty"`
 }
 
 // CPU limit strategies.
@@ -98,6 +108,9 @@ func DefaultPolicy() Policy {
 		MemoryPercentile:      defaultMemoryPercentile,
 		TrendHorizonDays:      defaultTrendHorizonDays,
 		CPULimitStrategy:      CPULimitAdjust,
+		MinimumChangeRatio:    defaultMinimumChangeRatio,
+		CooldownHours:         defaultCooldownHours,
+		RequiredObservations:  defaultRequiredObservations,
 	}
 }
 
@@ -115,14 +128,16 @@ func Profiles() []Profile {
 	conservative.CPUSafetyMargin, conservative.MemorySafetyMargin, conservative.LimitSafetyMargin = 0.40, 0.30, 0.75
 	conservative.MaximumReduction = 0.10
 	conservative.MinimumSamples, conservative.HighConfidenceSamples = 60, 1000
+	conservative.MinimumChangeRatio, conservative.CooldownHours, conservative.RequiredObservations = 0.10, 48, 2
 
 	aggressive := DefaultPolicy()
 	aggressive.CPUPercentile, aggressive.MemoryPercentile = 0.90, 0.99
 	aggressive.CPUSafetyMargin, aggressive.MemorySafetyMargin, aggressive.LimitSafetyMargin = 0.15, 0.15, 0.30
 	aggressive.MaximumReduction = 0.40
+	aggressive.MinimumChangeRatio, aggressive.CooldownHours = 0.03, 12
 
 	return []Profile{
-		{Name: "conservative", Description: "P99 CPU and peak memory with wide margins; at most 10% reduction per change. For latency-critical or stateful services.", Policy: conservative},
+		{Name: "conservative", Description: "P99 CPU and peak memory with wide margins; at most 10% reduction per change, confirmed by two observations, with a 48h cooldown. For latency-critical or stateful services.", Policy: conservative},
 		{Name: "balanced", Description: "P95 CPU and P99 memory with moderate margins; at most 20% reduction per change. The default.", Policy: DefaultPolicy()},
 		{Name: "aggressive", Description: "P90 CPU and P99 memory with narrow margins; up to 40% reduction per change. For batch, development, and cost-sensitive workloads.", Policy: aggressive},
 	}
@@ -150,6 +165,15 @@ func normalizePolicy(policy Policy) Policy {
 	}
 	if policy.CPULimitStrategy == "" {
 		policy.CPULimitStrategy = CPULimitAdjust
+	}
+	if policy.MinimumChangeRatio == 0 {
+		policy.MinimumChangeRatio = defaultMinimumChangeRatio
+	}
+	if policy.CooldownHours == 0 {
+		policy.CooldownHours = defaultCooldownHours
+	}
+	if policy.RequiredObservations == 0 {
+		policy.RequiredObservations = defaultRequiredObservations
 	}
 	return policy
 }
@@ -231,6 +255,15 @@ type Input struct {
 	// RecentRollout shortens the validity period because usage after a
 	// rollout is still settling.
 	RecentRollout bool `json:"recentRollout,omitempty"`
+	// LastResourceChangeAt is when the container's requests or limits last
+	// changed; reductions are held during the policy cooldown after it.
+	LastResourceChangeAt *time.Time `json:"lastResourceChangeAt,omitempty"`
+	// Runtime describes a managed runtime such as a JVM whose memory use
+	// follows heap configuration rather than live data.
+	Runtime *RuntimeContext `json:"runtime,omitempty"`
+	// PriorRecommendations are earlier recommendations for the container,
+	// used for oscillation and confirmation checks.
+	PriorRecommendations []PriorRecommendation `json:"priorRecommendations,omitempty"`
 	// skipAssessment avoids recursion when the held-back test re-sizes.
 	skipAssessment bool
 }
@@ -273,30 +306,62 @@ type ReplicaQuality struct {
 	Pod            string  `json:"pod"`
 	UID            string  `json:"uid"`
 	Phase          string  `json:"phase,omitempty"`
+	Revision       string  `json:"revision,omitempty"`
+	Live           bool    `json:"live,omitempty"`
 	Active         bool    `json:"active"`
 	CPUCoverage    float64 `json:"cpuCoverage"`
 	MemoryCoverage float64 `json:"memoryCoverage"`
 }
 
+// CoverageBucket is one slice of the replica coverage timeline; replica
+// counts are averages over the bucket's active steps.
+type CoverageBucket struct {
+	Start                  time.Time `json:"start"`
+	End                    time.Time `json:"end"`
+	ExpectedReplicas       float64   `json:"expectedReplicas"`
+	CPUObservedReplicas    float64   `json:"cpuObservedReplicas"`
+	MemoryObservedReplicas float64   `json:"memoryObservedReplicas"`
+	PopulationKnown        float64   `json:"populationKnown"`
+	ActiveSteps            int       `json:"activeSteps"`
+}
+
 // ReplicaCoverage records population, temporal coverage, and imbalance for
 // the exact pod UIDs used to calculate a recommendation.
 type ReplicaCoverage struct {
-	ExpectedReplicas       int32            `json:"expectedReplicas"`
-	DiscoveredReplicas     int              `json:"discoveredReplicas"`
-	ObservedReplicas       int              `json:"observedReplicas"`
-	MissingReplicas        int              `json:"missingReplicas"`
-	ActiveReplicas         int              `json:"activeReplicas"`
-	TerminatedReplicas     int              `json:"terminatedReplicas"`
-	CPUObservedReplicas    int              `json:"cpuObservedReplicas"`
-	MemoryObservedReplicas int              `json:"memoryObservedReplicas"`
-	CPUReplicaCoverage     float64          `json:"cpuReplicaCoverage"`
-	MemoryReplicaCoverage  float64          `json:"memoryReplicaCoverage"`
-	CPUTemporalCoverage    float64          `json:"cpuTemporalCoverage"`
-	MemoryTemporalCoverage float64          `json:"memoryTemporalCoverage"`
-	CPUImbalanceRatio      float64          `json:"cpuImbalanceRatio,omitempty"`
-	MemoryImbalanceRatio   float64          `json:"memoryImbalanceRatio,omitempty"`
-	Complete               bool             `json:"complete"`
-	Replicas               []ReplicaQuality `json:"replicas,omitempty"`
+	// Attribution is "historical" when the pod population was reconstructed
+	// for every step, or "live-pods" when only current pods were used.
+	Attribution             string     `json:"attribution,omitempty"`
+	EffectiveStart          *time.Time `json:"effectiveStart,omitempty"`
+	PeakExpectedReplicas    int32      `json:"peakExpectedReplicas,omitempty"`
+	MinimumExpectedReplicas int32      `json:"minimumExpectedReplicas,omitempty"`
+	Revisions               int        `json:"revisions,omitempty"`
+	ScalingEvents           int        `json:"scalingEvents,omitempty"`
+	// ExpectedReplicaHistoryCoverage is the share of active steps with a
+	// recorded desired replica count; IdentityCoverage is the share of
+	// expected replica-time backed by an attributed running pod.
+	ExpectedReplicaHistoryCoverage float64          `json:"expectedReplicaHistoryCoverage,omitempty"`
+	IdentityCoverage               float64          `json:"identityCoverage,omitempty"`
+	ActiveSteps                    int              `json:"activeSteps,omitempty"`
+	ScaledToZeroSteps              int              `json:"scaledToZeroSteps,omitempty"`
+	AmbiguousSteps                 int              `json:"ambiguousSteps,omitempty"`
+	UnattributedSteps              int              `json:"unattributedSteps,omitempty"`
+	Timeline                       []CoverageBucket `json:"timeline,omitempty"`
+	ExpectedReplicas               int32            `json:"expectedReplicas"`
+	DiscoveredReplicas             int              `json:"discoveredReplicas"`
+	ObservedReplicas               int              `json:"observedReplicas"`
+	MissingReplicas                int              `json:"missingReplicas"`
+	ActiveReplicas                 int              `json:"activeReplicas"`
+	TerminatedReplicas             int              `json:"terminatedReplicas"`
+	CPUObservedReplicas            int              `json:"cpuObservedReplicas"`
+	MemoryObservedReplicas         int              `json:"memoryObservedReplicas"`
+	CPUReplicaCoverage             float64          `json:"cpuReplicaCoverage"`
+	MemoryReplicaCoverage          float64          `json:"memoryReplicaCoverage"`
+	CPUTemporalCoverage            float64          `json:"cpuTemporalCoverage"`
+	MemoryTemporalCoverage         float64          `json:"memoryTemporalCoverage"`
+	CPUImbalanceRatio              float64          `json:"cpuImbalanceRatio,omitempty"`
+	MemoryImbalanceRatio           float64          `json:"memoryImbalanceRatio,omitempty"`
+	Complete                       bool             `json:"complete"`
+	Replicas                       []ReplicaQuality `json:"replicas,omitempty"`
 }
 
 type Recommendation struct {
@@ -340,6 +405,9 @@ type Recommendation struct {
 	// Assessment is the verdict and its evidence. Recommendations stored
 	// before v2 have none.
 	Assessment *Assessment `json:"assessment,omitempty"`
+	// Stability records hysteresis, cooldown, oscillation, and confirmation
+	// decisions.
+	Stability *Stability `json:"stability,omitempty"`
 }
 
 // Approvable reports whether the recommendation may be approved. Legacy
@@ -420,6 +488,15 @@ func validatePolicy(policy Policy) error {
 	if policy.CPULimitStrategy != CPULimitAdjust && policy.CPULimitStrategy != CPULimitRemove {
 		return errors.New("CPU limit strategy must be adjust or remove")
 	}
+	if math.IsNaN(policy.MinimumChangeRatio) || policy.MinimumChangeRatio < 0.01 || policy.MinimumChangeRatio > 0.5 {
+		return errors.New("minimum change ratio must be between 0.01 and 0.5")
+	}
+	if policy.CooldownHours < 1 || policy.CooldownHours > 720 {
+		return errors.New("cooldown must be between 1 and 720 hours")
+	}
+	if policy.RequiredObservations < 1 || policy.RequiredObservations > 5 {
+		return errors.New("required observations must be between 1 and 5")
+	}
 	return nil
 }
 
@@ -480,7 +557,28 @@ func validateInput(input Input, policy Policy) error {
 				return errors.New("replica coverage counts must be between 0 and 100000")
 			}
 		}
-		for _, ratio := range []float64{coverage.CPUReplicaCoverage, coverage.MemoryReplicaCoverage, coverage.CPUTemporalCoverage, coverage.MemoryTemporalCoverage} {
+		for _, count := range []int{int(coverage.PeakExpectedReplicas), int(coverage.MinimumExpectedReplicas), coverage.Revisions, coverage.ScalingEvents, coverage.ActiveSteps, coverage.ScaledToZeroSteps, coverage.AmbiguousSteps, coverage.UnattributedSteps} {
+			if count < 0 || count > 1_000_000 {
+				return errors.New("replica coverage step counts must be between 0 and 1000000")
+			}
+		}
+		if coverage.Attribution != "" && coverage.Attribution != "historical" && coverage.Attribution != "live-pods" {
+			return errors.New("replica coverage attribution must be historical or live-pods")
+		}
+		if len(coverage.Timeline) > 96 {
+			return errors.New("replica coverage timeline may contain at most 96 buckets")
+		}
+		for _, bucket := range coverage.Timeline {
+			for _, value := range []float64{bucket.ExpectedReplicas, bucket.CPUObservedReplicas, bucket.MemoryObservedReplicas} {
+				if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > 100_000 {
+					return errors.New("replica coverage timeline values are outside the supported range")
+				}
+			}
+			if math.IsNaN(bucket.PopulationKnown) || bucket.PopulationKnown < 0 || bucket.PopulationKnown > 1 || bucket.ActiveSteps < 0 || bucket.End.Before(bucket.Start) {
+				return errors.New("replica coverage timeline buckets are invalid")
+			}
+		}
+		for _, ratio := range []float64{coverage.CPUReplicaCoverage, coverage.MemoryReplicaCoverage, coverage.CPUTemporalCoverage, coverage.MemoryTemporalCoverage, coverage.ExpectedReplicaHistoryCoverage, coverage.IdentityCoverage} {
 			if math.IsNaN(ratio) || math.IsInf(ratio, 0) || ratio < 0 || ratio > 1 {
 				return errors.New("replica coverage ratios must be between 0 and 1")
 			}
@@ -505,6 +603,21 @@ func validateInput(input Input, policy Policy) error {
 		}
 		if coverage.Complete && (coverage.MissingReplicas != 0 || coverage.CPUReplicaCoverage < 0.8 || coverage.MemoryReplicaCoverage < 0.8 || coverage.CPUTemporalCoverage < 0.8 || coverage.MemoryTemporalCoverage < 0.8) {
 			return errors.New("complete replica coverage is inconsistent with missing replicas or coverage below 80 percent")
+		}
+	}
+	if runtime := input.Runtime; runtime != nil {
+		if runtime.Kind != RuntimeJVM || runtime.MaxHeapBytes < 0 || runtime.MaxHeapBytes > maxMemoryBytes ||
+			math.IsNaN(runtime.MaxRAMPercentage) || runtime.MaxRAMPercentage < 0 || runtime.MaxRAMPercentage > 100 || len(runtime.Source) > 16 {
+			return errors.New("runtime must be a jvm with a supported heap size and RAM percentage")
+		}
+	}
+	if len(input.PriorRecommendations) > maxPriorRecommendations {
+		return fmt.Errorf("at most %d prior recommendations may be supplied", maxPriorRecommendations)
+	}
+	for _, prior := range input.PriorRecommendations {
+		if prior.CreatedAt.IsZero() || prior.CurrentCPURequestMilli < 0 || prior.CPURequestMilli < 0 || prior.CurrentMemoryRequestBytes < 0 || prior.MemoryRequestBytes < 0 ||
+			prior.CurrentCPURequestMilli > maxCPUMilli || prior.CPURequestMilli > maxCPUMilli || prior.CurrentMemoryRequestBytes > maxMemoryBytes || prior.MemoryRequestBytes > maxMemoryBytes {
+			return errors.New("prior recommendations must have a creation time and supported quantities")
 		}
 	}
 	provenance := input.Provenance
@@ -742,6 +855,7 @@ func Recommend(input Input) (Recommendation, error) {
 		memoryMaximumReduction = 0
 		warnings = append(warnings, "observed OOM kills prevent memory request and limit reductions")
 	}
+	memoryMaximumReduction, warnings = runtimeMemoryBound(input.Runtime, memoryMaximumReduction, warnings)
 
 	// Size for where usage is heading, not only where it has been.
 	trends := Trends{CPU: Trend(input.CPUSamplesMilli, input.SampleIntervalSeconds), Memory: Trend(input.MemorySamplesBytes, input.SampleIntervalSeconds)}
@@ -886,6 +1000,7 @@ func Recommend(input Input) (Recommendation, error) {
 	} else {
 		warnings = append(warnings, "memory limit is absent and no new limit was introduced")
 	}
+	memoryRequest, memoryLimit, warnings = runtimeMemoryFloor(input, memoryRequest, memoryLimit, policy.MaximumMemoryBytes, warnings)
 
 	risk := "low"
 	if confidence != "high" || burstable || throttled || pinned || regularSpikes || input.Autoscaling.HPAUtilizationBased {
@@ -927,6 +1042,17 @@ func Recommend(input Input) (Recommendation, error) {
 			}
 		}
 	}
+	var stability *Stability
+	if !input.skipAssessment {
+		result := applyStability(input, policy, &values, struct{ cpu, memory bool }{cpu: throttled || pinned, memory: input.ObservedOOMKills > 0})
+		stability = &result
+		for _, message := range result.SuppressedChanges {
+			warnings = append(warnings, message+"; it was not changed")
+		}
+		for _, message := range result.ReductionsHeld {
+			warnings = append(warnings, "reduction held for "+message)
+		}
+	}
 	cpuRequest, cpuLimit, memoryRequest, memoryLimit = values.cpuRequest, values.cpuLimit, values.memoryRequest, values.memoryLimit
 
 	recommendation := Recommendation{
@@ -964,13 +1090,14 @@ func Recommend(input Input) (Recommendation, error) {
 		Provenance:                normalizedProvenance(input.Provenance, policy),
 		Trends:                    trends,
 		Backtest:                  backtest(input, cpuRequest, cpuLimit, memoryRequest, memoryLimit),
+		Stability:                 stability,
 	}
 	if !input.skipAssessment {
 		recommendation.Assessment = assess(input, values, facts{
 			policy: policy, quality: quality, trends: trends, cpuStats: cpuStats, memoryStats: memoryStats, cpuStatistic: cpuStatistic,
 			regularSpikes: regularSpikes, burstable: burstable, throttled: throttled, pinned: pinned,
 			cpuMargin: cpuMargin, memoryMargin: memoryMargin, qos: qos, limitRangeChecks: limitRangeChecks,
-			forecastUsed: forecastUsed, confidenceScore: confidenceScore, risk: risk,
+			forecastUsed: forecastUsed, confidenceScore: confidenceScore, risk: risk, stability: stability,
 		})
 	}
 	return recommendation, nil

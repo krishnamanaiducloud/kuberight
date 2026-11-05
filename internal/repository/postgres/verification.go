@@ -265,4 +265,3 @@ WHERE recommendation_id = $1 AND status = 'regressed' AND checked_at = $2 AND re
 	}
 	return tag.RowsAffected() == 1, nil
 }
-

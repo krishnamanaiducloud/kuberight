@@ -125,6 +125,7 @@ func (provider *KubernetesProvider) Workload(ctx context.Context, namespace, kin
 		Cluster: provider.clusterID, Namespace: namespace, Kind: kind, Name: name,
 		UID: string(identity.UID), Generation: identity.Generation, ResourceVersion: identity.ResourceVersion, SourceSpecFingerprint: specFingerprint, Replicas: replicas,
 		Containers: make([]httpapi.ContainerSpec, 0, len(podSpec.Containers)), Warnings: []string{},
+		Labels: identity.Labels, Annotations: identity.Annotations,
 	}
 	for _, container := range podSpec.Containers {
 		spec.Containers = append(spec.Containers, containerSpec(container))
@@ -149,6 +150,7 @@ func containerSpec(container corev1.Container) httpapi.ContainerSpec {
 		CPULimitMilli:      container.Resources.Limits.Cpu().MilliValue(),
 		MemoryRequestBytes: container.Resources.Requests.Memory().Value(),
 		MemoryLimitBytes:   container.Resources.Limits.Memory().Value(),
+		Runtime:            detectRuntime(container),
 	}
 }
 

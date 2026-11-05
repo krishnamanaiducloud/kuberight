@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"slices"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -39,24 +41,82 @@ type attributedUsageSource interface {
 	EventsForIdentity(context.Context, usage.Subject, usage.WorkloadIdentity, usage.Window) (usage.Events, error)
 }
 
+// resourceChangeSource reports when attributed pods' requests or limits last
+// changed, which starts the stability cooldown.
+type resourceChangeSource interface {
+	ResourceChangedAt(context.Context, usage.Subject, usage.WorkloadIdentity, usage.Window) (*time.Time, error)
+}
+
+// maximumPriorRecommendations bounds the history compared for oscillation
+// and confirmation.
+const maximumPriorRecommendations = 20
+
+// priorRecommendations returns recent Prometheus-backed recommendations for
+// the same container, newest first. A store failure only disables the
+// history-based checks; it never blocks generation.
+func (server *apiServer) priorRecommendations(ctx context.Context, spec WorkloadSpec, container string) ([]optimizer.PriorRecommendation, error) {
+	result, err := server.repository.ListRecommendations(ctx, repository.ListOptions{Page: 1, PageSize: 100, Namespace: spec.Namespace, Workload: spec.Name, Sort: "createdAt", Order: "desc"})
+	if err != nil {
+		return nil, err
+	}
+	priors := make([]optimizer.PriorRecommendation, 0, maximumPriorRecommendations)
+	for _, record := range result.Items {
+		if record.Kind != spec.Kind || record.Container != container || record.Source != repository.SourcePrometheus || (record.Cluster != "" && spec.Cluster != "" && record.Cluster != spec.Cluster) {
+			continue
+		}
+		priors = append(priors, optimizer.PriorRecommendation{
+			CreatedAt: record.CreatedAt, CurrentCPURequestMilli: record.CurrentCPURequestMilli, CPURequestMilli: record.CPURequestMilli,
+			CurrentMemoryRequestBytes: record.CurrentMemoryRequestBytes, MemoryRequestBytes: record.MemoryRequestBytes,
+		})
+		if len(priors) == maximumPriorRecommendations {
+			break
+		}
+	}
+	return priors, nil
+}
+
+// maximumRecordedReplicas bounds the per-pod evidence stored with a
+// recommendation. Historical attribution can discover many replaced pods, so
+// live pods come first and then the least complete historical pods.
+const maximumRecordedReplicas = 256
+
 func recommendationReplicaCoverage(coverage *usage.ReplicaCoverage) *optimizer.ReplicaCoverage {
 	if coverage == nil {
 		return nil
 	}
 	result := &optimizer.ReplicaCoverage{
-		ExpectedReplicas: coverage.ExpectedReplicas, DiscoveredReplicas: coverage.DiscoveredReplicas,
-		ObservedReplicas: coverage.ObservedReplicas, MissingReplicas: coverage.MissingReplicas,
+		Attribution: coverage.Attribution, EffectiveStart: coverage.EffectiveStart,
+		ExpectedReplicas: coverage.ExpectedReplicas, PeakExpectedReplicas: coverage.PeakExpectedReplicas, MinimumExpectedReplicas: coverage.MinimumExpectedReplicas,
+		Revisions: coverage.Revisions, ScalingEvents: coverage.ScalingEvents,
+		ExpectedReplicaHistoryCoverage: coverage.ExpectedReplicaHistoryCoverage, IdentityCoverage: coverage.IdentityCoverage,
+		ActiveSteps: coverage.ActiveSteps, ScaledToZeroSteps: coverage.ScaledToZeroSteps, AmbiguousSteps: coverage.AmbiguousSteps, UnattributedSteps: coverage.UnattributedSteps,
+		DiscoveredReplicas: coverage.DiscoveredReplicas,
+		ObservedReplicas:   coverage.ObservedReplicas, MissingReplicas: coverage.MissingReplicas,
 		ActiveReplicas: coverage.ActiveReplicas, TerminatedReplicas: coverage.TerminatedReplicas,
 		CPUObservedReplicas: coverage.CPUObservedReplicas, MemoryObservedReplicas: coverage.MemoryObservedReplicas,
 		CPUReplicaCoverage: coverage.CPUReplicaCoverage, MemoryReplicaCoverage: coverage.MemoryReplicaCoverage,
 		CPUTemporalCoverage: coverage.CPUTemporalCoverage, MemoryTemporalCoverage: coverage.MemoryTemporalCoverage,
 		CPUImbalanceRatio: coverage.CPUImbalanceRatio, MemoryImbalanceRatio: coverage.MemoryImbalanceRatio,
-		Complete: coverage.Complete, Replicas: make([]optimizer.ReplicaQuality, 0, len(coverage.Observations)),
+		Complete: coverage.Complete, Replicas: make([]optimizer.ReplicaQuality, 0, min(len(coverage.Observations), maximumRecordedReplicas)),
 	}
-	for _, replica := range coverage.Observations {
+	for _, bucket := range coverage.Timeline {
+		result.Timeline = append(result.Timeline, optimizer.CoverageBucket{
+			Start: bucket.Start, End: bucket.End, ExpectedReplicas: bucket.ExpectedReplicas,
+			CPUObservedReplicas: bucket.CPUObservedReplicas, MemoryObservedReplicas: bucket.MemoryObservedReplicas,
+			PopulationKnown: bucket.PopulationKnown, ActiveSteps: bucket.ActiveSteps,
+		})
+	}
+	observations := slices.Clone(coverage.Observations)
+	sort.SliceStable(observations, func(left, right int) bool {
+		if observations[left].Live != observations[right].Live {
+			return observations[left].Live
+		}
+		return min(observations[left].CPUCoverage, observations[left].MemoryCoverage) < min(observations[right].CPUCoverage, observations[right].MemoryCoverage)
+	})
+	for _, replica := range observations[:min(len(observations), maximumRecordedReplicas)] {
 		result.Replicas = append(result.Replicas, optimizer.ReplicaQuality{
-			Pod: replica.Pod, UID: replica.UID, Phase: replica.Phase, Active: replica.Active,
-			CPUCoverage: replica.CPU.Quality.Coverage, MemoryCoverage: replica.Memory.Quality.Coverage,
+			Pod: replica.Pod, UID: replica.UID, Phase: replica.Phase, Revision: replica.Revision, Live: replica.Live, Active: replica.Active,
+			CPUCoverage: replica.CPUCoverage, MemoryCoverage: replica.MemoryCoverage,
 		})
 	}
 	return result
@@ -341,127 +401,17 @@ func (server *apiServer) generateRecommendation(w http.ResponseWriter, r *http.R
 	// provenance timestamps, expiry, and the query fingerprint must describe
 	// exactly the same observation window.
 	queryWindow := usage.Window{Duration: window, Step: step, End: server.now().UTC().Truncate(time.Second)}
-	var (
-		history          usage.History
-		events           usage.Events
-		metricIdentity   *usage.WorkloadIdentity
-		exactSource      attributedUsageSource
-		exactAttribution bool
-	)
-	if spec.MetricIdentity != nil {
-		identity := spec.MetricIdentity.ForContainer(container.Name)
-		metricIdentity = &identity
-		exactSource, exactAttribution = server.usage.(attributedUsageSource)
-		if !exactAttribution {
-			server.usageFailure(w, r, fmt.Errorf("%w: the configured metric source cannot query exact pod UIDs", usage.ErrAttributionIncomplete))
-			return
-		}
-		history, err = exactSource.HistoryForIdentity(r.Context(), subject, identity, queryWindow)
-	} else {
-		// Non-Kubernetes test and extension providers can retain the legacy
-		// interface. The built-in Kubernetes provider always supplies identity.
-		history, err = server.usage.History(r.Context(), subject, queryWindow)
-	}
+	evidence, err := server.collectEvidence(r.Context(), subject, spec, container, policy, queryWindow, request.Criticality)
 	if err != nil {
 		server.usageFailure(w, r, err)
 		return
 	}
-
+	input, history, events := evidence.input, evidence.history, evidence.events
 	warnings := []string{}
 	if matchedPolicy != "" {
 		warnings = append(warnings, "effective persisted policy: "+matchedPolicy)
 	}
-	eventQualityIssues := []string{}
-	if exactAttribution {
-		events, err = exactSource.EventsForIdentity(r.Context(), subject, *metricIdentity, queryWindow)
-	} else {
-		events, err = server.usage.Events(r.Context(), subject, queryWindow)
-	}
-	if err != nil {
-		server.logger.Warn("restart and OOM query failed", "request_id", requestIDFromContext(r.Context()), "error", err)
-		warnings = append(warnings, "restart and OOM history could not be read; review container events before applying")
-		if exactAttribution {
-			eventQualityIssues = append(eventQualityIssues, "per-replica restart and OOM history could not be verified")
-		}
-	} else if !events.Available {
-		warnings = append(warnings, "restart and OOM history is unavailable because kube-state-metrics series were not found")
-		if exactAttribution {
-			eventQualityIssues = append(eventQualityIssues, "per-replica restart and OOM history is unavailable")
-		}
-	}
-	if events.ThrottlingAvailable && events.ThrottlingRatio == 0 {
-		warnings = append(warnings, "no CPU throttling was observed in the window")
-	}
-	// Usage recorded before a rollout that materially changed it describes
-	// code that no longer runs, so size from post-rollout samples instead.
-	rolloutIssues := []string{}
-	recentRollout := false
-	if rollouts, rolloutErr := server.usage.Rollouts(r.Context(), subject, history.Start, history.End); rolloutErr == nil {
-		if at, change, ok := rolloutShift(history.CPU, rollouts); ok && math.Abs(change) >= rolloutShiftThreshold {
-			minimumSamples := optimizer.DefaultPolicy().MinimumSamples
-			if policy != nil && policy.MinimumSamples > 0 {
-				minimumSamples = policy.MinimumSamples
-			}
-			cpuAfter, memoryAfter := history.CPU.Since(at), history.Memory.Since(at)
-			if len(cpuAfter.Points) >= minimumSamples && len(memoryAfter.Points) >= minimumSamples {
-				history.CPU, history.Memory = cpuAfter, memoryAfter
-				recentRollout = true
-				warnings = append(warnings, fmt.Sprintf("CPU changed %+.0f%% after the rollout at %s; only the %d post-rollout samples were used", change*100, at.Format(time.RFC3339), len(cpuAfter.Points)))
-			} else {
-				rolloutIssues = append(rolloutIssues, fmt.Sprintf("CPU changed %+.0f%% after the rollout at %s and too few post-rollout samples exist", change*100, at.Format(time.RFC3339)))
-			}
-		}
-	}
-	blockingCPU, informationalCPU := history.CPU.QualityIssues()
-	blockingCPU = append(blockingCPU, rolloutIssues...)
-	blockingMemory, informationalMemory := history.Memory.QualityIssues()
-	replicaIssues := []string{}
-	if history.ReplicaCoverage != nil {
-		replicaIssues = append(replicaIssues, history.ReplicaCoverage.Issues...)
-	}
-	input := optimizer.Input{
-		Cluster: spec.Cluster, Namespace: spec.Namespace, Kind: spec.Kind, Workload: spec.Name, Container: container.Name,
-		Criticality:      request.Criticality,
-		CPURequestsMilli: container.CPURequestMilli, MemoryRequestsBytes: container.MemoryRequestBytes,
-		CPULimitMilli: container.CPULimitMilli, MemoryLimitBytes: container.MemoryLimitBytes,
-		CPUSamplesMilli: history.CPU.Values(), MemorySamplesBytes: history.Memory.Values(),
-		SampleIntervalSeconds:          int64(step / time.Second),
-		ObservedContainerRestarts:      events.Restarts,
-		ObservedOOMKills:               events.OOMKills,
-		ObservedCPUThrottlingRatio:     events.ThrottlingRatio,
-		ObservedCPUThrottlingPeakRatio: events.ThrottlingPeakRatio,
-		SamplesStartTime:               firstSampleTime(history.CPU),
-		Replicas:                       spec.Replicas,
-		DataQualityIssues:              append(append(append(blockingCPU, blockingMemory...), replicaIssues...), eventQualityIssues...),
-		ReplicaCoverage:                recommendationReplicaCoverage(history.ReplicaCoverage),
-		Autoscaling: optimizer.AutoscalingContext{
-			HPAUtilizationBased: spec.HPAUtilizationBased,
-			VPAControlsCPU:      container.VPAControlsCPU,
-			VPAControlsMemory:   container.VPAControlsMemory,
-			KEDAEnabled:         spec.KEDAEnabled,
-		},
-		Policy: policy,
-		Provenance: optimizer.Provenance{
-			WorkloadUID:             spec.UID,
-			WorkloadGeneration:      spec.Generation,
-			WorkloadResourceVersion: spec.ResourceVersion,
-			SourceSpecFingerprint:   spec.SourceSpecFingerprint,
-			ObservationStart:        observationStart(history, queryWindow),
-			ObservationEnd:          timePointer(queryWindow.End),
-			QueryFingerprint:        usage.RecommendationQueryFingerprint(subject, queryWindow),
-			ExpiresAt:               timePointer(queryWindow.End.Add(recommendationValidity)),
-		},
-		RecentRollout: recentRollout,
-	}
-	if exactAttribution {
-		fingerprint, fingerprintErr := usage.AttributedRecommendationQueryFingerprint(subject, *metricIdentity, queryWindow)
-		if fingerprintErr != nil {
-			server.usageFailure(w, r, fingerprintErr)
-			return
-		}
-		input.Provenance.QueryFingerprint = fingerprint
-	}
-	warnings = append(warnings, server.assessmentContext(r.Context(), &input, spec, history)...)
+	warnings = append(warnings, evidence.warnings...)
 	recommendation, err := optimizer.Recommend(input)
 	if err != nil {
 		respondError(w, r, http.StatusUnprocessableEntity, "invalid_recommendation_input", err.Error())
@@ -472,15 +422,7 @@ func (server *apiServer) generateRecommendation(w http.ResponseWriter, r *http.R
 		expires := queryWindow.End.Add(time.Duration(assessment.ValidForSeconds) * time.Second)
 		recommendation.Provenance.ExpiresAt = &expires
 	}
-	warnings = append(warnings, informationalCPU...)
-	warnings = append(warnings, informationalMemory...)
-	warnings = append(warnings, spec.Warnings...)
-	for index, warning := range history.Warnings {
-		if index == maxSourceWarnings {
-			break
-		}
-		warnings = append(warnings, "Prometheus: "+truncate(warning, maxSourceWarningLength))
-	}
+	warnings = append(warnings, evidence.informational...)
 	recommendation.Warnings = append(recommendation.Warnings, warnings...)
 	if request.DryRun {
 		respondJSON(w, http.StatusOK, map[string]any{
@@ -490,6 +432,190 @@ func (server *apiServer) generateRecommendation(w http.ResponseWriter, r *http.R
 		return
 	}
 	server.storeRecommendation(w, r, recommendation, request, repository.SourcePrometheus)
+}
+
+// maximumQualityIssues and maximumQualityIssueLength match the optimizer's
+// input bounds, so verbose coverage evidence never turns into a 422.
+const (
+	maximumQualityIssues      = 32
+	maximumQualityIssueLength = 256
+)
+
+// recommendationEvidence is everything one Prometheus-backed recommendation
+// is calculated from. Interactive generation and fleet scans share it, so a
+// scheduled recommendation can never apply weaker safeguards.
+type recommendationEvidence struct {
+	input   optimizer.Input
+	history usage.History
+	events  usage.Events
+	// warnings precede the optimizer's own warnings; informational follow.
+	warnings, informational []string
+}
+
+func boundedIssues(issues []string) []string {
+	bounded := make([]string, 0, min(len(issues), maximumQualityIssues))
+	seen := map[string]bool{}
+	for _, issue := range issues {
+		issue = truncate(strings.TrimSpace(issue), maximumQualityIssueLength)
+		if issue == "" || seen[issue] {
+			continue
+		}
+		if len(bounded) == maximumQualityIssues-1 && len(issues) > maximumQualityIssues {
+			bounded = append(bounded, "additional data-quality issues were omitted")
+			break
+		}
+		seen[issue] = true
+		bounded = append(bounded, issue)
+	}
+	return bounded
+}
+
+// collectEvidence reads attributed history and events, trims history that a
+// material rollout made obsolete, and assembles the optimizer input with
+// provenance. Missing per-replica event evidence blocks reductions.
+func (server *apiServer) collectEvidence(ctx context.Context, subject usage.Subject, spec WorkloadSpec, container ContainerSpec, policy *optimizer.Policy, queryWindow usage.Window, criticality string) (recommendationEvidence, error) {
+	var (
+		evidence         recommendationEvidence
+		err              error
+		metricIdentity   *usage.WorkloadIdentity
+		exactSource      attributedUsageSource
+		exactAttribution bool
+	)
+	if spec.MetricIdentity != nil {
+		identity := spec.MetricIdentity.ForContainer(container.Name)
+		metricIdentity = &identity
+		exactSource, exactAttribution = server.usage.(attributedUsageSource)
+		if !exactAttribution {
+			return evidence, fmt.Errorf("%w: the configured metric source cannot query exact pod UIDs", usage.ErrAttributionIncomplete)
+		}
+		evidence.history, err = exactSource.HistoryForIdentity(ctx, subject, identity, queryWindow)
+	} else {
+		// Non-Kubernetes test and extension providers can retain the legacy
+		// interface. The built-in Kubernetes provider always supplies identity.
+		evidence.history, err = server.usage.History(ctx, subject, queryWindow)
+	}
+	if err != nil {
+		return evidence, err
+	}
+	history := &evidence.history
+	eventQualityIssues := []string{}
+	if exactAttribution {
+		evidence.events, err = exactSource.EventsForIdentity(ctx, subject, *metricIdentity, queryWindow)
+	} else {
+		evidence.events, err = server.usage.Events(ctx, subject, queryWindow)
+	}
+	if err != nil {
+		server.logger.Warn("restart and OOM query failed", "request_id", requestIDFromContext(ctx), "error", err)
+		evidence.warnings = append(evidence.warnings, "restart and OOM history could not be read; review container events before applying")
+		if exactAttribution {
+			eventQualityIssues = append(eventQualityIssues, "per-replica restart and OOM history could not be verified")
+		}
+	} else if !evidence.events.Available {
+		evidence.warnings = append(evidence.warnings, "restart and OOM history is unavailable because kube-state-metrics series were not found")
+		if exactAttribution {
+			eventQualityIssues = append(eventQualityIssues, "per-replica restart and OOM history is unavailable")
+		}
+	}
+	events := evidence.events
+	if events.ThrottlingAvailable && events.ThrottlingRatio == 0 {
+		evidence.warnings = append(evidence.warnings, "no CPU throttling was observed in the window")
+	}
+	// Usage recorded before a rollout that materially changed it describes
+	// code that no longer runs, so size from post-rollout samples instead.
+	rolloutIssues := []string{}
+	recentRollout := false
+	if rollouts, rolloutErr := server.usage.Rollouts(ctx, subject, history.Start, history.End); rolloutErr == nil {
+		if at, change, ok := rolloutShift(history.CPU, rollouts); ok && math.Abs(change) >= rolloutShiftThreshold {
+			minimumSamples := optimizer.DefaultPolicy().MinimumSamples
+			if policy != nil && policy.MinimumSamples > 0 {
+				minimumSamples = policy.MinimumSamples
+			}
+			cpuAfter, memoryAfter := history.CPU.Since(at), history.Memory.Since(at)
+			if len(cpuAfter.Points) >= minimumSamples && len(memoryAfter.Points) >= minimumSamples {
+				history.CPU, history.Memory = cpuAfter, memoryAfter
+				recentRollout = true
+				evidence.warnings = append(evidence.warnings, fmt.Sprintf("CPU changed %+.0f%% after the rollout at %s; only the %d post-rollout samples were used", change*100, at.Format(time.RFC3339), len(cpuAfter.Points)))
+			} else {
+				rolloutIssues = append(rolloutIssues, fmt.Sprintf("CPU changed %+.0f%% after the rollout at %s and too few post-rollout samples exist", change*100, at.Format(time.RFC3339)))
+			}
+		}
+	}
+	blockingCPU, informationalCPU := history.CPU.QualityIssues()
+	blockingCPU = append(blockingCPU, rolloutIssues...)
+	blockingMemory, informationalMemory := history.Memory.QualityIssues()
+	issues := append(append([]string{}, blockingCPU...), blockingMemory...)
+	if history.ReplicaCoverage != nil {
+		issues = append(issues, history.ReplicaCoverage.Issues...)
+	}
+	issues = append(issues, eventQualityIssues...)
+	evidence.input = optimizer.Input{
+		Cluster: spec.Cluster, Namespace: spec.Namespace, Kind: spec.Kind, Workload: spec.Name, Container: container.Name,
+		Criticality:      criticality,
+		CPURequestsMilli: container.CPURequestMilli, MemoryRequestsBytes: container.MemoryRequestBytes,
+		CPULimitMilli: container.CPULimitMilli, MemoryLimitBytes: container.MemoryLimitBytes,
+		CPUSamplesMilli: history.CPU.Values(), MemorySamplesBytes: history.Memory.Values(),
+		SampleIntervalSeconds:          int64(queryWindow.Step / time.Second),
+		ObservedContainerRestarts:      events.Restarts,
+		ObservedOOMKills:               events.OOMKills,
+		ObservedCPUThrottlingRatio:     events.ThrottlingRatio,
+		ObservedCPUThrottlingPeakRatio: events.ThrottlingPeakRatio,
+		SamplesStartTime:               firstSampleTime(history.CPU),
+		Replicas:                       spec.Replicas,
+		DataQualityIssues:              boundedIssues(issues),
+		ReplicaCoverage:                recommendationReplicaCoverage(history.ReplicaCoverage),
+		Autoscaling: optimizer.AutoscalingContext{
+			HPAUtilizationBased: spec.HPAUtilizationBased,
+			VPAControlsCPU:      container.VPAControlsCPU,
+			VPAControlsMemory:   container.VPAControlsMemory,
+			KEDAEnabled:         spec.KEDAEnabled,
+		},
+		Runtime: container.Runtime,
+		Policy:  policy,
+		Provenance: optimizer.Provenance{
+			WorkloadUID:             spec.UID,
+			WorkloadGeneration:      spec.Generation,
+			WorkloadResourceVersion: spec.ResourceVersion,
+			SourceSpecFingerprint:   spec.SourceSpecFingerprint,
+			ObservationStart:        observationStart(*history, queryWindow),
+			ObservationEnd:          timePointer(queryWindow.End),
+			QueryFingerprint:        usage.RecommendationQueryFingerprint(subject, queryWindow),
+			ExpiresAt:               timePointer(queryWindow.End.Add(recommendationValidity)),
+		},
+		RecentRollout: recentRollout,
+	}
+	if exactAttribution {
+		fingerprint, fingerprintErr := usage.AttributedRecommendationQueryFingerprint(subject, *metricIdentity, queryWindow)
+		if fingerprintErr != nil {
+			return evidence, fingerprintErr
+		}
+		evidence.input.Provenance.QueryFingerprint = fingerprint
+	}
+	if changes, ok := server.usage.(resourceChangeSource); ok && exactAttribution {
+		changedAt, changeErr := changes.ResourceChangedAt(ctx, subject, *metricIdentity, queryWindow)
+		if changeErr != nil {
+			server.logger.Warn("resource change history query failed", "request_id", requestIDFromContext(ctx), "error", changeErr)
+			evidence.informational = append(evidence.informational, "the request and limit change history could not be read, so the stability cooldown was not evaluated")
+		}
+		evidence.input.LastResourceChangeAt = changedAt
+	}
+	if priors, priorErr := server.priorRecommendations(ctx, spec, container.Name); priorErr != nil {
+		server.logger.Warn("prior recommendation lookup failed", "request_id", requestIDFromContext(ctx), "error", priorErr)
+		evidence.informational = append(evidence.informational, "earlier recommendations could not be read, so oscillation and confirmation checks were not evaluated")
+	} else {
+		evidence.input.PriorRecommendations = priors
+	}
+	evidence.warnings = append(evidence.warnings, server.assessmentContext(ctx, &evidence.input, spec, *history)...)
+	evidence.informational = append(evidence.informational, informationalCPU...)
+	evidence.informational = append(evidence.informational, informationalMemory...)
+	evidence.informational = append(evidence.informational, history.Notes...)
+	evidence.informational = append(evidence.informational, spec.Warnings...)
+	for index, warning := range history.Warnings {
+		if index == maxSourceWarnings {
+			break
+		}
+		evidence.informational = append(evidence.informational, "Prometheus: "+truncate(warning, maxSourceWarningLength))
+	}
+	return evidence, nil
 }
 
 func truncate(value string, maximum int) string {
