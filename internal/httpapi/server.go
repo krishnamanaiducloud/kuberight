@@ -185,6 +185,8 @@ func (server *apiServer) routes() (http.Handler, error) {
 	mux.HandleFunc("GET /api/v1/correlation", server.correlationAnalysis)
 	mux.HandleFunc("GET /api/v1/recommendations/{id}/verification", server.recommendationVerification)
 	mux.HandleFunc("POST /api/v1/recommendations/{id}/verification:refresh", server.refreshRecommendationVerification)
+	mux.HandleFunc("GET /api/v1/automation", server.automationStatus)
+	mux.HandleFunc("POST /api/v1/automation:run", server.runAutomation)
 	mux.HandleFunc("GET /api/v1/policies", server.listPolicies)
 	mux.HandleFunc("POST /api/v1/policies", server.createPolicy)
 	mux.HandleFunc("POST /api/v1/policies:resolve", server.resolvePolicy)

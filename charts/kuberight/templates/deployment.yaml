@@ -151,6 +151,16 @@ spec:
             {{- end }}
             - name: KUBERIGHT_VERIFICATION_INTERVAL
               value: {{ .Values.verification.interval | quote }}
+            {{- if eq .Values.operationMode "apply" }}
+            - name: KUBERIGHT_AUTOMATION_INTERVAL
+              value: {{ .Values.automation.interval | quote }}
+            - name: KUBERIGHT_AUTOMATION_MAX_CHANGES
+              value: {{ .Values.automation.maxChangesPerRun | quote }}
+            {{- with .Values.automation.window }}
+            - name: KUBERIGHT_AUTOMATION_WINDOW
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
             {{- if .Values.exportRecommendationMetrics }}
             - name: KUBERIGHT_EXPORT_RECOMMENDATION_METRICS
               value: "true"

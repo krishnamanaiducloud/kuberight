@@ -77,6 +77,12 @@ rules:
     resources: ["limitranges", "resourcequotas"]
     verbs: ["list"]
   {{- end }}
+  {{- if eq .Values.operationMode "apply" }}
+  # Apply mode only: patch pod template resources of opted-in workloads.
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets"]
+    verbs: ["patch"]
+  {{- end }}
   {{- with .Values.rbac.extraRules }}
   {{- toYaml . | nindent 2 }}
   {{- end }}

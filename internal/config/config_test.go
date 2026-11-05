@@ -31,11 +31,29 @@ func TestValidateRejectsWeakStaticToken(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsUnimplementedApplyMode(t *testing.T) {
+func TestApplyModeRequiresAuditedIdentitiesAndValidBounds(t *testing.T) {
 	cfg := validConfig()
 	cfg.OperationMode = ModeApply
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected unimplemented apply mode to fail closed")
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "Kubernetes authentication") {
+		t.Fatalf("apply mode with the shared static token must be rejected, got %v", err)
+	}
+	cfg.AuthMode, cfg.APIToken = "kubernetes", ""
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("apply mode with Kubernetes authentication: %v", err)
+	}
+	for name, mutate := range map[string]func(*Config){
+		"window":      func(value *Config) { value.AutomationWindow = "late at night" },
+		"max changes": func(value *Config) { value.AutomationMaxChanges = 101 },
+	} {
+		invalid := cfg
+		mutate(&invalid)
+		if err := invalid.Validate(); err == nil {
+			t.Fatalf("invalid automation %s was accepted", name)
+		}
+	}
+	cfg.AutomationWindow = "22:00-04:00"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("a valid change window was rejected: %v", err)
 	}
 }
 

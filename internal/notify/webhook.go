@@ -31,6 +31,11 @@ const (
 	// RecommendationRegressed is sent once when an applied recommendation is
 	// followed by OOM kills, throttling, restarts, or slower responses.
 	RecommendationRegressed = "recommendation.regressed"
+	// RecommendationApplied is sent when automation applies an approved
+	// recommendation; RecommendationRolledBack when it restores the previous
+	// resources after a verified regression.
+	RecommendationApplied    = "recommendation.applied"
+	RecommendationRolledBack = "recommendation.rolled_back"
 )
 
 // Event describes one lifecycle change of a recommendation.

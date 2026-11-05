@@ -98,8 +98,14 @@ app.kubernetes.io/component: ml
 {{- if and (eq .Values.auth.mode "static") (not .Values.auth.staticToken.existingSecret) -}}
 {{- fail "auth.staticToken.existingSecret is required when auth.mode=static" -}}
 {{- end -}}
-{{- if eq .Values.operationMode "apply" -}}
-{{- fail "operationMode=apply is not supported by this chart because KubeRight has no mutating provider" -}}
+{{- if and (eq .Values.operationMode "apply") (ne .Values.auth.mode "kubernetes") -}}
+{{- fail "operationMode=apply requires auth.mode=kubernetes so every approval and change has an audited identity" -}}
+{{- end -}}
+{{- if and (eq .Values.operationMode "apply") (ne .Values.rbac.scope "cluster") -}}
+{{- fail "operationMode=apply requires rbac.scope=cluster because automation reads the kuberight.io/automation namespace opt-in label" -}}
+{{- end -}}
+{{- if and (eq .Values.operationMode "apply") (not .Values.rbac.monitoring.enabled) -}}
+{{- fail "operationMode=apply requires rbac.monitoring.enabled=true" -}}
 {{- end -}}
 {{- if and .Values.autoscaling.enabled (not (or .Values.autoscaling.targetCPUUtilizationPercentage .Values.autoscaling.targetMemoryUtilizationPercentage)) -}}
 {{- fail "at least one autoscaling CPU or memory utilization target is required when autoscaling.enabled=true" -}}

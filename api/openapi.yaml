@@ -1037,14 +1037,12 @@ paths:
     get:
       tags: [Recommendations]
       operationId: getRecommendationVerification
-      summary: Post-change verification of an approved recommendation
+      summary: Latest durable post-change verification outcome
       description: |
-        Checks whether the approved values are live and, after at least an
-        hour of post-change history, compares OOM kills, restarts per hour,
-        CPU throttling, latency, and peak memory with the history the
-        recommendation was based on. A regression is announced once through
-        the `recommendation.regressed` webhook and counted in the
-        `kuberight_recommendation_regressions` metric. Requires `get` on
+        Returns the most recent recorded verification outcome. GET is
+        read-only: it never queries Kubernetes or Prometheus, appends
+        evidence, or sends a webhook. Until a refresh has run it returns 404
+        with code `verification_not_checked`. Requires `get` on
         `recommendations`.
       parameters:
         - name: id
@@ -1068,6 +1066,104 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
           description: The recommendation has not been approved.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /api/v1/recommendations/{id}/verification:refresh:
+    post:
+      tags: [Recommendations]
+      operationId: refreshRecommendationVerification
+      summary: Run and record one post-change verification attempt
+      description: |
+        Checks whether the approved values are live with a new workload
+        generation and spec fingerprint and, after at least an hour of
+        post-change history, compares OOM kills, restarts per hour, CPU
+        throttling, latency, and peak memory with the evidence the
+        recommendation was based on. Post-change evidence is attributed only
+        to pods that exist now, so replicas that ran the previous
+        configuration are excluded. Incomplete evidence is `inconclusive`,
+        never `verified`. The outcome is stored durably; a regression is
+        announced once through the `recommendation.regressed` webhook and
+        counted in `kuberight_recommendation_regressions`. Requires `update`
+        on `recommendations`.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^rec_.+$'
+            minLength: 5
+            maxLength: 64
+      responses:
+        "200":
+          description: The recorded verification verdict.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Verification"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: The recommendation has not been approved.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /api/v1/automation:
+    get:
+      tags: [Recommendations]
+      operationId: planAutomation
+      summary: Continuous rightsizing plan
+      description: |
+        Evaluates the latest approved recommendation of every container and
+        reports what apply mode would do, without writing anything. A change
+        is eligible only in a namespace labeled `kuberight.io/automation=enabled`,
+        for a supported controller (Deployment, StatefulSet, DaemonSet) not
+        owned by Argo CD or Flux (unless annotated
+        `kuberight.io/automation-gitops=allow`) and not opted out with
+        `kuberight.io/automation=disabled`, when the recommendation is
+        approved, has the `recommend` verdict, unexpired evidence covering
+        every replica, and its workload UID, generation, spec fingerprint, and
+        current resources still match the live workload. A regressed automated
+        change is planned for rollback. Requires `list` on `automation`.
+      responses:
+        "200":
+          description: The plan.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AutomationReport" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/automation:run:
+    post:
+      tags: [Recommendations]
+      operationId: runAutomation
+      summary: Apply eligible approved recommendations now
+      description: |
+        Runs one automation pass in `operationMode=apply`: rollbacks first,
+        then changes, at most `maxChangesPerRun`, only inside the configured
+        UTC change window. Each change is a strategic-merge patch of one
+        container's requests and limits with a `resourceVersion`
+        precondition, owned by the `kuberight-automation` field manager, and
+        annotated with the recommendation and the previous resources. Every
+        attempt is audited, and applied or rolled-back changes are announced
+        as `recommendation.applied` and `recommendation.rolled_back` webhooks.
+        Requires `update` on `automation`.
+      responses:
+        "200":
+          description: The pass results.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AutomationReport" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: Automation is disabled because the operation mode is not `apply`.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
@@ -1689,6 +1785,112 @@ components:
         recentRollout:
           type: boolean
           description: Usage is still settling after a rollout; shortens the validity period.
+        runtime:
+          $ref: "#/components/schemas/RuntimeContext"
+        lastResourceChangeAt:
+          type: string
+          format: date-time
+          description: When the container's requests or limits last changed. Reductions are held for the policy cooldown after it.
+        priorRecommendations:
+          type: array
+          maxItems: 50
+          description: Earlier recommendations for the same container, used only for oscillation and confirmation checks.
+          items:
+            $ref: "#/components/schemas/PriorRecommendation"
+
+    AutomationResources:
+      type: object
+      additionalProperties: false
+      required: [cpuRequestMilli, cpuLimitMilli, memoryRequestBytes, memoryLimitBytes]
+      properties:
+        cpuRequestMilli: { type: integer, minimum: 0 }
+        cpuLimitMilli: { type: integer, minimum: 0, description: Zero means no limit. }
+        memoryRequestBytes: { type: integer, minimum: 0 }
+        memoryLimitBytes: { type: integer, minimum: 0, description: Zero means no limit. }
+
+    AutomationDecision:
+      type: object
+      additionalProperties: false
+      required: [recommendationId, namespace, kind, workload, container, action, reasons, current, desired]
+      properties:
+        recommendationId: { type: string }
+        cluster: { type: string }
+        namespace: { type: string }
+        kind: { type: string }
+        workload: { type: string }
+        container: { type: string }
+        action: { type: string, enum: [apply, rollback, skip] }
+        reasons:
+          type: array
+          description: For `skip`, every reason not to act.
+          items: { type: string }
+        current: { $ref: "#/components/schemas/AutomationResources" }
+        desired: { $ref: "#/components/schemas/AutomationResources" }
+        outcome: { type: string, enum: [planned, applied, rolled_back, deferred, failed] }
+        error: { type: string }
+
+    AutomationReport:
+      type: object
+      additionalProperties: false
+      required: [mode, enabled, dryRun, windowOpen, maxChangesPerRun, evaluatedAt, evaluated, eligible, applied, rolledBack, deferred, failed, decisions]
+      properties:
+        mode: { type: string, enum: [observe, recommend, apply] }
+        enabled: { type: boolean, description: True only in apply mode. }
+        dryRun: { type: boolean }
+        window: { type: string, description: Daily UTC change window, when configured. }
+        windowOpen: { type: boolean }
+        maxChangesPerRun: { type: integer, minimum: 1, maximum: 100 }
+        evaluatedAt: { type: string, format: date-time }
+        evaluated: { type: integer, minimum: 0 }
+        eligible: { type: integer, minimum: 0 }
+        applied: { type: integer, minimum: 0 }
+        rolledBack: { type: integer, minimum: 0 }
+        deferred: { type: integer, minimum: 0 }
+        failed: { type: integer, minimum: 0 }
+        decisions:
+          type: array
+          items: { $ref: "#/components/schemas/AutomationDecision" }
+
+    PriorRecommendation:
+      type: object
+      additionalProperties: false
+      required: [createdAt, currentCpuRequestMilli, cpuRequestMilli, currentMemoryRequestBytes, memoryRequestBytes]
+      properties:
+        createdAt: { type: string, format: date-time }
+        currentCpuRequestMilli: { type: integer, minimum: 0 }
+        cpuRequestMilli: { type: integer, minimum: 0 }
+        currentMemoryRequestBytes: { type: integer, minimum: 0 }
+        memoryRequestBytes: { type: integer, minimum: 0 }
+
+    Stability:
+      type: object
+      additionalProperties: false
+      description: |
+        Controls that keep advice from flapping. Changes below
+        `minimumChangeRatio` are suppressed (hysteresis). Reductions, never
+        increases, are held during the cooldown after a request or limit
+        change, while recent recommendations alternate direction, and until
+        `requiredObservations` consistent observations agree.
+      required: [minimumChangeRatio, suppressedChanges, cooldownHours, cooldownActive, directionChanges, oscillating, requiredObservations, consistentObservations, reductionsHeld, changed]
+      properties:
+        minimumChangeRatio: { type: number, minimum: 0, maximum: 0.5 }
+        suppressedChanges:
+          type: array
+          items: { type: string }
+        cooldownHours: { type: integer, minimum: 0, maximum: 720 }
+        lastResourceChangeAt: { type: string, format: date-time }
+        cooldownEndsAt: { type: string, format: date-time }
+        cooldownActive: { type: boolean }
+        directionChanges: { type: integer, minimum: 0 }
+        oscillating: { type: boolean }
+        requiredObservations: { type: integer, minimum: 0, maximum: 5 }
+        consistentObservations: { type: integer, minimum: 0 }
+        reductionsHeld:
+          type: array
+          items: { type: string }
+        changed:
+          type: boolean
+          description: False when the final values equal the current ones.
 
     Assessment:
       type: object
@@ -1696,12 +1898,14 @@ components:
       description: |
         The verdict and its evidence. Only `recommend` may be approved;
         `hold`, `insufficient_data`, and `unsupported` explain why no safe
-        change is offered and are returned with HTTP 200 like any result.
+        change is offered, and `no_change` means the container is already
+        within the minimum meaningful change. All are returned with HTTP 200
+        like any result.
       required: [status, statusReasons, riskScore, current, recommended, safetyMargins, seasonality, validation, outOfSample, qos, checks, autoscaling, expectedSavings, validFor, validForSeconds, explanation]
       properties:
         status:
           type: string
-          enum: [recommend, hold, insufficient_data, unsupported]
+          enum: [recommend, hold, insufficient_data, unsupported, no_change]
         statusReasons:
           type: array
           items: { type: string }
@@ -1984,6 +2188,24 @@ components:
           type: string
           enum: [adjust, remove]
           description: Adjust an existing CPU limit from observed peaks, or recommend its removal. No new limit is introduced when none exists.
+        minimumChangeRatio:
+          type: number
+          minimum: 0.01
+          maximum: 0.5
+          default: 0.05
+          description: Changes smaller than this share of the current value (and than 10m CPU or 16Mi memory) are suppressed. Omitted or zero selects the default.
+        cooldownHours:
+          type: integer
+          minimum: 1
+          maximum: 720
+          default: 24
+          description: Reductions are held for this long after the container's requests or limits change. Omitted or zero selects the default.
+        requiredObservations:
+          type: integer
+          minimum: 1
+          maximum: 5
+          default: 1
+          description: Consistent recommendations, at least an hour apart and including this one, required before a reduction is offered. Omitted or zero selects the default.
 
     Percentiles:
       type: object
@@ -2019,9 +2241,32 @@ components:
         pod: { type: string }
         uid: { type: string }
         phase: { type: string }
+        revision:
+          type: string
+          description: Owning ReplicaSet or Job name.
+        live:
+          type: boolean
+          description: The pod still exists in Kubernetes.
         active: { type: boolean }
-        cpuCoverage: { type: number, minimum: 0, maximum: 1 }
+        cpuCoverage:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Share of the pod's own running steps with CPU samples.
         memoryCoverage: { type: number, minimum: 0, maximum: 1 }
+
+    CoverageBucket:
+      type: object
+      additionalProperties: false
+      required: [start, end, expectedReplicas, cpuObservedReplicas, memoryObservedReplicas, populationKnown, activeSteps]
+      properties:
+        start: { type: string, format: date-time }
+        end: { type: string, format: date-time }
+        expectedReplicas: { type: number, minimum: 0 }
+        cpuObservedReplicas: { type: number, minimum: 0 }
+        memoryObservedReplicas: { type: number, minimum: 0 }
+        populationKnown: { type: number, minimum: 0, maximum: 1 }
+        activeSteps: { type: integer, minimum: 0 }
 
     ReplicaCoverage:
       type: object
@@ -2040,8 +2285,40 @@ components:
         - cpuTemporalCoverage
         - memoryTemporalCoverage
         - complete
+      description: |
+        Time-aware completeness of the evidence. With `historical`
+        attribution the pod population is reconstructed for every step from
+        kube-state-metrics ownership and creation series, so replaced and
+        scaled-down pods are included and pods of an earlier same-name
+        workload are excluded. Replica coverage is replica-time weighted: at
+        each step the expected population is the larger of the recorded
+        desired replicas and the attributed running pods. `complete` requires
+        at least 90% replica-time coverage for CPU, memory, and attributed
+        identity, 90% desired-replica history, 80% temporal coverage of the
+        requested window, and no live-pod cross-check failure.
       properties:
+        attribution:
+          type: string
+          enum: [historical, live-pods]
+        effectiveStart:
+          type: string
+          format: date-time
+          description: First step at or after the current workload's creation.
         expectedReplicas: { type: integer, minimum: 0 }
+        peakExpectedReplicas: { type: integer, minimum: 0 }
+        minimumExpectedReplicas: { type: integer, minimum: 0 }
+        revisions: { type: integer, minimum: 0 }
+        scalingEvents: { type: integer, minimum: 0 }
+        expectedReplicaHistoryCoverage: { type: number, minimum: 0, maximum: 1 }
+        identityCoverage: { type: number, minimum: 0, maximum: 1 }
+        activeSteps: { type: integer, minimum: 0 }
+        scaledToZeroSteps: { type: integer, minimum: 0 }
+        ambiguousSteps: { type: integer, minimum: 0 }
+        unattributedSteps: { type: integer, minimum: 0 }
+        timeline:
+          type: array
+          maxItems: 96
+          items: { $ref: "#/components/schemas/CoverageBucket" }
         discoveredReplicas: { type: integer, minimum: 0 }
         observedReplicas: { type: integer, minimum: 0 }
         missingReplicas: { type: integer, minimum: 0 }
@@ -2252,6 +2529,8 @@ components:
         reviewComment: { type: string, maxLength: 1024 }
         assessment:
           $ref: "#/components/schemas/Assessment"
+        stability:
+          $ref: "#/components/schemas/Stability"
 
     ReviewStatus:
       type: string
@@ -2769,6 +3048,24 @@ components:
         memoryLimitBytes: { type: integer, minimum: 0 }
         vpaControlsCpu: { type: boolean }
         vpaControlsMemory: { type: boolean }
+        runtime:
+          $ref: "#/components/schemas/RuntimeContext"
+
+    RuntimeContext:
+      type: object
+      additionalProperties: false
+      description: |
+        A detected JVM. With an explicit `-Xmx`, memory is never sized below
+        the heap plus 25% non-heap overhead. Without one (JVM defaults or
+        `MaxRAMPercentage`), memory reductions are limited to 10% because the
+        working set reflects heap sizing rather than live data. `image`
+        detection is a heuristic from well-known JVM image names.
+      required: [kind]
+      properties:
+        kind: { type: string, enum: [jvm] }
+        source: { type: string, enum: [env, command, image] }
+        maxHeapBytes: { type: integer, minimum: 0 }
+        maxRamPercentage: { type: number, minimum: 0, maximum: 100 }
 
     UsageHistory:
       type: object

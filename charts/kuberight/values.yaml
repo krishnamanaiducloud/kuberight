@@ -106,6 +106,25 @@ requestRateQuery: ""
 verification:
   interval: 15m
 
+# Continuous rightsizing (operationMode=apply). KubeRight then patches the pod
+# template resources of Deployments, StatefulSets, and DaemonSets, but only:
+# - in namespaces labeled kuberight.io/automation=enabled;
+# - for approved recommendations whose verdict is "recommend", whose
+#   evidence is unexpired and covered every replica, and whose workload UID,
+#   generation, spec fingerprint, and current resources still match;
+# - when no GitOps controller (Argo CD, Flux) owns the workload, unless it is
+#   annotated kuberight.io/automation-gitops=allow;
+# - with a resourceVersion precondition, at most maxChangesPerRun per pass,
+#   inside the optional daily UTC window (for example "22:00-04:00").
+# A regression found by post-change verification is rolled back to the exact
+# previous values. Annotate a workload kuberight.io/automation=disabled to opt
+# it out. Apply mode grants patch on those three kinds and requires
+# auth.mode=kubernetes and rbac.scope=cluster.
+automation:
+  interval: 15m
+  maxChangesPerRun: 5
+  window: ""
+
 # Recommendation lifecycle events for Slack, Teams, PagerDuty, Argo Events,
 # or CI. The Secret holds the URL and an optional HMAC signing secret.
 webhook:
