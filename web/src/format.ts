@@ -1,4 +1,4 @@
-import type { RecommendationRecord, SpikeProfile } from './api'
+import type { CoverageBucket, RecommendationRecord, SpikeProfile } from './api'
 
 const binaryUnits = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
 
@@ -162,4 +162,30 @@ export function spikeLabel(spikes: SpikeProfile): string | undefined {
     default:
       return undefined
   }
+}
+
+export type CoverageGap = { start: string; end: string; cpu: number; memory: number }
+
+/**
+ * Merges adjacent timeline buckets whose replica coverage is below the
+ * threshold, so the evidence view can name when replicas went unobserved.
+ * Coverage is reported as the lowest share inside each merged range.
+ */
+export function coverageGaps(timeline: CoverageBucket[] | undefined, threshold = 0.9): CoverageGap[] {
+  const gaps: CoverageGap[] = []
+  for (const bucket of timeline ?? []) {
+    if (bucket.activeSteps === 0 || bucket.expectedReplicas <= 0) continue
+    const cpu = bucket.cpuObservedReplicas / bucket.expectedReplicas
+    const memory = bucket.memoryObservedReplicas / bucket.expectedReplicas
+    if (Math.min(cpu, memory) >= threshold) continue
+    const last = gaps.at(-1)
+    if (last && last.end === bucket.start) {
+      last.end = bucket.end
+      last.cpu = Math.min(last.cpu, cpu)
+      last.memory = Math.min(last.memory, memory)
+    } else {
+      gaps.push({ start: bucket.start, end: bucket.end, cpu, memory })
+    }
+  }
+  return gaps
 }

@@ -160,7 +160,7 @@ export function Fleet({ title, description }: { title: string; description: stri
     mutationFn: ({ id, action }: { id: string; action: 'cancel' | 'resume' }) => api.post<FleetScan>(`/api/v1/fleet/scans/${encodeURIComponent(id)}/${action}`, {}),
     onSuccess: async () => queryClient.invalidateQueries({ queryKey: ['fleet-scans'] }),
   })
-  const items = scans.data?.items ?? []
+  const items = useMemo(() => scans.data?.items ?? [], [scans.data?.items])
   const counts = useMemo(() => ({
     active: items.filter((scan) => ['queued', 'running'].includes(scan.status)).length,
     completed: items.filter((scan) => scan.status === 'completed').length,

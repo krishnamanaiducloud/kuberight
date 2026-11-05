@@ -27,6 +27,8 @@ import { Recommendations } from './pages/Recommendations'
 import { Savings } from './pages/Savings'
 import { Utilization } from './pages/Utilization'
 import { Fleet } from './pages/Fleet'
+import { Automation } from './pages/Automation'
+import AutoModeOutlined from '@mui/icons-material/AutoModeOutlined'
 
 export type NavItem = {
   label: string
@@ -53,7 +55,8 @@ export const navigation: NavItem[] = [
   { label: 'Correlation analysis', path: '/correlation', endpoint: '/api/v1/correlation', description: 'How CPU, memory, throttling, latency, traffic, and replicas move together, with rollout and scaling events, forecast accuracy, and the evidence behind each recommendation. Correlation is association, not causation.', icon: <InsightsOutlined />, render: (item) => <Correlation title={item.label} description={item.description} /> },
   { label: 'CPU recommendations', path: '/recommendations/cpu', endpoint: '/api/v1/recommendations', description: 'Explainable CPU requests and limits. Select a row for details and review.', icon: <MemoryOutlined />, columnKeys: cpuRecommendationColumns, render: (item) => <Recommendations title={item.label} description={item.description} columnKeys={item.columnKeys!} /> },
   { label: 'Memory recommendations', path: '/recommendations/memory', endpoint: '/api/v1/recommendations', description: 'Memory sizing with OOM and peak safeguards. Select a row for details and review.', icon: <MemoryOutlined />, columnKeys: memoryRecommendationColumns, render: (item) => <Recommendations title={item.label} description={item.description} columnKeys={item.columnKeys!} /> },
-  { label: 'Approvals', path: '/approvals', endpoint: '/api/v1/approvals', description: 'Review queue. Approval records a decision; KubeRight never applies changes.', icon: <ApprovalOutlined />, render: (item) => <Approvals title={item.label} description={item.description} /> },
+  { label: 'Approvals', path: '/approvals', endpoint: '/api/v1/approvals', description: 'Review queue. Approval records a decision; changes are applied only by apply-mode automation in opted-in namespaces.', icon: <ApprovalOutlined />, render: (item) => <Approvals title={item.label} description={item.description} /> },
+  { label: 'Automation', path: '/automation', endpoint: '/api/v1/automation', description: 'Continuous rightsizing of approved recommendations in opted-in namespaces, with GitOps, freshness, and change-window guards and automatic rollback on regression', icon: <AutoModeOutlined />, render: (item) => <Automation title={item.label} description={item.description} /> },
   { label: 'Fleet operations', path: '/fleet', endpoint: '/api/v1/fleet/scans', description: 'Schedule and inspect durable, retryable recommendation scans across explicit Kubernetes scopes', icon: <PlaylistAddCheckCircleOutlined />, render: (item) => <Fleet title={item.label} description={item.description} /> },
   { label: 'Savings', path: '/savings', endpoint: '/api/v1/savings', description: 'Request-based cost estimates from operator-configured unit prices; not billing data', icon: <SavingsOutlined />, render: (item) => <Savings title={item.label} description={item.description} /> },
   { label: 'Forecasting', path: '/forecasting', endpoint: '/api/v1/forecasts', description: 'Experimental usage forecasts with confidence intervals from the forecasting service', icon: <AutoGraphOutlined />, render: (item) => <Forecasting title={item.label} description={item.description} /> },

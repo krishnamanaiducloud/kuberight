@@ -14,6 +14,7 @@ const statusText: Record<AssessmentStatus, { label: string; severity: 'success' 
   hold: { label: 'Hold', severity: 'warning', detail: 'Keep the current settings until the failed checks are resolved.' },
   insufficient_data: { label: 'Insufficient data', severity: 'info', detail: 'There is not enough reliable history for a safe change yet.' },
   unsupported: { label: 'Unsupported', severity: 'error', detail: 'Another controller manages these resources, so KubeRight does not size them.' },
+  no_change: { label: 'Right-sized', severity: 'success', detail: 'The current requests and limits are within the minimum meaningful change. No action is needed.' },
 }
 
 const checkIcon: Record<CheckStatus, ReactNode> = {

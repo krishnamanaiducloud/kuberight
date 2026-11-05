@@ -30,7 +30,7 @@ describe('recommendation evidence', () => {
     expect(screen.getByText('Evidence valid')).toBeInTheDocument()
     expect(screen.getByText(/Generation 14 · prod-us/)).toBeInTheDocument()
     expect(screen.getByText('CPU 1,900 · memory 1,898')).toBeInTheDocument()
-    expect(screen.getByText('3 of 3 observed · complete')).toBeInTheDocument()
+    expect(screen.getByText('3 of 3 attributed pods observed · complete')).toBeInTheDocument()
     expect(screen.getByLabelText('Replica completeness')).toHaveTextContent('All expected replicas covered')
     expect(screen.getByText('Optimizer')).toBeInTheDocument()
     expect(screen.getByLabelText('Technical provenance')).toHaveTextContent('Spec aaaaaaaaaaaa…')
@@ -45,5 +45,32 @@ describe('recommendation evidence', () => {
   it('renders a compact expired status for review tables', () => {
     render(<EvidenceStatusChip record={{ ...live, provenance: { ...live.provenance, expiresAt: '2026-11-01T11:59:59Z' } }} now={now} />)
     expect(screen.getByText('Evidence expired').closest('.MuiChip-root')).toHaveClass('MuiChip-colorError')
+  })
+
+  it('explains historical attribution, scaling, and when replicas went unobserved', () => {
+    const coverage = live.dataQuality!.replicaCoverage!
+    const historical: EvidenceRecord = {
+      ...live,
+      dataQuality: {
+        ...live.dataQuality!,
+        replicaCoverage: {
+          ...coverage, attribution: 'historical', discoveredReplicas: 8, observedReplicas: 7, revisions: 2, peakExpectedReplicas: 6, minimumExpectedReplicas: 2,
+          scalingEvents: 3, identityCoverage: 0.97, cpuReplicaCoverage: 0.874, complete: false, missingReplicas: 1,
+          timeline: [
+            { start: '2026-10-30T00:00:00Z', end: '2026-10-30T02:00:00Z', expectedReplicas: 3, cpuObservedReplicas: 3, memoryObservedReplicas: 3, populationKnown: 1, activeSteps: 24 },
+            { start: '2026-10-30T02:00:00Z', end: '2026-10-30T04:00:00Z', expectedReplicas: 3, cpuObservedReplicas: 1, memoryObservedReplicas: 2, populationKnown: 1, activeSteps: 24 },
+            { start: '2026-10-30T04:00:00Z', end: '2026-10-30T06:00:00Z', expectedReplicas: 3, cpuObservedReplicas: 2, memoryObservedReplicas: 3, populationKnown: 1, activeSteps: 24 },
+          ],
+        },
+      },
+    }
+    render(<RecommendationEvidence record={historical} now={now} />)
+    expect(screen.getByText(/Every pod in the window, including replaced ones · 2 revisions/)).toBeInTheDocument()
+    expect(screen.getByText('2–6 · 3 scaling changes')).toBeInTheDocument()
+    expect(screen.getByLabelText('Replica completeness')).toHaveTextContent('CPU replica-time 87%')
+    const gaps = screen.getByLabelText('Coverage gaps')
+    // The two adjacent low buckets merge into one range at their lowest share.
+    expect(gaps.querySelectorAll('li')).toHaveLength(1)
+    expect(gaps).toHaveTextContent('CPU 33%, memory 66%')
   })
 })

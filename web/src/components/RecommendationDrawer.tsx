@@ -12,6 +12,7 @@ import { ResourceTable } from './ResourceTable'
 import { BacktestTable, CpuBehaviorChips, TrendChips } from './Backtest'
 import { RecommendationEvidence } from './RecommendationEvidence'
 import { AssessmentPanel, AssessmentStatusChip } from './AssessmentPanel'
+import { StabilityPanel } from './StabilityPanel'
 import { recommendationEvidenceState } from './recommendationEvidenceState'
 
 const riskColor = { low: 'success', medium: 'warning', high: 'error' } as const
@@ -115,6 +116,7 @@ export function RecommendationDrawer({ id, onClose }: { id: string | undefined; 
             </Box>
             <RecommendationEvidence record={record} />
             {record.assessment && <AssessmentPanel assessment={record.assessment} />}
+            {record.stability && <StabilityPanel stability={record.stability} />}
             <ResourceTable record={record} />
             <CpuBehaviorChips throttling={record.cpuThrottlingRatio} throttlingPeak={record.cpuThrottlingPeakRatio} pinned={record.cpuLimitPinned} spikes={record.spikes} />
             <TrendChips trends={record.trends} />

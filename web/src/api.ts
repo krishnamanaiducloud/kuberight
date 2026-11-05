@@ -94,12 +94,41 @@ export type ReplicaQuality = {
   pod: string
   uid: string
   phase?: string
+  /** Owning ReplicaSet or Job. */
+  revision?: string
+  /** The pod still exists in Kubernetes. */
+  live?: boolean
   active: boolean
   cpuCoverage: number
   memoryCoverage: number
 }
 
+/** One slice of the replica coverage timeline; counts are averages. */
+export type CoverageBucket = {
+  start: string
+  end: string
+  expectedReplicas: number
+  cpuObservedReplicas: number
+  memoryObservedReplicas: number
+  populationKnown: number
+  activeSteps: number
+}
+
 export type ReplicaCoverage = {
+  /** historical: population reconstructed per step, including replaced pods. */
+  attribution?: 'historical' | 'live-pods'
+  effectiveStart?: string
+  peakExpectedReplicas?: number
+  minimumExpectedReplicas?: number
+  revisions?: number
+  scalingEvents?: number
+  expectedReplicaHistoryCoverage?: number
+  identityCoverage?: number
+  activeSteps?: number
+  scaledToZeroSteps?: number
+  ambiguousSteps?: number
+  unattributedSteps?: number
+  timeline?: CoverageBucket[]
   expectedReplicas: number
   discoveredReplicas: number
   observedReplicas: number
@@ -172,9 +201,60 @@ export type RecommendationRecord = {
   reviewComment?: string
   /** Absent on recommendations stored before the assessment existed. */
   assessment?: Assessment
+  /** Hysteresis, cooldown, oscillation, and confirmation decisions. */
+  stability?: Stability
 }
 
-export type AssessmentStatus = 'recommend' | 'hold' | 'insufficient_data' | 'unsupported'
+export type AutomationResources = { cpuRequestMilli: number; cpuLimitMilli: number; memoryRequestBytes: number; memoryLimitBytes: number }
+
+export type AutomationDecision = {
+  recommendationId: string
+  cluster?: string
+  namespace: string
+  kind: string
+  workload: string
+  container: string
+  action: 'apply' | 'rollback' | 'skip'
+  reasons: string[]
+  current: AutomationResources
+  desired: AutomationResources
+  outcome?: 'planned' | 'applied' | 'rolled_back' | 'deferred' | 'failed'
+  error?: string
+}
+
+export type AutomationReport = {
+  mode: 'observe' | 'recommend' | 'apply'
+  enabled: boolean
+  dryRun: boolean
+  window?: string
+  windowOpen: boolean
+  maxChangesPerRun: number
+  evaluatedAt: string
+  evaluated: number
+  eligible: number
+  applied: number
+  rolledBack: number
+  deferred: number
+  failed: number
+  decisions: AutomationDecision[]
+}
+
+export type Stability = {
+  minimumChangeRatio: number
+  suppressedChanges: string[]
+  cooldownHours: number
+  lastResourceChangeAt?: string
+  cooldownEndsAt?: string
+  cooldownActive: boolean
+  directionChanges: number
+  oscillating: boolean
+  requiredObservations: number
+  consistentObservations: number
+  reductionsHeld: string[]
+  changed: boolean
+}
+
+export type AssessmentStatus = 'recommend' | 'hold' | 'insufficient_data' | 'unsupported' | 'no_change'
 export type CheckStatus = 'pass' | 'fail' | 'adjusted' | 'unknown' | 'not_applicable'
 export type Quantities = { cpuRequest: string; cpuLimit?: string; memoryRequest: string; memoryLimit?: string }
 export type MarginBreakdown = { base: number; variability: number; burst: number; uncertainty: number; criticality: number; total: number }
@@ -421,6 +501,12 @@ export type Policy = {
   memoryPercentile: number
   trendHorizonDays?: number
   cpuLimitStrategy?: 'adjust' | 'remove'
+  /** Changes below this share of the current value are suppressed. */
+  minimumChangeRatio?: number
+  /** Hours reductions wait after requests or limits change. */
+  cooldownHours?: number
+  /** Consistent observations required before a reduction is offered. */
+  requiredObservations?: number
 }
 
 export type PolicyProfile = { name: string; description: string; default: boolean; policy: Policy }
