@@ -1,0 +1,13 @@
+{{- if and (not .Values.config.existingConfigMap) .Values.config.data }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kuberight.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kuberight.labels" . | nindent 4 }}
+data:
+  {{- range $key, $value := .Values.config.data }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}
+{{- end }}

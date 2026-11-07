@@ -1,0 +1,650 @@
+export type ApiStatus = {
+  available: boolean
+  reason?: string
+  asOf?: string
+  source?: string
+}
+
+export type ApiRecord = Record<string, unknown>
+
+export type CollectionEnvelope = {
+  items: ApiRecord[]
+  pagination?: {
+    page: number
+    pageSize: number
+    total: number
+  }
+  status?: ApiStatus
+  requestId?: string
+  summary?: { currency?: string }
+}
+
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly requestId?: string,
+  ) {
+    super(message)
+  }
+}
+
+export const tokenStore = {
+  get: () => sessionStorage.getItem('kuberight.token') ?? '',
+  set: (token: string) => {
+    if (token) sessionStorage.setItem('kuberight.token', token)
+    else sessionStorage.removeItem('kuberight.token')
+  },
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers)
+  headers.set('Accept', 'application/json')
+  if (init?.body) headers.set('Content-Type', 'application/json')
+  const token = tokenStore.get()
+  if (token) headers.set('Authorization', `Bearer ${token}`)
+
+  const response = await fetch(path, { ...init, headers, credentials: 'same-origin' })
+  const requestId = response.headers.get('X-Request-ID') ?? undefined
+  const body = await response.json().catch(() => ({})) as Record<string, unknown>
+  if (!response.ok) {
+    const problem = body.error as Record<string, unknown> | string | undefined
+    const message = typeof problem === 'string'
+      ? problem
+      : String(problem?.message ?? body.message ?? `Request failed (${response.status})`)
+    throw new ApiError(message, response.status, requestId)
+  }
+  return body as T
+}
+
+export const api = {
+  health: () => request<{ status: string }>('/healthz'),
+  get: <T>(path: string, init?: RequestInit) => request<T>(path, init),
+  post: <T>(path: string, body: unknown, idempotencyKey?: string, signal?: AbortSignal) => request<T>(path, {
+    method: 'POST',
+    body: JSON.stringify(body),
+    headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
+    signal,
+  }),
+}
+
+/** A random key so a retried submission cannot create a duplicate record. */
+export function newIdempotencyKey(): string {
+  return `ui-${crypto.randomUUID()}`
+}
+
+export type ReviewStatus = 'pending' | 'approved' | 'rejected'
+
+export type Percentiles = { p50: number; p90: number; p95: number; p99: number; max: number }
+
+export type RecommendationProvenance = {
+  workloadUid?: string
+  workloadGeneration?: number
+  workloadResourceVersion?: string
+  sourceSpecFingerprint?: string
+  observationStart?: string
+  observationEnd?: string
+  queryFingerprint?: string
+  policyFingerprint?: string
+  optimizerVersion?: string
+  expiresAt?: string
+}
+
+export type ReplicaQuality = {
+  pod: string
+  uid: string
+  phase?: string
+  /** Owning ReplicaSet or Job. */
+  revision?: string
+  /** The pod still exists in Kubernetes. */
+  live?: boolean
+  active: boolean
+  cpuCoverage: number
+  memoryCoverage: number
+}
+
+/** One slice of the replica coverage timeline; counts are averages. */
+export type CoverageBucket = {
+  start: string
+  end: string
+  expectedReplicas: number
+  cpuObservedReplicas: number
+  memoryObservedReplicas: number
+  populationKnown: number
+  activeSteps: number
+}
+
+export type ReplicaCoverage = {
+  /** historical: population reconstructed per step, including replaced pods. */
+  attribution?: 'historical' | 'live-pods'
+  effectiveStart?: string
+  peakExpectedReplicas?: number
+  minimumExpectedReplicas?: number
+  revisions?: number
+  scalingEvents?: number
+  expectedReplicaHistoryCoverage?: number
+  identityCoverage?: number
+  activeSteps?: number
+  scaledToZeroSteps?: number
+  ambiguousSteps?: number
+  unattributedSteps?: number
+  timeline?: CoverageBucket[]
+  expectedReplicas: number
+  discoveredReplicas: number
+  observedReplicas: number
+  missingReplicas: number
+  activeReplicas: number
+  terminatedReplicas: number
+  cpuObservedReplicas: number
+  memoryObservedReplicas: number
+  cpuReplicaCoverage: number
+  memoryReplicaCoverage: number
+  cpuTemporalCoverage: number
+  memoryTemporalCoverage: number
+  cpuImbalanceRatio?: number
+  memoryImbalanceRatio?: number
+  complete: boolean
+  replicas?: ReplicaQuality[]
+}
+
+export type ReplicaEvents = {
+  pod: string
+  uid: string
+  restarts: number
+  oomKills: number
+  throttlingAvailable: boolean
+  throttlingRatio: number
+  throttlingPeakRatio: number
+}
+
+export type RecommendationRecord = {
+  id: string
+  cluster?: string
+  namespace: string
+  kind?: string
+  workload: string
+  container: string
+  replicas?: number
+  cpuRequestMilli: number
+  memoryRequestBytes: number
+  cpuLimitMilli: number
+  memoryLimitBytes: number
+  currentCpuRequestMilli: number
+  currentMemoryRequestBytes: number
+  currentCpuLimitMilli: number
+  currentMemoryLimitBytes: number
+  cpuStatisticsMilli: Percentiles
+  memoryStatisticsBytes: Percentiles
+  confidence: 'low' | 'medium' | 'high'
+  confidenceScore: number
+  risk: 'low' | 'medium' | 'high'
+  burstable: boolean
+  cpuThrottlingRatio?: number
+  cpuThrottlingPeakRatio?: number
+  cpuLimitPinned?: boolean
+  spikes?: SpikeProfile
+  trends?: Trends
+  backtest?: Backtest
+  dataQuality: { cpuSampleCount: number; memorySampleCount: number; minimumRequired: number; sufficient: boolean; issues: string[]; replicaCoverage?: ReplicaCoverage }
+  estimatedCpuChangePercent?: number
+  estimatedMemoryChangePercent?: number
+  reason: string
+  warnings: string[]
+  applied: boolean
+  createdAt: string
+  createdBy?: string
+  source: 'request' | 'prometheus'
+  provenance?: RecommendationProvenance
+  reviewStatus: ReviewStatus
+  reviewedBy?: string
+  reviewedAt?: string
+  reviewComment?: string
+  /** Absent on recommendations stored before the assessment existed. */
+  assessment?: Assessment
+  /** Hysteresis, cooldown, oscillation, and confirmation decisions. */
+  stability?: Stability
+}
+
+export type AutomationResources = { cpuRequestMilli: number; cpuLimitMilli: number; memoryRequestBytes: number; memoryLimitBytes: number }
+
+export type AutomationDecision = {
+  recommendationId: string
+  cluster?: string
+  namespace: string
+  kind: string
+  workload: string
+  container: string
+  action: 'apply' | 'rollback' | 'skip'
+  reasons: string[]
+  current: AutomationResources
+  desired: AutomationResources
+  outcome?: 'planned' | 'applied' | 'rolled_back' | 'deferred' | 'failed'
+  error?: string
+}
+
+export type AutomationReport = {
+  mode: 'observe' | 'recommend' | 'apply'
+  enabled: boolean
+  dryRun: boolean
+  window?: string
+  windowOpen: boolean
+  maxChangesPerRun: number
+  evaluatedAt: string
+  evaluated: number
+  eligible: number
+  applied: number
+  rolledBack: number
+  deferred: number
+  failed: number
+  decisions: AutomationDecision[]
+}
+
+export type Stability = {
+  minimumChangeRatio: number
+  suppressedChanges: string[]
+  cooldownHours: number
+  lastResourceChangeAt?: string
+  cooldownEndsAt?: string
+  cooldownActive: boolean
+  directionChanges: number
+  oscillating: boolean
+  requiredObservations: number
+  consistentObservations: number
+  reductionsHeld: string[]
+  changed: boolean
+}
+
+export type AssessmentStatus = 'recommend' | 'hold' | 'insufficient_data' | 'unsupported' | 'no_change'
+export type CheckStatus = 'pass' | 'fail' | 'adjusted' | 'unknown' | 'not_applicable'
+export type Quantities = { cpuRequest: string; cpuLimit?: string; memoryRequest: string; memoryLimit?: string }
+export type MarginBreakdown = { base: number; variability: number; burst: number; uncertainty: number; criticality: number; total: number }
+export type WindowCheck = { window: string; samples: number; cpuOverRequest?: number; memoryOverRequest?: number; memoryOverLimit?: number; passed: boolean; detail?: string }
+export type HPAImpact = {
+  targetUtilization: number
+  currentUtilization: number
+  projectedUtilization: number
+  currentReplicas: number
+  currentDesiredReplicas: number
+  projectedReplicas: number
+  unboundedReplicas: number
+  minReplicas: number
+  maxReplicas: number
+  approximate?: boolean
+  detail: string
+}
+
+export type Assessment = {
+  status: AssessmentStatus
+  statusReasons: string[]
+  riskScore: number
+  current: Quantities
+  recommended: Quantities
+  safetyMargins: { cpu: MarginBreakdown; memory: MarginBreakdown }
+  seasonality?: { periodSteps: number; strength: number; detected: boolean }
+  validation: WindowCheck[]
+  outOfSample: { performed: boolean; trainSamples: number; testSamples: number; cpuOverRequest?: number; cpuOverLimit?: number; memoryOverRequest?: number; memoryOverLimit?: number; passed: boolean; detail: string }
+  qos: { current: string; recommended: string; protected: boolean; approximate?: boolean }
+  checks: Array<{ name: string; status: CheckStatus; detail: string }>
+  autoscaling: { hpa?: HPAImpact; keda?: string; vpa?: string }
+  workload?: { replicas: number; podCurrentCpuMilli: number; podRecommendedCpuMilli: number; podCurrentMemoryBytes: number; podRecommendedMemoryBytes: number; totalCurrentCpuMilli: number; totalRecommendedCpuMilli: number; totalCurrentMemoryBytes: number; totalRecommendedMemoryBytes: number; approximate?: boolean }
+  forecast?: { source: 'ml' | 'trend'; horizon: string; cpuMilli: number; cpuUpperMilli?: number; memoryBytes: number; memoryUpperBytes?: number; intervalLevel?: number; empiricalCoverage?: number; calibrated: boolean; usedForSizing: boolean }
+  expectedSavings: { cpuMilli: number; memoryBytes: number }
+  validFor: string
+  validForSeconds: number
+  explanation: string[]
+}
+
+export type CorrelationPair = {
+  x: string
+  y: string
+  r: number
+  spearman: number
+  n: number
+  effectiveN: number
+  lower: number
+  upper: number
+  pValue: number
+  significant: boolean
+  strength: 'strong' | 'moderate' | 'weak' | 'negligible'
+  direction: 'positive' | 'negative' | 'none'
+  bestLagSteps: number
+  bestLagSeconds: number
+  bestLagR: number
+  leads?: string
+  summary: string
+}
+
+export type CorrelationEvent = { timestamp: string; kind: string; count?: number; detail?: string }
+
+export type CorrelationReport = {
+  start: string
+  end: string
+  stepSeconds: number
+  points: number
+  correlationStart: string
+  coverage: Record<string, number>
+  pairs: CorrelationPair[]
+  changePoints: Array<{ series: string; timestamp: string; meanBefore: number; meanAfter: number; relativeChange: number; score: number; nearestEvent?: CorrelationEvent }>
+  events: CorrelationEvent[]
+  eventImpacts: Array<{ event: CorrelationEvent; series: string; before: number; after: number; beforeSamples: number; afterSamples: number; relativeChange: number; material: boolean }>
+  seasonality: Record<string, { periodSteps: number; strength: number; detected: boolean }>
+  findings: Array<{ severity: 'info' | 'warning' | 'critical'; title: string; detail: string; evidence: string }>
+  caveats: string[]
+}
+
+export type ForecastScore = { samples: number; mae: number; rmse: number; smape: number; mape?: number | null; coverage: number; meanIntervalWidth: number; baselineMAE: number; skill?: number | null }
+
+export type ForecastEvaluation = {
+  available: boolean
+  reason?: string
+  resource?: string
+  unit?: string
+  nominalCoverage?: number
+  calibrated: boolean
+  overall?: ForecastScore
+  origins?: Array<{ originIndex: number; model: string; calibrated: boolean; score: ForecastScore }>
+  points?: Array<{ timestamp: string; actual: number; predicted: number; lower: number; upper: number; baseline: number }>
+}
+
+export type Verification = {
+  recommendationId: string
+  status: 'unavailable' | 'not_applied' | 'pending' | 'verified' | 'regressed'
+  applied: boolean
+  appliedAt?: string
+  appliedAtSource?: string
+  postChangeWindow?: string
+  checks: Array<{ name: string; before?: number; after?: number; regressed: boolean; detail: string }>
+  reasons: string[]
+  checkedAt: string
+}
+
+export type CorrelationResponse = {
+  status: ApiStatus
+  signals?: SignalsResponse['signals']
+  extra?: { cpuTotal?: UsageSeries; requestRate?: UsageSeries; nodePressure?: UsageSeries; warnings: string[] }
+  current?: ContainerSpec
+  report?: CorrelationReport
+  forecast?: ForecastEvaluation
+  recommendation?: RecommendationRecord
+  verification?: Verification
+  warnings?: string[]
+  configured?: { latency: boolean; requestRate: boolean }
+}
+
+export type ContainerSpec = {
+  name: string
+  cpuRequestMilli: number
+  cpuLimitMilli: number
+  memoryRequestBytes: number
+  memoryLimitBytes: number
+}
+
+export type WorkloadRecord = {
+  id: string
+  namespace: string
+  kind: string
+  name: string
+  containers?: ContainerSpec[]
+}
+
+export type Subject = { namespace: string; kind: string; workload: string; container: string }
+
+export type UsagePoint = { timestamp: string; value: number }
+
+export type UsageSeries = {
+  resource: 'cpu' | 'memory'
+  unit: 'millicores' | 'bytes'
+  points: UsagePoint[]
+  quality: { issues: string[] | null; coverage: number; expectedSamples: number; acceptedSamples: number }
+}
+
+export type HistoryResponse = {
+  items: UsageSeries[]
+  status: ApiStatus
+  step?: string
+  warnings?: string[]
+  current?: ContainerSpec
+}
+
+export type ForecastResponse = {
+  resource: 'cpu' | 'memory'
+  unit: 'millicores' | 'bytes'
+  step: string
+  history: UsagePoint[]
+  forecast: Array<{ timestamp: string; value: number; lower: number; upper: number }>
+  confidenceLevel: number
+  warning: string
+  diagnostics: {
+    model: string
+    modelVersion: string
+    fallbackUsed: boolean
+    fallbackReasons: string[]
+    confidence: number
+    warning: string
+  }
+}
+
+export type SavingsSummary = {
+  theoreticalMonthlyChange: number
+  recommendedMonthlyChange: number
+  approvedMonthlyChange: number
+  externallyObservedMonthlyChange: number
+  verifiedMonthlyChange: number
+  /** @deprecated Compatibility alias for recommendedMonthlyChange. */
+  estimatedMonthlySavings: number
+  /** @deprecated Compatibility alias for approvedMonthlyChange. */
+  approvedMonthlySavings: number
+  currency: string
+  recommendations: number
+  pricedRecommendations: number
+  truncated: boolean
+  verificationOutcomesTruncated: boolean
+  basis: string
+  realized: {
+    available: false
+    reason: string
+  }
+}
+
+export type SavingsStage = 'theoretical' | 'recommended' | 'approved' | 'externally_observed' | 'verified'
+
+export type SavingsItem = {
+  id: string
+  cluster?: string
+  namespace: string
+  kind?: string
+  workload: string
+  container: string
+  replicas: number
+  reviewStatus: ReviewStatus
+  stage: SavingsStage
+  stale: boolean
+  approvable: boolean
+  eligibilityReason?: string
+  costAvailable: boolean
+  costUnavailableReason?: string
+  currentMonthlyCost?: number
+  recommendedMonthlyCost?: number
+  theoreticalMonthlyChange?: number
+  /** @deprecated Compatibility alias for theoreticalMonthlyChange. */
+  estimatedMonthlySavings?: number
+  verificationStatus: 'not_checked' | 'unavailable' | 'inconclusive' | 'not_applied' | 'pending' | 'verified' | 'regressed'
+  configurationObserved: boolean
+  configurationObservedAt?: string
+  checkedAt?: string
+  evidenceComplete: boolean
+  attribution?: 'none' | 'exact_pod_uid'
+  currency: string
+  createdAt: string
+}
+
+export type DependencyStatus = {
+  name: string
+  configured: boolean
+  healthy: boolean
+  critical: boolean
+  detail: string
+}
+
+export type Policy = {
+  cpuSafetyMargin: number
+  memorySafetyMargin: number
+  limitSafetyMargin: number
+  minimumCpuMilli: number
+  minimumMemoryBytes: number
+  maximumCpuMilli: number
+  maximumMemoryBytes: number
+  maximumReduction: number
+  minimumSamples: number
+  highConfidenceSamples: number
+  cpuPercentile: number
+  memoryPercentile: number
+  trendHorizonDays?: number
+  cpuLimitStrategy?: 'adjust' | 'remove'
+  /** Changes below this share of the current value are suppressed. */
+  minimumChangeRatio?: number
+  /** Hours reductions wait after requests or limits change. */
+  cooldownHours?: number
+  /** Consistent observations required before a reduction is offered. */
+  requiredObservations?: number
+}
+
+export type PolicyProfile = { name: string; description: string; default: boolean; policy: Policy }
+
+/** A recommendation calculated with dryRun: not stored, no ID. */
+export type RecommendationPreview = {
+  dryRun: true
+  recommendation: Omit<RecommendationRecord, 'id' | 'createdAt' | 'source' | 'reviewStatus'> & { cpuThrottlingRatio?: number; effectivePolicy: Policy }
+  source?: 'prometheus'
+  window: string
+  step: string
+  events: { available: boolean; restarts: number; oomKills: number; throttlingAvailable: boolean; throttlingRatio: number; throttlingPeakRatio: number; replicas?: ReplicaEvents[] }
+}
+
+export type EfficiencyRow = {
+  namespace: string
+  workloads: number
+  pods: number
+  containersWithoutRequests: number
+  usageAvailable: boolean
+  cpuRequestedMilli: number
+  cpuAverageMilli?: number
+  cpuP95Milli?: number
+  cpuEfficiency?: number
+  cpuReclaimableMilli?: number
+  memoryRequestedBytes: number
+  memoryAverageBytes?: number
+  memoryP95Bytes?: number
+  memoryEfficiency?: number
+  memoryReclaimableBytes?: number
+  requestedMonthlyCost?: number
+  reclaimableMonthlyCost?: number
+}
+
+export type EfficiencyResponse = {
+  items: EfficiencyRow[]
+  status: ApiStatus
+  summary?: {
+    namespaces: number
+    workloads: number
+    containersWithoutRequests: number
+    cpuRequestedMilli: number
+    cpuAverageMilli: number
+    cpuReclaimableMilli: number
+    cpuEfficiency?: number
+    memoryRequestedBytes: number
+    memoryAverageBytes: number
+    memoryReclaimableBytes: number
+    memoryEfficiency?: number
+    reclaimableMonthlyCost?: number
+    currency?: string
+    window: string
+    basis: string
+  }
+}
+
+export type Exceedance = { overRequest?: number; overLimit?: number; nearLimit?: number }
+export type SpikeProfile = { classification: 'none' | 'rare' | 'frequent' | 'recurring'; count: number; spikesPerDay: number; medianDurationMinutes: number; peakToMedian: number; threshold: number; recurringHourUtc?: number }
+export type Backtest = { cpuCurrent: Exceedance; cpuRecommended: Exceedance; memoryCurrent: Exceedance; memoryRecommended: Exceedance }
+export type TrendSummary = { slopePerDay: number; growthPerDayPercent: number; rSquared: number; significant: boolean; projectedUplift: number }
+export type Trends = { cpu: TrendSummary; memory: TrendSummary }
+
+export type SignalEvent = { timestamp: string; kind: 'restart' | 'oom_kill' | 'rollout'; count?: number; detail?: string }
+export type Insight = { severity: 'info' | 'warning' | 'critical'; title: string; detail: string }
+
+export type SignalsResponse = {
+  status: ApiStatus
+  signals?: {
+    start: string
+    end: string
+    step: string
+    cpu: UsageSeries
+    memory: UsageSeries
+    throttling?: UsageSeries
+    replicas?: UsageSeries
+    latency?: UsageSeries
+    events: SignalEvent[]
+    warnings: string[]
+  }
+  current?: ContainerSpec
+  correlations?: { cpuThrottling?: number; cpuReplicas?: number; cpuLatency?: number; throttlingLatency?: number; memoryLatency?: number }
+  insights?: Insight[]
+  latencyConfigured?: boolean
+  spikes?: SpikeProfile
+}
+
+export type CapacityResponse = {
+  status: ApiStatus
+  nodes?: { total: number; schedulable: number }
+  allocatable?: { cpuMilli: number; memoryBytes: number }
+  current?: { nodesNeeded: number; unplacedPods: number; cpuRequestedMilli: number; memoryRequestedBytes: number }
+  recommended?: { nodesNeeded: number; unplacedPods: number; cpuRequestedMilli: number; memoryRequestedBytes: number }
+  reclaimableNodes?: number
+  containersWithRecommendations?: number
+  autoscaling?: {
+    karpenter: boolean
+    clusterAutoscaler: boolean
+    nodePools: Array<{ name: string; consolidationPolicy: string; consolidateAfter?: string; disruptionBudgets: string[] }>
+    warnings: string[]
+  }
+  realization?: string
+  assumptions?: string[]
+}
+
+export type WorkloadEfficiencyRow = {
+  kind: string
+  name: string
+  replicas: number
+  podsObserved: number
+  containersWithoutRequests: number
+  cpuRequestPerPodMilli: number
+  cpuAveragePerPodMilli?: number
+  cpuP95PerPodMilli?: number
+  cpuEfficiency?: number
+  cpuReclaimableMilli?: number
+  memoryRequestPerPodBytes: number
+  memoryAveragePerPodBytes?: number
+  memoryP95PerPodBytes?: number
+  memoryEfficiency?: number
+  memoryReclaimableBytes?: number
+  reclaimableMonthlyCost?: number
+}
+
+export type HotspotRow = {
+  namespace: string
+  kind: string
+  workload: string
+  container: string
+  pods: number
+  throttlingRatio?: number
+  throttlingPeakRatio?: number
+  spikeRatio?: number
+  cpuMedianMilli?: number
+  cpuPeakMilli?: number
+  cpuRequestMilli: number
+  cpuLimitMilli: number
+  pinnedAtLimit: boolean
+  severity: 'critical' | 'warning' | 'info'
+  issues: string[]
+  advice: string
+}

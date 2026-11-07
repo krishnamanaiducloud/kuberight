@@ -1,17 +1,373 @@
+# KubeRight chart defaults. See docs/helm-values.md for the complete contract.
+global:
+  imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+namespace:
+  # Helm users should prefer --create-namespace. Standalone rendering enables this.
+  create: false
+  labels: {}
+  annotations: {}
+
+# Without database.enabled, recommendation, idempotency, and audit state is
+# process-local and the chart refuses more than one replica.
 replicaCount: 1
+
 image:
   repository: mohankrishna999/kuberight
-  tag: "dev"
+  # Empty means Chart.appVersion. Release workflows publish immutable semver tags.
+  tag: ""
+  digest: ""
   pullPolicy: IfNotPresent
-service:
-  port: 8080
+
+imagePullSecrets: []
+
+operationMode: recommend
+
+inventory:
+  enabled: true
+  # Empty uses the release name as the stable cluster identity.
+  clusterID: ""
+  resync: 10m
+  qps: 10
+  burst: 20
+
+# External PostgreSQL for durable, shared recommendation, review, and audit
+# state. The chart never deploys a database. The Secret key must contain a
+# postgres:// connection string; prefer sslmode=verify-full.
+database:
+  enabled: false
+  existingSecret: ""
+  key: url
+  # Run a bounded pre-install/pre-upgrade Job that applies embedded,
+  # checksummed migrations under an advisory lock. Serving pods always verify
+  # the schema and never execute DDL. When false, installation succeeds only
+  # when an operator has already migrated the database.
+  migrate: true
+  migrationJob:
+    # Empty reuses database.existingSecret. Production installations should
+    # provide a separate URL for a short-lived role allowed to execute DDL,
+    # while the serving URL is restricted to application DML.
+    existingSecret: ""
+    key: url
+    activeDeadlineSeconds: 300
+    backoffLimit: 3
+    annotations: {}
+  maxConns: 10
+
+# Prometheus with cAdvisor container metrics (and optionally
+# kube-state-metrics for restart and OOM history).
+prometheus:
+  url: ""
+  # Permit an in-cluster http:// URL. Prefer HTTPS.
+  allowHTTP: false
+  timeout: 10s
+  # Global bound across all recommendation/signal requests in one API pod.
+  maxInFlight: 8
+
+# Usage lookback and resolution for generated recommendations.
+recommendations:
+  window: 168h
+  step: 5m
+
+# Usage lookback and resolution sent to the forecasting service.
+forecasting:
+  window: 336h
+  step: 1h
+
+approvals:
+  # Reject reviews by the identity that created the recommendation. Empty
+  # means automatic: enabled with Kubernetes authentication and disabled in
+  # static-token mode, which has only one identity.
+  requireDistinctApprover: ""
+
+# Operator-supplied unit prices for request-based savings estimates. Leave
+# both empty to disable estimates; KubeRight never invents prices.
+cost:
+  cpuCoreHour: ""
+  memoryGiBHour: ""
+  currency: USD
+
+# Correlate an application latency series with resource signals. A one-line
+# PromQL template in seconds using $namespace, $workload, or $container.
+latencyQuery: ""
+
+# Correlate traffic with usage, latency, and replicas. A one-line PromQL
+# template in requests per second using $namespace, $workload, or $container,
+# for example sum(rate(http_requests_total{namespace="$namespace",service="$workload"}[5m])).
+requestRateQuery: ""
+
+# Post-change verification of approved recommendations: how often each API
+# replica checks for OOM kills, throttling, restarts, and latency after the
+# approved values go live. "0s" disables the background check; the
+# verification endpoint still works on demand.
+verification:
+  interval: 15m
+
+# Continuous rightsizing (operationMode=apply). KubeRight then patches the pod
+# template resources of Deployments, StatefulSets, and DaemonSets, but only:
+# - in namespaces labeled kuberight.io/automation=enabled;
+# - for approved recommendations whose verdict is "recommend", whose
+#   evidence is unexpired and covered every replica, and whose workload UID,
+#   generation, spec fingerprint, and current resources still match;
+# - when no GitOps controller (Argo CD, Flux) owns the workload, unless it is
+#   annotated kuberight.io/automation-gitops=allow;
+# - with a resourceVersion precondition, at most maxChangesPerRun per pass,
+#   inside the optional daily UTC window (for example "22:00-04:00").
+# A regression found by post-change verification is rolled back to the exact
+# previous values. Annotate a workload kuberight.io/automation=disabled to opt
+# it out. Apply mode grants patch on those three kinds and requires
+# auth.mode=kubernetes and rbac.scope=cluster.
+automation:
+  interval: 15m
+  maxChangesPerRun: 5
+  window: ""
+
+# Recommendation lifecycle events for Slack, Teams, PagerDuty, Argo Events,
+# or CI. The Secret holds the URL and an optional HMAC signing secret.
+webhook:
+  existingSecret: ""
+  urlKey: url
+  signingSecretKey: ""
+  format: json
+
+# Export one gauge per container recommendation on /metrics for Grafana,
+# Coralogix, Datadog, or any OpenMetrics consumer. /metrics is
+# unauthenticated, so keep it reachable only by your monitoring stack.
+exportRecommendationMetrics: false
+
+serviceAccount:
+  create: true
+  automountServiceAccountToken: true
+  annotations: {}
+  name: ""
+
+rbac:
+  create: true
+  # namespace is the least-privilege default. Use cluster only for fleet-wide inventory.
+  scope: namespace
+  authReviews: true
+  monitoring:
+    enabled: true
+  extraRules: []
+
 auth:
+  # Kubernetes TokenReview accepts service-account, OpenShift OAuth, and
+  # cluster-configured OIDC bearer tokens and then authorizes every request
+  # with SubjectAccessReview. Static mode is intended for isolated development.
   mode: kubernetes
-apiTokenSecretName: kuberight-api-token
+  staticToken:
+    existingSecret: ""
+    key: token
+
+service:
+  type: ClusterIP
+  port: 8080
+  annotations: {}
+  clusterIP: ""
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: kuberight.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+route:
+  enabled: false
+  host: ""
+  annotations: {}
+  tls:
+    enabled: true
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+
+config:
+  existingConfigMap: ""
+  data: {}
+
+secretEnv: []
+extraEnv: []
+extraEnvFrom: []
+
+podAnnotations: {}
+podLabels: {}
+deploymentAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
 resources:
   requests:
-    cpu: 50m
-    memory: 64Mi
+    cpu: 100m
+    memory: 128Mi
   limits:
-    cpu: 500m
-    memory: 256Mi
+    cpu: 1
+    memory: 512Mi
+
+probes:
+  startup:
+    enabled: true
+    failureThreshold: 30
+    periodSeconds: 2
+  readiness:
+    enabled: true
+    initialDelaySeconds: 2
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+  liveness:
+    enabled: true
+    initialDelaySeconds: 10
+    periodSeconds: 20
+    timeoutSeconds: 2
+    failureThreshold: 3
+
+terminationGracePeriodSeconds: 30
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+  maxUnavailable: ""
+
+autoscaling:
+  # Requires database.enabled; the in-process store is not shared.
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 1
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: ""
+  behavior: {}
+
+topologySpreadConstraints:
+  enabled: true
+  maxSkew: 1
+  topologyKey: kubernetes.io/hostname
+  whenUnsatisfiable: ScheduleAnyway
+  extra: []
+
+# Linux nodes by default, so mixed Windows and Linux clusters (AKS, EKS)
+# never schedule these Linux images onto Windows nodes.
+nodeSelector:
+  kubernetes.io/os: linux
+tolerations: []
+affinity: {}
+priorityClassName: ""
+runtimeClassName: ""
+
+networkPolicy:
+  enabled: true
+  # Ingress is limited to same-namespace pods unless additional peers are supplied.
+  ingressFromSameNamespace: true
+  ingress: []
+  # Applied automatically when a ServiceMonitor is enabled. Adjust these selectors
+  # to match the namespace and pods that run Prometheus in the target cluster.
+  monitoring:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: monitoring
+    podSelector: {}
+  # Enabling egress isolation requires explicit rules for Kubernetes API, DNS,
+  # Prometheus/OpenCost, and registered cluster endpoints.
+  egressIsolation: false
+  egress: []
+
+metrics:
+  enabled: true
+  path: /metrics
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}
+    relabelings: []
+    metricRelabelings: []
+  prometheusRule:
+    enabled: false
+    labels: {}
+
+ml:
+  enabled: false
+  # Optional shared API key. The same Secret is mounted into the Go API and
+  # the forecasting service.
+  apiKey:
+    existingSecret: ""
+    key: api-key
+  # A single ML replica is enforced because model updates use a local
+  # single-writer store. Enable persistence to retain validated models across
+  # pod restarts, or bind an externally provisioned claim.
+  replicaCount: 1
+  image:
+    repository: mohankrishna999/kuberight-ml
+    tag: ""
+    digest: ""
+    pullPolicy: IfNotPresent
+  imagePullSecrets: []
+  service:
+    port: 8081
+    annotations: {}
+  persistence:
+    enabled: false
+    existingClaim: ""
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+    size: 1Gi
+    annotations: {}
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 1
+      memory: 1Gi
+  podAnnotations: {}
+  podLabels: {}
+  podSecurityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+  autoscaling:
+    # Horizontal scaling is unsupported while the model store is single-writer.
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 1
+    targetCPUUtilizationPercentage: 70
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  networkPolicy:
+    enabled: true
+    ingress: []
+  nodeSelector:
+    kubernetes.io/os: linux
+  tolerations: []
+  affinity: {}
+  extraEnv: []
+
+extraVolumes: []
+extraVolumeMounts: []
+
+commonLabels: {}
+commonAnnotations: {}

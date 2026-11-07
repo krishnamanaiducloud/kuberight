@@ -1,57 +1,22 @@
 name: CI
+
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+    tags:
+      - "v*"
   pull_request:
   workflow_dispatch:
+
 permissions:
   contents: read
+  pull-requests: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  go:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: false
-      - run: go mod tidy
-      - run: go mod verify
-      - run: test -z "$(gofmt -l cmd internal)"
-      - run: go vet ./...
-      - run: go test -race ./...
-      - run: go build ./cmd/kuberight
-  python:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: python -m pip install -r ml/requirements.txt pytest httpx
-      - run: python -m compileall -q ml
-      - run: cd ml && python -m pytest -q
-  helm:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: azure/setup-helm@v4.3.0
-      - run: helm lint --strict charts/kuberight
-      - run: helm template kuberight charts/kuberight > /tmp/kuberight.yaml
-  image-build:
-    needs: [go, python, helm]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: false
-          tags: kuberight:ci
-      - uses: docker/build-push-action@v6
-        with:
-          context: ./ml
-          file: ./ml/Dockerfile
-          push: false
-          tags: kuberight-ml:ci
+  quality-gates:
+    uses: ./.github/workflows/quality-gates.yaml

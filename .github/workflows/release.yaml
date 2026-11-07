@@ -1,0 +1,481 @@
+name: Release immutable images
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Validate release tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag=${GITHUB_REF_NAME}
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || {
+            echo "release tag must match vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc.N" >&2
+            exit 1
+          }
+          version=${tag#v}
+          chart_version=$(awk '$1 == "version:" { gsub(/"/, "", $2); print $2; exit }' charts/kuberight/Chart.yaml)
+          app_version=$(awk '$1 == "appVersion:" { gsub(/"/, "", $2); print $2; exit }' charts/kuberight/Chart.yaml)
+          test "$version" = "$chart_version" || {
+            echo "release tag $version does not match chart version $chart_version" >&2
+            exit 1
+          }
+          test "$version" = "$app_version" || {
+            echo "release tag $version does not match chart appVersion $app_version" >&2
+            exit 1
+          }
+          git merge-base --is-ancestor "$GITHUB_SHA" "origin/main" || {
+            echo "release commit must be reachable from main" >&2
+            exit 1
+          }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  quality-gates:
+    needs: version
+    uses: ./.github/workflows/quality-gates.yaml
+
+  publish:
+    name: Stage, verify, and promote
+    needs:
+      - version
+      - quality-gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: dockerhub-release
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      BACKEND_IMAGE: docker.io/mohankrishna999/kuberight
+      ML_IMAGE: docker.io/mohankrishna999/kuberight-ml
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+        with:
+          platforms: arm64
+          image: docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Install registry client
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes skopeo
+      - name: Define release-scoped staging refs
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_date=$(git show -s --format=%cI "$GITHUB_SHA")
+          source_date_epoch=$(git show -s --format=%ct "$GITHUB_SHA")
+          {
+            printf 'BUILD_DATE=%s\n' "$build_date"
+            printf 'SOURCE_DATE_EPOCH=%s\n' "$source_date_epoch"
+            printf 'BACKEND_STAGING_REF=%s:staging-%s-%s\n' "$BACKEND_IMAGE" "$VERSION" "$GITHUB_SHA"
+            printf 'ML_STAGING_REF=%s:staging-%s-%s\n' "$ML_IMAGE" "$VERSION" "$GITHUB_SHA"
+          } >> "$GITHUB_ENV"
+      - name: Discover resumable staging refs
+        id: staging
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          probe_staging_ref() {
+            local ref=$1
+            local output=$2
+            local error_file
+            error_file=$(mktemp)
+
+            if skopeo inspect --raw "docker://$ref" >/dev/null 2>"$error_file"; then
+              echo "$output=false" >> "$GITHUB_OUTPUT"
+              echo "Reusing existing release-scoped staging ref $ref"
+            elif grep -Eqi 'manifest unknown|name unknown|manifest[^[:alnum:]]+not found|not found[^[:alnum:]]+manifest' "$error_file"; then
+              echo "$output=true" >> "$GITHUB_OUTPUT"
+              echo "Staging ref does not exist yet: $ref"
+            else
+              echo "Could not safely determine whether staging ref exists: $ref" >&2
+              cat "$error_file" >&2
+              rm -f "$error_file"
+              exit 1
+            fi
+
+            rm -f "$error_file"
+          }
+
+          probe_staging_ref "$BACKEND_STAGING_REF" build_backend
+          probe_staging_ref "$ML_STAGING_REF" build_ml
+      - name: Build backend OCI archive locally
+        if: steps.staging.outputs.build_backend == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            --provenance=mode=max --sbom=true \
+            --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
+            --build-arg "VERSION=$VERSION" --build-arg "VCS_REF=$GITHUB_SHA" --build-arg "BUILD_DATE=$BUILD_DATE" \
+            --tag "$BACKEND_STAGING_REF" \
+            --output type=oci,dest=kuberight.oci.tar .
+      - name: Build ML OCI archive locally
+        if: steps.staging.outputs.build_ml == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            --provenance=mode=max --sbom=true \
+            --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
+            --build-arg "VERSION=$VERSION" --build-arg "VCS_REF=$GITHUB_SHA" --build-arg "BUILD_DATE=$BUILD_DATE" \
+            --tag "$ML_STAGING_REF" \
+            --output type=oci,dest=kuberight-ml.oci.tar ./ml
+      - name: Pull existing backend staging archive
+        if: steps.staging.outputs.build_backend == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest_file=$(mktemp)
+          skopeo inspect --raw "docker://$BACKEND_STAGING_REF" > "$manifest_file"
+          stage_digest="sha256:$(sha256sum "$manifest_file" | awk '{print $1}')"
+          rm -f "$manifest_file"
+          skopeo copy --all --preserve-digests \
+            "docker://$BACKEND_IMAGE@$stage_digest" \
+            oci-archive:kuberight.oci.tar
+          test "sha256:$(skopeo inspect --raw oci-archive:kuberight.oci.tar | sha256sum | awk '{print $1}')" = "$stage_digest"
+      - name: Pull existing ML staging archive
+        if: steps.staging.outputs.build_ml == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest_file=$(mktemp)
+          skopeo inspect --raw "docker://$ML_STAGING_REF" > "$manifest_file"
+          stage_digest="sha256:$(sha256sum "$manifest_file" | awk '{print $1}')"
+          rm -f "$manifest_file"
+          skopeo copy --all --preserve-digests \
+            "docker://$ML_IMAGE@$stage_digest" \
+            oci-archive:kuberight-ml.oci.tar
+          test "sha256:$(skopeo inspect --raw oci-archive:kuberight-ml.oci.tar | sha256sum | awk '{print $1}')" = "$stage_digest"
+      - name: Resolve and validate local release archives
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          validate_archive() {
+            local archive=$1
+            local index_file=$2
+            local output_name=$3
+            local digest
+
+            skopeo inspect --raw "oci-archive:$archive" > "$index_file"
+            digest="sha256:$(sha256sum "$index_file" | awk '{print $1}')"
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+              echo "Invalid digest for release archive $archive: $digest" >&2
+              exit 1
+            }
+
+            jq -e '([.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64")] | length) == 1' "$index_file" >/dev/null
+            jq -e '([.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64")] | length) == 1' "$index_file" >/dev/null
+
+            for arch in amd64 arm64; do
+              local metadata
+              metadata=$(skopeo inspect --override-os linux --override-arch "$arch" "oci-archive:$archive")
+              test "$(jq -r '.Labels["org.opencontainers.image.version"] // empty' <<<"$metadata")" = "$VERSION"
+              test "$(jq -r '.Labels["org.opencontainers.image.revision"] // empty' <<<"$metadata")" = "$GITHUB_SHA"
+              test "$(jq -r '.Labels["org.opencontainers.image.created"] // empty' <<<"$metadata")" = "$BUILD_DATE"
+            done
+
+            printf '%s=%s\n' "$output_name" "$digest" >> "$GITHUB_ENV"
+          }
+
+          validate_archive kuberight.oci.tar backend-index.json KUBERIGHT_DIGEST
+          validate_archive kuberight-ml.oci.tar ml-index.json KUBERIGHT_ML_DIGEST
+      - name: Extract single-platform archives for security gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          skopeo copy --override-os linux --override-arch amd64 oci-archive:kuberight.oci.tar oci-archive:kuberight-linux-amd64.oci.tar
+          skopeo copy --override-os linux --override-arch arm64 oci-archive:kuberight.oci.tar oci-archive:kuberight-linux-arm64.oci.tar
+          skopeo copy --override-os linux --override-arch amd64 oci-archive:kuberight-ml.oci.tar oci-archive:kuberight-ml-linux-amd64.oci.tar
+          skopeo copy --override-os linux --override-arch arm64 oci-archive:kuberight-ml.oci.tar oci-archive:kuberight-ml-linux-arm64.oci.tar
+      - name: Execute the exact release archives on both architectures
+        shell: bash
+        run: |
+          set -euo pipefail
+          skopeo copy oci-archive:kuberight-linux-amd64.oci.tar docker-daemon:kuberight-release:amd64
+          skopeo copy oci-archive:kuberight-linux-arm64.oci.tar docker-daemon:kuberight-release:arm64
+          skopeo copy oci-archive:kuberight-ml-linux-amd64.oci.tar docker-daemon:kuberight-ml-release:amd64
+          skopeo copy oci-archive:kuberight-ml-linux-arm64.oci.tar docker-daemon:kuberight-ml-release:arm64
+
+          for image in kuberight-release:amd64 kuberight-release:arm64 kuberight-ml-release:amd64 kuberight-ml-release:arm64; do
+            configured_user=$(docker image inspect --format '{{.Config.User}}' "$image")
+            configured_uid=${configured_user%%:*}
+            [[ "$configured_uid" =~ ^[1-9][0-9]*$ ]] || {
+              echo "Release image $image has an unsafe configured user: ${configured_user:-<empty>}" >&2
+              exit 1
+            }
+          done
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' kuberight-release:amd64)" = linux/amd64
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' kuberight-release:arm64)" = linux/arm64
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' kuberight-ml-release:amd64)" = linux/amd64
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' kuberight-ml-release:arm64)" = linux/arm64
+
+          for arch in amd64 arm64; do
+            docker run --rm --platform "linux/$arch" --entrypoint /usr/bin/python3 "kuberight-ml-release:$arch" \
+              -c "import importlib.util, platform; from pathlib import Path; assert importlib.util.find_spec('pip') is None; assert importlib.util.find_spec('ensurepip') is None; assert not Path('/usr/bin/pebble').exists(); assert 'Package: libstdc++6' in Path('/var/lib/dpkg/status.d/libstdc++6').read_text(); import fastapi, joblib, numpy, pydantic, scipy, sklearn, uvicorn; print(platform.machine())"
+          done
+
+          cleanup() {
+            for name in kuberight-release-amd64 kuberight-release-arm64 kuberight-ml-release-amd64 kuberight-ml-release-arm64; do
+              docker logs "$name" 2>/dev/null || true
+              docker rm -f "$name" >/dev/null 2>&1 || true
+            done
+          }
+          trap cleanup EXIT
+          for arch in amd64 arm64; do
+            if test "$arch" = amd64; then
+              backend_port=18080
+              ml_port=18081
+            else
+              backend_port=18082
+              ml_port=18083
+            fi
+            docker run --platform "linux/$arch" -d --name "kuberight-release-$arch" \
+              --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+              -e KUBERIGHT_AUTH_MODE=static \
+              -e KUBERIGHT_API_TOKEN=release-smoke-token-at-least-32-characters \
+              -e KUBERIGHT_INVENTORY_ENABLED=false \
+              -p "$backend_port:8080" "kuberight-release:$arch"
+            docker run --platform "linux/$arch" -d --name "kuberight-ml-release-$arch" \
+              --read-only --tmpfs /tmp:rw,noexec,nosuid,size=256m \
+              -p "$ml_port:8081" "kuberight-ml-release:$arch"
+          done
+          wait_for_url() {
+            local url=$1
+            for _ in {1..90}; do
+              if curl --fail --silent "$url" >/dev/null; then
+                return 0
+              fi
+              sleep 2
+            done
+            echo "Timed out waiting for $url" >&2
+            return 1
+          }
+          for port in 18080 18081 18082 18083; do
+            wait_for_url "http://127.0.0.1:$port/healthz"
+            curl --fail --silent --show-error "http://127.0.0.1:$port/readyz" >/dev/null
+          done
+      - uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: v0.76.0
+      - name: Block vulnerable release archives
+        run: |
+          trivy image --input kuberight-linux-amd64.oci.tar --exit-code 1 --severity HIGH,CRITICAL --vuln-type os,library
+          trivy image --input kuberight-linux-arm64.oci.tar --exit-code 1 --severity HIGH,CRITICAL --vuln-type os,library
+          trivy image --input kuberight-ml-linux-amd64.oci.tar --exit-code 1 --severity HIGH,CRITICAL --vuln-type os,library
+          trivy image --input kuberight-ml-linux-arm64.oci.tar --exit-code 1 --severity HIGH,CRITICAL --vuln-type os,library
+      - uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0
+      - name: Generate release SBOMs
+        run: |
+          syft oci-archive:kuberight-linux-amd64.oci.tar -o spdx-json=kuberight-linux-amd64.spdx.json
+          syft oci-archive:kuberight-linux-arm64.oci.tar -o spdx-json=kuberight-linux-arm64.spdx.json
+          syft oci-archive:kuberight-ml-linux-amd64.oci.tar -o spdx-json=kuberight-ml-linux-amd64.spdx.json
+          syft oci-archive:kuberight-ml-linux-arm64.oci.tar -o spdx-json=kuberight-ml-linux-arm64.spdx.json
+      - name: Publish verified archives to release-scoped staging refs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ensure_staging_ref() {
+            local ref=$1
+            local expected=$2
+            local archive=$3
+            local archive_digest
+            local error_file
+            local manifest_file
+            local actual
+            local state
+            error_file=$(mktemp)
+            manifest_file=$(mktemp)
+
+            archive_digest="sha256:$(skopeo inspect --raw "oci-archive:$archive" | sha256sum | awk '{print $1}')"
+            if test "$archive_digest" != "$expected"; then
+              echo "Local archive changed after validation: $archive" >&2
+              echo "validated: $expected" >&2
+              echo "current:   $archive_digest" >&2
+              rm -f "$error_file" "$manifest_file"
+              exit 1
+            fi
+
+            if skopeo inspect --raw "docker://$ref" >"$manifest_file" 2>"$error_file"; then
+              actual="sha256:$(sha256sum "$manifest_file" | awk '{print $1}')"
+              if test "$actual" != "$expected"; then
+                echo "Refusing to replace release-scoped staging ref $ref" >&2
+                echo "existing: $actual" >&2
+                echo "verified: $expected" >&2
+                rm -f "$error_file" "$manifest_file"
+                exit 1
+              fi
+              state=present
+            elif grep -Eqi 'manifest unknown|name unknown|manifest[^[:alnum:]]+not found|not found[^[:alnum:]]+manifest' "$error_file"; then
+              state=missing
+            else
+              echo "Could not safely determine state of $ref" >&2
+              cat "$error_file" >&2
+              rm -f "$error_file" "$manifest_file"
+              exit 1
+            fi
+            rm -f "$error_file" "$manifest_file"
+
+            if test "$state" = missing; then
+              skopeo copy --all --preserve-digests \
+                "oci-archive:$archive" \
+                "docker://$ref"
+            fi
+
+            manifest_file=$(mktemp)
+            skopeo inspect --raw "docker://$ref" > "$manifest_file"
+            actual="sha256:$(sha256sum "$manifest_file" | awk '{print $1}')"
+            rm -f "$manifest_file"
+            test "$actual" = "$expected"
+          }
+
+          # This is the first step allowed to create a registry reference. Both
+          # multi-architecture archives have already passed every scan and SBOM
+          # gate above. Existing retry refs are accepted only at the same digest.
+          ensure_staging_ref "$BACKEND_STAGING_REF" "$KUBERIGHT_DIGEST" kuberight.oci.tar
+          ensure_staging_ref "$ML_STAGING_REF" "$KUBERIGHT_ML_DIGEST" kuberight-ml.oci.tar
+      - uses: sigstore/cosign-installer@d7543c93d881b35a8faa02e8e3605f69b7a1ce62 # v3.10.0
+      - name: Keyless-sign staged digests and attach SBOM attestations
+        shell: bash
+        run: |
+          set -euo pipefail
+          cosign sign --yes "$BACKEND_IMAGE@$KUBERIGHT_DIGEST"
+          cosign sign --yes "$ML_IMAGE@$KUBERIGHT_ML_DIGEST"
+          cosign attest --yes --type spdxjson --predicate kuberight-linux-amd64.spdx.json "$BACKEND_IMAGE@$KUBERIGHT_DIGEST"
+          cosign attest --yes --type spdxjson --predicate kuberight-linux-arm64.spdx.json "$BACKEND_IMAGE@$KUBERIGHT_DIGEST"
+          cosign attest --yes --type spdxjson --predicate kuberight-ml-linux-amd64.spdx.json "$ML_IMAGE@$KUBERIGHT_ML_DIGEST"
+          cosign attest --yes --type spdxjson --predicate kuberight-ml-linux-arm64.spdx.json "$ML_IMAGE@$KUBERIGHT_ML_DIGEST"
+      - name: Verify staged signatures, attestations, and pullability
+        shell: bash
+        run: |
+          set -euo pipefail
+          cosign verify \
+            --certificate-identity "https://github.com/krishnamanaiducloud/kuberight/.github/workflows/release.yaml@refs/tags/v$VERSION" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$BACKEND_IMAGE@$KUBERIGHT_DIGEST"
+          cosign verify \
+            --certificate-identity "https://github.com/krishnamanaiducloud/kuberight/.github/workflows/release.yaml@refs/tags/v$VERSION" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$ML_IMAGE@$KUBERIGHT_ML_DIGEST"
+          cosign verify-attestation --type spdxjson \
+            --certificate-identity "https://github.com/krishnamanaiducloud/kuberight/.github/workflows/release.yaml@refs/tags/v$VERSION" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$BACKEND_IMAGE@$KUBERIGHT_DIGEST"
+          cosign verify-attestation --type spdxjson \
+            --certificate-identity "https://github.com/krishnamanaiducloud/kuberight/.github/workflows/release.yaml@refs/tags/v$VERSION" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$ML_IMAGE@$KUBERIGHT_ML_DIGEST"
+          # Download every manifest and layer from the digest that passed all
+          # gates, rather than treating a registry manifest lookup as proof of
+          # pullability. Promotion does not begin until both copies succeed.
+          skopeo copy --all --preserve-digests "docker://$BACKEND_IMAGE@$KUBERIGHT_DIGEST" oci-archive:/tmp/kuberight-pull-check.oci.tar
+          skopeo copy --all --preserve-digests "docker://$ML_IMAGE@$KUBERIGHT_ML_DIGEST" oci-archive:/tmp/kuberight-ml-pull-check.oci.tar
+          test "sha256:$(skopeo inspect --raw oci-archive:/tmp/kuberight-pull-check.oci.tar | sha256sum | awk '{print $1}')" = "$KUBERIGHT_DIGEST"
+          test "sha256:$(skopeo inspect --raw oci-archive:/tmp/kuberight-ml-pull-check.oci.tar | sha256sum | awk '{print $1}')" = "$KUBERIGHT_ML_DIGEST"
+      - name: Promote verified digests to immutable version tags
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          classify_version_tag() {
+            local image=$1
+            local expected=$2
+            local output_name=$3
+            local error_file
+            local manifest_file
+            local actual
+            error_file=$(mktemp)
+            manifest_file=$(mktemp)
+
+            if skopeo inspect --raw "docker://$image:$VERSION" >"$manifest_file" 2>"$error_file"; then
+              actual="sha256:$(sha256sum "$manifest_file" | awk '{print $1}')"
+              if test "$actual" != "$expected"; then
+                echo "Refusing to replace immutable tag $image:$VERSION" >&2
+                echo "existing: $actual" >&2
+                echo "staged:   $expected" >&2
+                rm -f "$error_file" "$manifest_file"
+                exit 1
+              fi
+              printf -v "$output_name" '%s' present
+            elif grep -Eqi 'manifest unknown|name unknown|manifest[^[:alnum:]]+not found|not found[^[:alnum:]]+manifest' "$error_file"; then
+              printf -v "$output_name" '%s' missing
+            else
+              echo "Could not safely determine state of $image:$VERSION" >&2
+              cat "$error_file" >&2
+              rm -f "$error_file" "$manifest_file"
+              exit 1
+            fi
+
+            rm -f "$error_file" "$manifest_file"
+          }
+
+          # Preflight both tags before changing either one. A retry may find
+          # one or both tags already promoted, but only the verified digests
+          # from this release-scoped staging pair are acceptable.
+          classify_version_tag "$BACKEND_IMAGE" "$KUBERIGHT_DIGEST" backend_state
+          classify_version_tag "$ML_IMAGE" "$KUBERIGHT_ML_DIGEST" ml_state
+
+          if test "$backend_state" = missing; then
+            skopeo copy --all --preserve-digests \
+              "docker://$BACKEND_IMAGE@$KUBERIGHT_DIGEST" \
+              "docker://$BACKEND_IMAGE:$VERSION"
+          fi
+          if test "$ml_state" = missing; then
+            skopeo copy --all --preserve-digests \
+              "docker://$ML_IMAGE@$KUBERIGHT_ML_DIGEST" \
+              "docker://$ML_IMAGE:$VERSION"
+          fi
+
+          test "sha256:$(skopeo inspect --raw "docker://$BACKEND_IMAGE:$VERSION" | sha256sum | awk '{print $1}')" = "$KUBERIGHT_DIGEST"
+          test "sha256:$(skopeo inspect --raw "docker://$ML_IMAGE:$VERSION" | sha256sum | awk '{print $1}')" = "$KUBERIGHT_ML_DIGEST"
+          docker buildx imagetools inspect "$BACKEND_IMAGE:$VERSION"
+          docker buildx imagetools inspect "$ML_IMAGE:$VERSION"
+          printf '%s@%s\n%s@%s\n' \
+            "$BACKEND_IMAGE" "$KUBERIGHT_DIGEST" \
+            "$ML_IMAGE" "$KUBERIGHT_ML_DIGEST" > release-digests.txt
+      - name: Create or complete GitHub release
+        uses: softprops/action-gh-release@e598afbe1493e6b1bafb1f389cabb956eab91231 # v3.0.3
+        with:
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          make_latest: false
+          overwrite_files: true
+          prerelease: ${{ contains(needs.version.outputs.version, '-rc.') }}
+          files: |
+            kuberight-linux-amd64.spdx.json
+            kuberight-linux-arm64.spdx.json
+            kuberight-ml-linux-amd64.spdx.json
+            kuberight-ml-linux-arm64.spdx.json
+            release-digests.txt

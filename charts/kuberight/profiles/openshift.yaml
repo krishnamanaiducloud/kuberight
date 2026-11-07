@@ -1,0 +1,36 @@
+# OpenShift profile. The primary and ML images must support arbitrary non-root UIDs.
+replicaCount: 1
+autoscaling:
+  enabled: false
+ml:
+  replicaCount: 1
+  autoscaling:
+    enabled: false
+route:
+  enabled: true
+  tls:
+    enabled: true
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+ingress:
+  enabled: false
+networkPolicy:
+  enabled: true
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              network.openshift.io/policy-group: ingress
+      ports:
+        - protocol: TCP
+          port: 8080
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL

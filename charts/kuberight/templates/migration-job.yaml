@@ -1,0 +1,57 @@
+{{- include "kuberight.validateValues" . }}
+{{- if and .Values.database.enabled .Values.database.migrate }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "kuberight.fullname" . }}-migrate
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kuberight.commonLabels" . | nindent 4 }}
+    app.kubernetes.io/component: migration
+  {{- $hookAnnotations := dict "helm.sh/hook" "pre-install,pre-upgrade" "helm.sh/hook-weight" "-5" "helm.sh/hook-delete-policy" "before-hook-creation,hook-succeeded" }}
+  annotations:
+    {{- with (mergeOverwrite (dict) .Values.commonAnnotations .Values.database.migrationJob.annotations $hookAnnotations) }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  activeDeadlineSeconds: {{ .Values.database.migrationJob.activeDeadlineSeconds }}
+  backoffLimit: {{ .Values.database.migrationJob.backoffLimit }}
+  template:
+    metadata:
+      labels:
+        {{- include "kuberight.commonLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migration
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- $pullSecrets := concat .Values.global.imagePullSecrets .Values.imagePullSecrets }}
+      {{- with $pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: migrate
+          image: {{ include "kuberight.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["migrate"]
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: KUBERIGHT_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default .Values.database.existingSecret .Values.database.migrationJob.existingSecret | quote }}
+                  key: {{ .Values.database.migrationJob.key | quote }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

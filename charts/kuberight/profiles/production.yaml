@@ -1,0 +1,36 @@
+# Production baseline. Create the kuberight-database Secret before install;
+# its `url` key must point at external PostgreSQL. For least privilege,
+# override database.migrationJob.existingSecret with a separate DDL role.
+replicaCount: 2
+database:
+  enabled: true
+  existingSecret: kuberight-database
+  migrate: true
+podDisruptionBudget:
+  enabled: true
+  minAvailable: ""
+  maxUnavailable: 1
+topologySpreadConstraints:
+  enabled: true
+  maxSkew: 1
+  topologyKey: topology.kubernetes.io/zone
+  whenUnsatisfiable: DoNotSchedule
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+networkPolicy:
+  enabled: true
+metrics:
+  # Enable only after installing Prometheus Operator CRDs in the target cluster.
+  serviceMonitor:
+    enabled: false
+  prometheusRule:
+    enabled: false
+ml:
+  replicaCount: 1
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 1
