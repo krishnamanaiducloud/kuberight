@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM ubuntu/python:3.12-24.04_stable@sha256:6d204bacbd6717f2723461aa2323ea623eccac6ffc4c3e5b35ef7e8af93c63c9 AS runtime-base
+FROM ubuntu/python:3.12-24.04_stable@sha256:ec2498ae556d1dd40e896fc6582797ab2b9f051618b3aaaa48c68bca48ce337a AS runtime-base
 
 FROM ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852 AS runtime-libs
 RUN mkdir -p /opt/runtime-libs \
@@ -23,7 +23,7 @@ RUN apt-get -o Acquire::Retries=5 update && \
     sh /tmp/chisel-dpkg-status.sh /opt/runtime-base /opt/runtime-metadata/var/lib/dpkg/status.d && \
     rm -rf /var/lib/apt/lists/* /opt/runtime-base
 
-FROM python:3.12.15-slim-bookworm@sha256:6a0e06f5ba0b373d051aabd3fffb9b873f27f9a2a3a14bcbe37dee6f0e3bbc70 AS build
+FROM python:3.12.16-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df AS build
 WORKDIR /build
 COPY requirements.lock ./
 RUN python -m pip install --no-cache-dir --require-hashes --only-binary=:all: --target /opt/python -r requirements.lock && \

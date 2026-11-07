@@ -2,7 +2,7 @@
 
 # The dashboard bundle is platform independent and the API is cross-compiled, so both build
 # stages run natively on the build platform; only the final stage is per target platform.
-FROM --platform=$BUILDPLATFORM node:24.22.0-bookworm-slim@sha256:91acba91b842bec0bf7ea6f5e09c644c7ccad72c4996ed9616d861d1c7cd60d4 AS web-build
+FROM --platform=$BUILDPLATFORM node:24.22.2-bookworm-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9 AS web-build
 USER root
 WORKDIR /app
 RUN chown 1000:1000 /app
@@ -12,7 +12,7 @@ RUN npm ci --no-audit --no-fund
 COPY --chown=1000:1000 web/ ./
 RUN npm run build
 
-FROM --platform=$BUILDPLATFORM golang:1.27.3-bookworm@sha256:d9b6a1beb9474adc2a1ce842573639b44b2a0dd49b6669f51d3821baf9ec37c9 AS go-build
+FROM --platform=$BUILDPLATFORM golang:1.27.3-bookworm@sha256:dc0963f32053e4bc451d24d87e3892d42d01021b61f093e98eb95c0352bb84b0 AS go-build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download && go mod verify
