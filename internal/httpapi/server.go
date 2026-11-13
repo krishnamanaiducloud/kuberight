@@ -373,6 +373,7 @@ func resourceName(resource string) string {
 func (server *apiServer) prometheusMetrics(w http.ResponseWriter, r *http.Request) {
 	server.metrics.render(w)
 	server.renderVerificationMetrics(r.Context(), w)
+	renderAutomationMetrics(w)
 	server.renderIntegrationMetrics(r.Context(), w)
 }
 

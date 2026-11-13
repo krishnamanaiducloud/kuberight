@@ -71,4 +71,33 @@ spec:
             summary: An applied KubeRight recommendation was followed by OOM kills, throttling, restarts, or slower responses
             description: Open the recommendation's verification (GET /api/v1/recommendations/{id}/verification) or the Correlation analysis view, and consider restoring the previous requests and limits.
             runbook_url: https://github.com/krishnamanaiducloud/kuberight/blob/main/README.md#correlation-analysis-and-recommendation-accuracy
+    {{- if eq .Values.operationMode "apply" }}
+    - name: kuberight.automation
+      rules:
+        - alert: KubeRightAutomatedChangeFailed
+          expr: sum(increase(kuberight_automation_changes_total{namespace={{ .Release.Namespace | quote }},outcome="failed"}[30m])) > 0
+          labels:
+            severity: warning
+          annotations:
+            summary: An automated KubeRight change or rollback could not be applied
+            description: Check the automation audit events and GET /api/v1/automation for the failing workload. A conflict means the workload changed after evaluation; KubeRight re-evaluates on the next pass.
+            runbook_url: https://github.com/krishnamanaiducloud/kuberight/blob/main/README.md#continuous-rightsizing
+        - alert: KubeRightAutomatedChangeRolledBack
+          expr: sum(increase(kuberight_automation_changes_total{namespace={{ .Release.Namespace | quote }},action="rollback",outcome="rolled_back"}[1h])) > 0
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeRight rolled back an automated change after a verified regression
+            description: The previous requests and limits were restored. Review the recommendation's verification before approving new advice for that container.
+            runbook_url: https://github.com/krishnamanaiducloud/kuberight/blob/main/README.md#continuous-rightsizing
+        - alert: KubeRightAutomationStalled
+          # A pass runs every automation.interval on the replica that holds the lock.
+          expr: time() - max(kuberight_automation_last_pass_timestamp_seconds{namespace={{ .Release.Namespace | quote }}}) > 3 * {{ include "kuberight.durationSeconds" .Values.automation.interval }}
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: No KubeRight automation pass has completed for three intervals
+            runbook_url: https://github.com/krishnamanaiducloud/kuberight/blob/main/README.md#continuous-rightsizing
+    {{- end }}
 {{- end }}

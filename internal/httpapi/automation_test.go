@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -292,4 +293,34 @@ func (access *recordingAccess) checked(verb, resource string) bool {
 		}
 	}
 	return false
+}
+
+func TestAutomationRunsAreSingletonsAndExportMetrics(t *testing.T) {
+	harness := newAutomationHarness(t, config.ModeApply, automationSpec(), nil)
+	storeApproved(t, harness.api, automationRecommendation(), fixedNow.Add(-time.Hour))
+	// Another replica holds the pass lock: an applying run must not proceed,
+	// while the read-only plan still works.
+	release, acquired, err := harness.api.store.TryLock(context.Background(), automationLockName)
+	if err != nil || !acquired {
+		t.Fatalf("lock acquired=%v err=%v", acquired, err)
+	}
+	if response, body := harness.api.do(t, http.MethodPost, "/api/v1/automation:run", "alice", ""); response.Code != http.StatusConflict || body["error"].(map[string]any)["code"] != "automation_busy" {
+		t.Fatalf("busy run: status=%d body=%v", response.Code, body)
+	}
+	if response, _ := harness.api.do(t, http.MethodGet, "/api/v1/automation", "alice", ""); response.Code != http.StatusOK || len(*harness.patches) != 0 {
+		t.Fatalf("plan during a held lock: status=%d patches=%v", response.Code, *harness.patches)
+	}
+	release()
+	if response, body := harness.api.do(t, http.MethodPost, "/api/v1/automation:run", "alice", ""); response.Code != http.StatusOK || body["applied"].(float64) != 1 {
+		t.Fatalf("run after release: status=%d body=%v", response.Code, body)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	recorder := httptest.NewRecorder()
+	harness.api.handler.ServeHTTP(recorder, request)
+	metrics := recorder.Body.String()
+	for _, required := range []string{`kuberight_automation_changes_total{action="apply",outcome="applied"}`, "kuberight_automation_busy_total", "kuberight_automation_last_pass_timestamp_seconds"} {
+		if !strings.Contains(metrics, required) {
+			t.Fatalf("metrics lack %q:\n%s", required, metrics)
+		}
+	}
 }

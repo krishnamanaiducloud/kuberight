@@ -46,6 +46,9 @@ func createPolicy(ctx context.Context, db queryer, mutation repository.PolicyMut
 	if err != nil {
 		return repository.PolicyRecord{}, err
 	}
+	if err := rejectAmbiguousPolicy(ctx, db, "", mutation); err != nil {
+		return repository.PolicyRecord{}, err
+	}
 	now := time.Now().UTC()
 	return scanPolicy(db.QueryRow(ctx, `INSERT INTO policies
 (id,name,description,scope_level,cluster_id,namespace,workload_kind,workload_name,container_name,priority,enabled,policy,version,created_at,created_by,updated_at,updated_by)
@@ -55,8 +58,38 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,1,$13,$14,$13,$14) RETURNING `+po
 		mutation.Priority, mutation.Enabled, payload, now, mutation.Actor))
 }
 
-func (store *Store) CreatePolicy(ctx context.Context, mutation repository.PolicyMutation) (repository.PolicyRecord, error) {
-	return createPolicy(ctx, store.pool, mutation)
+func (store *Store) CreatePolicy(ctx context.Context, mutation repository.PolicyMutation) (record repository.PolicyRecord, err error) {
+	err = pgx.BeginFunc(ctx, store.pool, func(tx pgx.Tx) error {
+		record, err = createPolicy(ctx, tx, mutation)
+		return err
+	})
+	return record, err
+}
+
+// policyWriteLockID serializes policy writes inside their transaction, so two
+// concurrent writers cannot both pass the ambiguity check.
+const policyWriteLockID int64 = 0x4b52506f6c696379
+
+// rejectAmbiguousPolicy fails an enabled write whose scope and priority
+// duplicate another enabled policy. It must run inside a transaction.
+func rejectAmbiguousPolicy(ctx context.Context, db queryer, id string, mutation repository.PolicyMutation) error {
+	if _, err := db.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", policyWriteLockID); err != nil {
+		return fmt.Errorf("lock policies: %w", err)
+	}
+	if !mutation.Enabled {
+		return nil
+	}
+	var exists bool
+	err := db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM policies WHERE enabled AND id<>$1 AND scope_level=$2 AND cluster_id=$3 AND namespace=$4
+AND lower(workload_kind)=lower($5) AND workload_name=$6 AND container_name=$7 AND priority=$8)`,
+		id, mutation.Scope.Level, mutation.Scope.Cluster, mutation.Scope.Namespace, mutation.Scope.Kind, mutation.Scope.Workload, mutation.Scope.Container, mutation.Priority).Scan(&exists)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return repository.ErrPolicyAmbiguous
+	}
+	return nil
 }
 func (store *Store) GetPolicy(ctx context.Context, id string) (repository.PolicyRecord, error) {
 	return getPolicy(ctx, store.pool, id)
@@ -127,6 +160,9 @@ func updatePolicy(ctx context.Context, db queryer, id string, expectedVersion in
 	if err != nil {
 		return repository.PolicyRecord{}, err
 	}
+	if err := rejectAmbiguousPolicy(ctx, db, id, mutation); err != nil {
+		return repository.PolicyRecord{}, err
+	}
 	record, err := scanPolicy(db.QueryRow(ctx, `UPDATE policies SET name=$3,description=$4,scope_level=$5,cluster_id=$6,namespace=$7,
 workload_kind=$8,workload_name=$9,container_name=$10,priority=$11,enabled=$12,policy=$13,version=version+1,updated_at=$14,updated_by=$15
 WHERE id=$1 AND version=$2 RETURNING `+policyColumns, id, expectedVersion, strings.TrimSpace(mutation.Name), mutation.Description,
@@ -137,8 +173,12 @@ WHERE id=$1 AND version=$2 RETURNING `+policyColumns, id, expectedVersion, strin
 	}
 	return record, err
 }
-func (store *Store) UpdatePolicy(ctx context.Context, id string, v int64, m repository.PolicyMutation) (repository.PolicyRecord, error) {
-	return updatePolicy(ctx, store.pool, id, v, m)
+func (store *Store) UpdatePolicy(ctx context.Context, id string, v int64, m repository.PolicyMutation) (record repository.PolicyRecord, err error) {
+	err = pgx.BeginFunc(ctx, store.pool, func(tx pgx.Tx) error {
+		record, err = updatePolicy(ctx, tx, id, v, m)
+		return err
+	})
+	return record, err
 }
 
 func deletePolicy(ctx context.Context, db queryer, id string, version int64) error {
@@ -158,20 +198,47 @@ func (store *Store) DeletePolicy(ctx context.Context, id string, v int64) error 
 	return deletePolicy(ctx, store.pool, id, v)
 }
 
-func resolvePolicy(ctx context.Context, db queryer, subject repository.PolicyScope) (repository.PolicyRecord, error) {
-	if subject.Namespace == "" || subject.Kind == "" || subject.Workload == "" || subject.Container == "" {
-		return repository.PolicyRecord{}, repository.ErrInvalidPolicy
-	}
-	record, err := scanPolicy(db.QueryRow(ctx, `SELECT `+policyColumns+` FROM policies WHERE enabled
+const matchingPoliciesQuery = `SELECT ` + policyColumns + ` FROM policies WHERE enabled
 AND (cluster_id='' OR cluster_id=$1) AND (namespace='' OR namespace=$2)
 AND (workload_kind='' OR lower(workload_kind)=lower($3)) AND (workload_name='' OR workload_name=$4)
 AND (container_name='' OR container_name=$5)
-ORDER BY CASE scope_level WHEN 'container' THEN 4 WHEN 'workload' THEN 3 WHEN 'namespace' THEN 2 ELSE 1 END DESC,
-priority DESC, updated_at DESC, id ASC LIMIT 1`, subject.Cluster, subject.Namespace, subject.Kind, subject.Workload, subject.Container))
-	if errors.Is(err, pgx.ErrNoRows) {
+ORDER BY (CASE scope_level WHEN 'container' THEN 4 WHEN 'workload' THEN 3 WHEN 'namespace' THEN 2 ELSE 1 END) * 2
++ (CASE WHEN cluster_id<>'' THEN 1 ELSE 0 END) DESC,
+priority DESC, updated_at DESC, id ASC LIMIT $6`
+
+func matchingPolicies(ctx context.Context, db queryer, subject repository.PolicyScope, limit int) ([]repository.PolicyRecord, error) {
+	if subject.Namespace == "" || subject.Kind == "" || subject.Workload == "" || subject.Container == "" {
+		return nil, repository.ErrInvalidPolicy
+	}
+	rows, err := db.Query(ctx, matchingPoliciesQuery, subject.Cluster, subject.Namespace, subject.Kind, subject.Workload, subject.Container, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	records := []repository.PolicyRecord{}
+	for rows.Next() {
+		record, scanErr := scanPolicy(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		records = append(records, record)
+	}
+	return records, rows.Err()
+}
+
+func resolvePolicy(ctx context.Context, db queryer, subject repository.PolicyScope) (repository.PolicyRecord, error) {
+	records, err := matchingPolicies(ctx, db, subject, 1)
+	if err != nil {
+		return repository.PolicyRecord{}, err
+	}
+	if len(records) == 0 {
 		return repository.PolicyRecord{}, repository.ErrNotFound
 	}
-	return record, err
+	return records[0], nil
+}
+
+func (store *Store) MatchingPolicies(ctx context.Context, s repository.PolicyScope) ([]repository.PolicyRecord, error) {
+	return matchingPolicies(ctx, store.pool, s, repository.MaxMatchingPolicies)
 }
 func (store *Store) ResolvePolicy(ctx context.Context, s repository.PolicyScope) (repository.PolicyRecord, error) {
 	return resolvePolicy(ctx, store.pool, s)
@@ -461,7 +528,7 @@ func (store *Store) UpdateFleetScan(ctx context.Context, id, worker string, now 
 	if err := repository.ValidateFleetScanProgress(p); err != nil {
 		return repository.FleetScan{}, repository.ErrFleetScanConflict
 	}
-	failurePayload, err := json.Marshal(p.FailureDetails)
+	failurePayload, err := jsonArray(p.FailureDetails)
 	if err != nil {
 		return repository.FleetScan{}, err
 	}
@@ -528,6 +595,12 @@ func (tx *transaction) DeletePolicy(ctx context.Context, id string, v int64) err
 		return err
 	}
 	return deletePolicy(ctx, tx.tx, id, v)
+}
+func (tx *transaction) MatchingPolicies(ctx context.Context, s repository.PolicyScope) ([]repository.PolicyRecord, error) {
+	if err := tx.check(ctx); err != nil {
+		return nil, err
+	}
+	return matchingPolicies(ctx, tx.tx, s, repository.MaxMatchingPolicies)
 }
 func (tx *transaction) ResolvePolicy(ctx context.Context, s repository.PolicyScope) (repository.PolicyRecord, error) {
 	if err := tx.check(ctx); err != nil {

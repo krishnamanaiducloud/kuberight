@@ -68,11 +68,11 @@ func recordVerification(ctx context.Context, db queryer, run repository.Verifica
 	} else if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return repository.VerificationOutcome{}, fmt.Errorf("lock verification outcome: %w", err)
 	}
-	checks, err := json.Marshal(run.Checks)
+	checks, err := jsonArray(run.Checks)
 	if err != nil {
 		return repository.VerificationOutcome{}, fmt.Errorf("encode verification checks: %w", err)
 	}
-	reasons, err := json.Marshal(run.Reasons)
+	reasons, err := jsonArray(run.Reasons)
 	if err != nil {
 		return repository.VerificationOutcome{}, fmt.Errorf("encode verification reasons: %w", err)
 	}

@@ -127,3 +127,29 @@ func TestPolicyAndFleetWritesAreDisabledInObserveMode(t *testing.T) {
 		}
 	}
 }
+
+func TestPolicyAmbiguityIsRejectedAndResolutionExplainsCandidates(t *testing.T) {
+	api := newTestAPI(t, nil, Dependencies{})
+	create := func(name string, scope repository.PolicyScope, priority int) (int, map[string]any) {
+		response, body := api.do(t, http.MethodPost, "/api/v1/policies", "alice", jsonBody(t, policyMutationRequest{Name: name, Enabled: true, Priority: priority, Scope: scope, Policy: optimizer.DefaultPolicy()}))
+		return response.Code, body
+	}
+	namespace := repository.PolicyScope{Level: repository.PolicyScopeNamespace, Namespace: "shop"}
+	if code, body := create("shop-default", namespace, 0); code != http.StatusCreated {
+		t.Fatalf("create: %d %v", code, body)
+	}
+	if code, body := create("shop-copy", namespace, 0); code != http.StatusConflict || body["error"].(map[string]any)["code"] != "policy_ambiguous" {
+		t.Fatalf("duplicate: %d %v", code, body)
+	}
+	if code, body := create("checkout", repository.PolicyScope{Level: repository.PolicyScopeWorkload, Namespace: "shop", Kind: "Deployment", Workload: "checkout"}, 0); code != http.StatusCreated {
+		t.Fatalf("workload policy: %d %v", code, body)
+	}
+	response, resolved := api.do(t, http.MethodPost, "/api/v1/policies:resolve", "alice", `{"namespace":"shop","kind":"Deployment","workload":"checkout","container":"api"}`)
+	if response.Code != http.StatusOK || resolved["ambiguous"] != false || resolved["matchedPolicy"].(map[string]any)["name"] != "checkout" {
+		t.Fatalf("resolve: %d %v", response.Code, resolved)
+	}
+	candidates := resolved["candidates"].([]any)
+	if len(candidates) != 2 || candidates[1].(map[string]any)["name"] != "shop-default" {
+		t.Fatalf("candidates = %v", candidates)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -74,10 +75,62 @@ type AutomationReport struct {
 	Decisions        []AutomationDecision `json:"decisions"`
 }
 
-// automationMutex serializes passes inside one process. Across replicas the
-// resourceVersion precondition makes a second, stale patch fail instead of
-// applying twice.
-var automationMutex sync.Mutex
+// automationLockName is the repository lock that makes an applying pass a
+// singleton across API replicas. Plans (dry runs) never take it.
+const automationLockName = "automation"
+
+// errAutomationBusy means another replica or request holds the pass lock.
+var errAutomationBusy = errors.New("another automation pass is running")
+
+// automationMetrics are process-wide, because the background automator and
+// the HTTP server are separate server instances in one process.
+var automationMetrics = struct {
+	sync.Mutex
+	changes  map[string]uint64
+	lastPass time.Time
+	eligible int
+	busy     uint64
+}{changes: map[string]uint64{}}
+
+func recordAutomationPass(report AutomationReport) {
+	automationMetrics.Lock()
+	defer automationMetrics.Unlock()
+	automationMetrics.lastPass, automationMetrics.eligible = report.EvaluatedAt, report.Eligible
+	for _, decision := range report.Decisions {
+		if decision.Action != AutomationSkip && decision.Outcome != "" && decision.Outcome != AutomationPlanned {
+			automationMetrics.changes[decision.Action+"\x00"+decision.Outcome]++
+		}
+	}
+}
+
+func renderAutomationMetrics(w http.ResponseWriter) {
+	automationMetrics.Lock()
+	defer automationMetrics.Unlock()
+	_, _ = fmt.Fprintln(w, "# HELP kuberight_automation_changes_total Automated changes attempted by this process, by action and outcome.")
+	_, _ = fmt.Fprintln(w, "# TYPE kuberight_automation_changes_total counter")
+	keys := make([]string, 0, len(automationMetrics.changes))
+	for key := range automationMetrics.changes {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		action, outcome, _ := strings.Cut(key, "\x00")
+		_, _ = fmt.Fprintf(w, "kuberight_automation_changes_total{action=%q,outcome=%q} %d\n", action, outcome, automationMetrics.changes[key])
+	}
+	_, _ = fmt.Fprintln(w, "# HELP kuberight_automation_eligible_changes Eligible changes found by the last applying pass in this process.")
+	_, _ = fmt.Fprintln(w, "# TYPE kuberight_automation_eligible_changes gauge")
+	_, _ = fmt.Fprintf(w, "kuberight_automation_eligible_changes %d\n", automationMetrics.eligible)
+	_, _ = fmt.Fprintln(w, "# HELP kuberight_automation_last_pass_timestamp_seconds Completion time of the last applying pass in this process; 0 before the first.")
+	_, _ = fmt.Fprintln(w, "# TYPE kuberight_automation_last_pass_timestamp_seconds gauge")
+	last := int64(0)
+	if !automationMetrics.lastPass.IsZero() {
+		last = automationMetrics.lastPass.Unix()
+	}
+	_, _ = fmt.Fprintf(w, "kuberight_automation_last_pass_timestamp_seconds %d\n", last)
+	_, _ = fmt.Fprintln(w, "# HELP kuberight_automation_busy_total Applying passes skipped because another replica held the automation lock.")
+	_, _ = fmt.Fprintln(w, "# TYPE kuberight_automation_busy_total counter")
+	_, _ = fmt.Fprintf(w, "kuberight_automation_busy_total %d\n", automationMetrics.busy)
+}
 
 func liveResources(container ContainerSpec) automation.Resources {
 	return automation.Resources{CPURequestMilli: container.CPURequestMilli, CPULimitMilli: container.CPULimitMilli, MemoryRequestBytes: container.MemoryRequestBytes, MemoryLimitBytes: container.MemoryLimitBytes}
@@ -193,8 +246,6 @@ func (server *apiServer) evaluateAutomation(ctx context.Context, record reposito
 // container. With dryRun it only plans. Otherwise it applies eligible
 // changes, rollbacks first, up to the per-run limit inside the change window.
 func (server *apiServer) automationPass(ctx context.Context, dryRun bool) (AutomationReport, error) {
-	automationMutex.Lock()
-	defer automationMutex.Unlock()
 	cfg := server.config.Normalized()
 	window, err := automation.ParseWindow(cfg.AutomationWindow)
 	if err != nil {
@@ -204,6 +255,26 @@ func (server *apiServer) automationPass(ctx context.Context, dryRun bool) (Autom
 	report := AutomationReport{
 		Mode: cfg.OperationMode, Enabled: cfg.OperationMode == config.ModeApply, DryRun: dryRun || cfg.OperationMode != config.ModeApply,
 		Window: window.String(), WindowOpen: window.Open(now), MaxChangesPerRun: cfg.AutomationMaxChanges, EvaluatedAt: now, Decisions: []AutomationDecision{},
+	}
+	// Applying passes are singletons across replicas: the lock lives in the
+	// shared database (or the process, for the in-memory store).
+	if !report.DryRun {
+		locker, ok := server.repository.(repository.Locker)
+		if !ok {
+			return report, errors.New("the recommendation store cannot coordinate automation across replicas")
+		}
+		release, acquired, lockErr := locker.TryLock(ctx, automationLockName)
+		if lockErr != nil {
+			return report, lockErr
+		}
+		if !acquired {
+			automationMetrics.Lock()
+			automationMetrics.busy++
+			automationMetrics.Unlock()
+			return report, errAutomationBusy
+		}
+		defer release()
+		defer func() { recordAutomationPass(report) }()
 	}
 	patcher, _ := server.provider.(ResourcePatcher)
 	for page := 1; report.Evaluated < maxAutomationCandidates; page++ {
@@ -305,6 +376,10 @@ func (server *apiServer) runAutomation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	report, err := server.automationPass(r.Context(), false)
+	if errors.Is(err, errAutomationBusy) {
+		respondError(w, r, http.StatusConflict, "automation_busy", "another automation pass is running; retry after it completes")
+		return
+	}
 	if err != nil {
 		server.repositoryFailure(w, r, "run automation", err)
 		return
@@ -336,7 +411,9 @@ func (automator *Automator) Run(ctx context.Context) {
 	defer ticker.Stop()
 	for {
 		report, err := automator.server.automationPass(ctx, false)
-		if err != nil {
+		if errors.Is(err, errAutomationBusy) {
+			automator.server.logger.Debug("automation pass skipped; another replica holds the lock")
+		} else if err != nil {
 			automator.server.logger.Warn("automation pass failed", "error", err)
 		} else if report.Applied+report.RolledBack+report.Failed > 0 {
 			automator.server.logger.Info("automation pass completed", "applied", report.Applied, "rolled_back", report.RolledBack, "failed", report.Failed, "deferred", report.Deferred)

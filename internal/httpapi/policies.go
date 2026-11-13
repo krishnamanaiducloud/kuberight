@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -205,16 +206,29 @@ func (server *apiServer) resolvePolicy(w http.ResponseWriter, r *http.Request) {
 	if !server.authorize(w, r, AccessAttributes{Verb: "get", Resource: "policies", Namespace: subject.Namespace}) {
 		return
 	}
-	record, err := server.repository.ResolvePolicy(r.Context(), subject)
-	if errors.Is(err, repository.ErrNotFound) {
-		policy, _ := optimizer.ProfileByName("balanced")
-		respondJSON(w, http.StatusOK, map[string]any{"source": "built_in", "name": "balanced", "builtIn": true, "policy": policy, "subject": subject})
-		return
-	}
+	candidates, err := server.repository.MatchingPolicies(r.Context(), subject)
 	if server.policyError(w, r, "resolve policy", err) {
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]any{"source": "persistent", "matchedPolicy": record, "policy": record.Policy, "subject": subject, "precedence": []string{"container", "workload", "namespace", "global"}})
+	if len(candidates) == 0 {
+		policy, _ := optimizer.ProfileByName("balanced")
+		respondJSON(w, http.StatusOK, map[string]any{"source": "built_in", "name": "balanced", "builtIn": true, "policy": policy, "subject": subject, "candidates": candidates})
+		return
+	}
+	record := candidates[0]
+	response := map[string]any{
+		"source": "persistent", "matchedPolicy": record, "policy": record.Policy, "subject": subject, "candidates": candidates,
+		"precedence":  []string{"container", "workload", "namespace", "global"},
+		"tieBreakers": []string{"cluster-specific scope before an all-clusters scope at the same level", "higher priority", "most recently updated"},
+		"ambiguous":   false,
+	}
+	// Writes reject new duplicates, but policies saved before that check
+	// can still tie; then the winner is only the most recently updated.
+	if len(candidates) > 1 && candidates[0].Tied(candidates[1]) {
+		response["ambiguous"] = true
+		response["warning"] = fmt.Sprintf("policies %q and %q have the same scope level and priority; %q wins only because it was updated more recently. Change a priority to make the choice explicit.", candidates[0].Name, candidates[1].Name, candidates[0].Name)
+	}
+	respondJSON(w, http.StatusOK, response)
 }
 
 func (server *apiServer) policyError(w http.ResponseWriter, r *http.Request, operation string, err error) bool {
@@ -226,6 +240,9 @@ func (server *apiServer) policyError(w http.ResponseWriter, r *http.Request, ope
 		respondError(w, r, http.StatusNotFound, "not_found", "policy was not found")
 	case errors.Is(err, repository.ErrInvalidPolicy):
 		respondError(w, r, http.StatusUnprocessableEntity, "invalid_policy", err.Error())
+	case errors.Is(err, repository.ErrPolicyAmbiguous):
+		respondError(w, r, http.StatusConflict, "policy_ambiguous", "another enabled policy has the same scope and priority; change the priority so precedence is explicit")
+		return true
 	case errors.Is(err, repository.ErrPolicyConflict):
 		respondError(w, r, http.StatusConflict, "version_conflict", "policy changed since it was read; reload it before retrying")
 	case errors.Is(err, context.DeadlineExceeded):

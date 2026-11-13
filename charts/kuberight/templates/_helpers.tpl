@@ -153,3 +153,13 @@ app.kubernetes.io/component: ml
 {{- fail "cost.cpuCoreHour and cost.memoryGiBHour must be set together" -}}
 {{- end -}}
 {{- end }}
+
+{{/* Converts a Go duration of hours and minutes, such as 1h30m or 15m, to seconds. */}}
+{{- define "kuberight.durationSeconds" -}}
+{{- $value := toString . -}}
+{{- $hours := 0 -}}
+{{- $minutes := 0 -}}
+{{- with regexFind "[0-9]+h" $value }}{{ $hours = trimSuffix "h" . | int }}{{ end -}}
+{{- with regexFind "[0-9]+m" $value }}{{ $minutes = trimSuffix "m" . | int }}{{ end -}}
+{{- add (mul $hours 3600) (mul $minutes 60) -}}
+{{- end -}}

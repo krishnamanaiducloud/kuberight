@@ -41,6 +41,104 @@ func Run(t *testing.T, newStore func(*testing.T) repository.Store) {
 	t.Helper()
 	ctx := context.Background()
 
+	t.Run("nil lists are stored as empty lists", func(t *testing.T) {
+		store := newStore(t)
+		now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+		scan, _, err := store.CreateFleetScan(ctx, repository.FleetScanRequest{ScheduledFor: now, Scope: repository.FleetScope{Namespaces: []string{"shop"}}, WindowSeconds: 3600, MaxAttempts: 2, CreatedBy: "alice"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.ClaimFleetScan(ctx, "worker-a", now, time.Minute); err != nil {
+			t.Fatal(err)
+		}
+		// A heartbeat and a completion without failures carry nil details.
+		if _, err := store.UpdateFleetScan(ctx, scan.ID, "worker-a", now.Add(time.Second), repository.FleetScanProgress{Expected: 2, Processed: 1, Succeeded: 1}); err != nil {
+			t.Fatalf("heartbeat without failures: %v", err)
+		}
+		done, err := store.UpdateFleetScan(ctx, scan.ID, "worker-a", now.Add(2*time.Second), repository.FleetScanProgress{Status: repository.FleetScanCompleted, Expected: 2, Processed: 2, Succeeded: 2})
+		if err != nil || done.Status != repository.FleetScanCompleted || len(done.FailureDetails) != 0 {
+			t.Fatalf("completion without failures: %+v err=%v", done, err)
+		}
+		record, _, err := store.CreateRecommendation(ctx, Recommendation("shop", "nil-lists", "api", "low"), repository.CreateOptions{CreatedBy: "alice", Source: repository.SourcePrometheus})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.RecordVerification(ctx, repository.VerificationRun{RecommendationID: record.ID, Status: repository.VerificationUnavailable, Attribution: repository.VerificationAttributionNone, CheckedAt: now}); err != nil {
+			t.Fatalf("verification without checks or reasons: %v", err)
+		}
+	})
+
+	t.Run("policy precedence is deterministic and duplicates are rejected", func(t *testing.T) {
+		store := newStore(t)
+		policy := optimizer.DefaultPolicy()
+		mutation := func(name string, scope repository.PolicyScope, priority int, enabled bool) repository.PolicyMutation {
+			return repository.PolicyMutation{Name: name, Scope: scope, Priority: priority, Enabled: enabled, Policy: policy, Actor: "alice"}
+		}
+		shop := repository.PolicyScope{Level: repository.PolicyScopeNamespace, Namespace: "shop"}
+		prodShop := repository.PolicyScope{Level: repository.PolicyScopeNamespace, Cluster: "prod", Namespace: "shop"}
+		allClusters, err := store.CreatePolicy(ctx, mutation("all-clusters", shop, 5, true))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.CreatePolicy(ctx, mutation("duplicate", shop, 5, true)); !errors.Is(err, repository.ErrPolicyAmbiguous) {
+			t.Fatalf("duplicate enabled scope and priority: %v", err)
+		}
+		disabled, err := store.CreatePolicy(ctx, mutation("disabled-duplicate", shop, 5, false))
+		if err != nil {
+			t.Fatalf("a disabled duplicate is not ambiguous: %v", err)
+		}
+		if _, err := store.UpdatePolicy(ctx, disabled.ID, disabled.Version, mutation("enable-duplicate", shop, 5, true)); !errors.Is(err, repository.ErrPolicyAmbiguous) {
+			t.Fatalf("enabling a duplicate: %v", err)
+		}
+		if _, err := store.UpdatePolicy(ctx, allClusters.ID, allClusters.Version, mutation("all-clusters-v2", shop, 5, true)); err != nil {
+			t.Fatalf("updating a policy must not conflict with itself: %v", err)
+		}
+		clusterSpecific, err := store.CreatePolicy(ctx, mutation("prod-only", prodShop, 1, true))
+		if err != nil {
+			t.Fatal(err)
+		}
+		subject := repository.PolicyScope{Cluster: "prod", Namespace: "shop", Kind: "Deployment", Workload: "checkout", Container: "api"}
+		matches, err := store.MatchingPolicies(ctx, subject)
+		if err != nil || len(matches) != 2 || matches[0].ID != clusterSpecific.ID || matches[1].ID != allClusters.ID {
+			t.Fatalf("a cluster-specific scope must outrank an all-clusters scope at the same level: %+v err=%v", matches, err)
+		}
+		if resolved, err := store.ResolvePolicy(ctx, subject); err != nil || resolved.ID != clusterSpecific.ID {
+			t.Fatalf("resolved=%+v err=%v", resolved, err)
+		}
+		staging := subject
+		staging.Cluster = "staging"
+		if matches, err := store.MatchingPolicies(ctx, staging); err != nil || len(matches) != 1 || matches[0].ID != allClusters.ID {
+			t.Fatalf("staging matches=%+v err=%v", matches, err)
+		}
+	})
+
+	t.Run("named locks are exclusive and reusable", func(t *testing.T) {
+		store := newStore(t)
+		locker, ok := store.(repository.Locker)
+		if !ok {
+			t.Fatal("stores must coordinate singleton work across replicas")
+		}
+		release, acquired, err := locker.TryLock(ctx, "automation")
+		if err != nil || !acquired {
+			t.Fatalf("first lock acquired=%v err=%v", acquired, err)
+		}
+		if _, again, err := locker.TryLock(ctx, "automation"); err != nil || again {
+			t.Fatalf("a held lock was acquired twice: %v err=%v", again, err)
+		}
+		otherRelease, other, err := locker.TryLock(ctx, "another-task")
+		if err != nil || !other {
+			t.Fatalf("an unrelated name was blocked: %v err=%v", other, err)
+		}
+		otherRelease()
+		release()
+		release()
+		releaseAgain, reacquired, err := locker.TryLock(ctx, "automation")
+		if err != nil || !reacquired {
+			t.Fatalf("a released lock could not be reacquired: %v err=%v", reacquired, err)
+		}
+		releaseAgain()
+	})
+
 	t.Run("policy precedence versioning and persistence", func(t *testing.T) {
 		store := newStore(t)
 		policy := optimizer.DefaultPolicy()

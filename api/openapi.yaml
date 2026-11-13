@@ -364,6 +364,11 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: Another enabled policy has the same scope and priority (`policy_ambiguous`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
         "413": { $ref: "#/components/responses/RequestTooLarge" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
         "503": { $ref: "#/components/responses/AccessUnavailable" }
@@ -373,7 +378,13 @@ paths:
       tags: [Configuration]
       operationId: resolvePolicy
       summary: Preview the effective policy for a workload or container
-      description: Resolves container, workload, namespace, then global scope and falls back to the balanced built-in profile.
+      description: |
+        Resolves container, workload, namespace, then global scope; at the
+        same level a cluster-specific scope wins over an all-clusters scope,
+        then higher priority. Falls back to the balanced built-in profile.
+        `candidates` lists every enabled policy that applies, in resolution
+        order. `ambiguous` is true only for policies saved before duplicate
+        scopes were rejected, when the winner is decided by update time.
       requestBody:
         required: true
         content:
@@ -1163,7 +1174,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409":
-          description: Automation is disabled because the operation mode is not `apply`.
+          description: Automation is disabled because the operation mode is not `apply` (`automation_disabled`), or another replica is running a pass (`automation_busy`).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
@@ -1444,7 +1455,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/ErrorResponse" }
     Conflict:
-      description: The record version changed or the requested state transition is not valid.
+      description: The record version changed, the requested state transition is not valid, or (for policies) another enabled policy has the same scope and priority (`policy_ambiguous`).
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ErrorResponse" }
@@ -3421,6 +3432,15 @@ components:
         precedence:
           type: array
           items: { $ref: "#/components/schemas/PolicyScopeLevel" }
+        tieBreakers:
+          type: array
+          items: { type: string }
+        candidates:
+          type: array
+          maxItems: 50
+          items: { $ref: "#/components/schemas/PolicyRecord" }
+        ambiguous: { type: boolean }
+        warning: { type: string }
 
     VersionRequest:
       type: object

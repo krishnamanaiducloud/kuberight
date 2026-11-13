@@ -70,6 +70,9 @@ func (memory *Memory) createPolicy(mutation PolicyMutation) (PolicyRecord, error
 	record := PolicyRecord{ID: id, Name: strings.TrimSpace(mutation.Name), Description: mutation.Description, Scope: mutation.Scope, Priority: mutation.Priority, Enabled: mutation.Enabled, Policy: mutation.Policy, Version: 1, CreatedAt: now, CreatedBy: mutation.Actor, UpdatedAt: now, UpdatedBy: mutation.Actor}
 	memory.mu.Lock()
 	defer memory.mu.Unlock()
+	if memory.ambiguousPolicy(id, mutation) {
+		return PolicyRecord{}, ErrPolicyAmbiguous
+	}
 	memory.state.policies[id] = record
 	memory.state.policyOrder = append(memory.state.policyOrder, id)
 	return record, nil
@@ -142,6 +145,9 @@ func (memory *Memory) updatePolicy(id string, expectedVersion int64, mutation Po
 	if expectedVersion < 1 || record.Version != expectedVersion {
 		return PolicyRecord{}, ErrPolicyConflict
 	}
+	if memory.ambiguousPolicy(id, mutation) {
+		return PolicyRecord{}, ErrPolicyAmbiguous
+	}
 	record.Name, record.Description, record.Scope, record.Priority, record.Enabled, record.Policy = strings.TrimSpace(mutation.Name), mutation.Description, mutation.Scope, mutation.Priority, mutation.Enabled, mutation.Policy
 	record.Version++
 	record.UpdatedAt = memory.now().UTC()
@@ -179,23 +185,45 @@ func (memory *Memory) deletePolicy(id string, expectedVersion int64) error {
 	return nil
 }
 
+// ambiguousPolicy reports whether an enabled mutation would duplicate the
+// scope and priority of another enabled policy. The caller holds memory.mu.
+func (memory *Memory) ambiguousPolicy(id string, mutation PolicyMutation) bool {
+	if !mutation.Enabled {
+		return false
+	}
+	for otherID, other := range memory.state.policies {
+		if otherID != id && other.Enabled && other.Priority == mutation.Priority && other.Scope.SameScope(mutation.Scope) {
+			return true
+		}
+	}
+	return false
+}
+
 func (memory *Memory) ResolvePolicy(ctx context.Context, subject PolicyScope) (PolicyRecord, error) {
-	if err := ctx.Err(); err != nil {
+	matches, err := memory.MatchingPolicies(ctx, subject)
+	if err != nil {
 		return PolicyRecord{}, err
 	}
+	if len(matches) == 0 {
+		return PolicyRecord{}, ErrNotFound
+	}
+	return matches[0], nil
+}
+
+func (memory *Memory) MatchingPolicies(ctx context.Context, subject PolicyScope) ([]PolicyRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if subject.Namespace == "" || subject.Kind == "" || subject.Workload == "" || subject.Container == "" {
-		return PolicyRecord{}, ErrInvalidPolicy
+		return nil, ErrInvalidPolicy
 	}
 	memory.mu.RLock()
 	defer memory.mu.RUnlock()
-	var matches []PolicyRecord
+	matches := []PolicyRecord{}
 	for _, record := range memory.state.policies {
 		if record.Enabled && record.Scope.Matches(subject) {
 			matches = append(matches, record)
 		}
-	}
-	if len(matches) == 0 {
-		return PolicyRecord{}, ErrNotFound
 	}
 	sort.SliceStable(matches, func(i, j int) bool {
 		left, right := matches[i], matches[j]
@@ -210,7 +238,7 @@ func (memory *Memory) ResolvePolicy(ctx context.Context, subject PolicyScope) (P
 		}
 		return left.ID < right.ID
 	})
-	return matches[0], nil
+	return matches[:min(len(matches), MaxMatchingPolicies)], nil
 }
 
 func validateFleetList(options FleetListOptions) error {
@@ -628,6 +656,12 @@ func (tx *memoryTx) DeletePolicy(ctx context.Context, id string, v int64) error 
 		return err
 	}
 	return tx.memory.deletePolicy(id, v)
+}
+func (tx *memoryTx) MatchingPolicies(ctx context.Context, s PolicyScope) ([]PolicyRecord, error) {
+	if err := tx.check(ctx); err != nil {
+		return nil, err
+	}
+	return tx.memory.MatchingPolicies(ctx, s)
 }
 func (tx *memoryTx) ResolvePolicy(ctx context.Context, s PolicyScope) (PolicyRecord, error) {
 	if err := tx.check(ctx); err != nil {

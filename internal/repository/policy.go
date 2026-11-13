@@ -15,6 +15,10 @@ import (
 var (
 	ErrPolicyConflict = errors.New("policy version conflict")
 	ErrInvalidPolicy  = errors.New("invalid policy")
+	// ErrPolicyAmbiguous rejects an enabled policy whose scope and priority
+	// duplicate another enabled policy; resolution between them would depend
+	// only on which was saved last.
+	ErrPolicyAmbiguous = errors.New("an enabled policy with the same scope and priority already exists")
 )
 
 const (
@@ -66,19 +70,25 @@ func (scope PolicyScope) Validate() error {
 	return nil
 }
 
+// Specificity ranks scopes for resolution: container, workload, namespace,
+// then global, and within each level a cluster-specific scope before one
+// that applies to every cluster.
 func (scope PolicyScope) Specificity() int {
+	level := 0
 	switch scope.Level {
 	case PolicyScopeContainer:
-		return 4
+		level = 4
 	case PolicyScopeWorkload:
-		return 3
+		level = 3
 	case PolicyScopeNamespace:
-		return 2
+		level = 2
 	case PolicyScopeGlobal:
-		return 1
-	default:
-		return 0
+		level = 1
 	}
+	if level > 0 && scope.Cluster != "" {
+		return level*2 + 1
+	}
+	return level * 2
 }
 
 // Matches reports whether a stored scope applies to the supplied subject.
@@ -213,4 +223,22 @@ type PolicyRepository interface {
 	UpdatePolicy(context.Context, string, int64, PolicyMutation) (PolicyRecord, error)
 	DeletePolicy(context.Context, string, int64) error
 	ResolvePolicy(context.Context, PolicyScope) (PolicyRecord, error)
+	// MatchingPolicies returns every enabled policy that applies to the
+	// subject, in resolution order (the first is what ResolvePolicy returns).
+	MatchingPolicies(context.Context, PolicyScope) ([]PolicyRecord, error)
+}
+
+// MaxMatchingPolicies bounds MatchingPolicies results.
+const MaxMatchingPolicies = 50
+
+// SameScope reports whether two scopes select exactly the same targets.
+func (scope PolicyScope) SameScope(other PolicyScope) bool {
+	return scope.Level == other.Level && scope.Cluster == other.Cluster && scope.Namespace == other.Namespace &&
+		strings.EqualFold(scope.Kind, other.Kind) && scope.Workload == other.Workload && scope.Container == other.Container
+}
+
+// Tied reports whether two policies would be ranked equally for every
+// subject both match: same specificity and same priority.
+func (record PolicyRecord) Tied(other PolicyRecord) bool {
+	return record.Scope.Specificity() == other.Scope.Specificity() && record.Priority == other.Priority
 }
