@@ -69,7 +69,7 @@ const recommendation = {
     sourceSpecFingerprint: 'a'.repeat(64),
     queryFingerprint: 'b'.repeat(64),
     policyFingerprint: 'c'.repeat(64),
-    optimizerVersion: '0.1.0-rc.2',
+    optimizerVersion: '0.1.0-rc.3',
     observationStart: '2026-10-27T14:00:00Z',
     observationEnd: '2026-11-03T14:00:00Z',
     expiresAt: '2030-11-04T14:00:00Z',
@@ -83,7 +83,7 @@ async function mockControlPlane(page: Page) {
     let body: unknown
     switch (url.pathname) {
       case '/api/v1/version':
-        body = { version: '0.1.0-rc.2', mode: 'recommend' }
+        body = { version: '0.1.0-rc.3', mode: 'recommend' }
         break
       case '/api/v1/overview':
         body = {
