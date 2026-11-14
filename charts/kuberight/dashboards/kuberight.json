@@ -492,7 +492,7 @@
         "colorMode": "none",
         "graphMode": "none",
         "justifyMode": "auto",
-        "textMode": "auto",
+        "textMode": "value_and_name",
         "orientation": "auto",
         "wideLayout": true,
         "showPercentChange": false
@@ -1117,19 +1117,52 @@
             "align": "auto",
             "cellOptions": {
               "type": "auto"
-            }
+            },
+            "minWidth": 60
           }
         },
         "overrides": [
           {
             "matcher": {
               "id": "byName",
-              "options": "Monthly saving"
+              "options": "Per month"
             },
             "properties": [
               {
                 "id": "decimals",
                 "value": 2
+              },
+              {
+                "id": "custom.width",
+                "value": 120
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Namespace"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Container"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 100
               }
             ]
           }
@@ -1140,7 +1173,7 @@
         "cellHeight": "sm",
         "sortBy": [
           {
-            "displayName": "Monthly saving",
+            "displayName": "Per month",
             "desc": true
           }
         ],
@@ -1160,22 +1193,22 @@
               "Time": true,
               "__name__": true,
               "namespace": true,
-              "cluster": true
+              "cluster": true,
+              "kind": true,
+              "currency": true
             },
             "indexByName": {
               "workload_namespace": 0,
-              "kind": 1,
-              "workload": 2,
-              "container": 3,
-              "Value": 4,
-              "currency": 5
+              "workload": 1,
+              "container": 2,
+              "Value": 3
             },
             "renameByName": {
               "workload_namespace": "Namespace",
               "kind": "Kind",
               "workload": "Workload",
               "container": "Container",
-              "Value": "Monthly saving",
+              "Value": "Per month",
               "currency": "Currency"
             }
           }
@@ -1683,7 +1716,8 @@
             "thresholdsStyle": {
               "mode": "off"
             }
-          }
+          },
+          "noValue": "No webhook configured"
         },
         "overrides": [
           {
@@ -1794,7 +1828,8 @@
                 "value": null
               }
             ]
-          }
+          },
+          "noValue": "No webhook configured"
         },
         "overrides": [
           {
