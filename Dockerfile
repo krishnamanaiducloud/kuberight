@@ -12,7 +12,7 @@ RUN npm ci --no-audit --no-fund
 COPY --chown=1000:1000 web/ ./
 RUN npm run build
 
-FROM --platform=$BUILDPLATFORM golang:1.27.3-bookworm@sha256:dc0963f32053e4bc451d24d87e3892d42d01021b61f093e98eb95c0352bb84b0 AS go-build
+FROM --platform=$BUILDPLATFORM golang:1.27.4-bookworm@sha256:4fa7c968ba93f1635670522dbb01a2c78150443e1385746924566079f36570ea AS go-build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download && go mod verify
