@@ -271,7 +271,7 @@ At most `automation.maxChangesPerRun` changes (default 5) run per pass, inside t
 
 Every attempt is audited, and `recommendation.applied` and `recommendation.rolled_back` webhooks are sent. `POST /api/v1/automation:run` runs a pass on demand and requires `update` on the virtual `automation` resource.
 
-Applying passes are singletons across API replicas. A PostgreSQL advisory lock (or a process lock for the in-memory store) is held for the pass, and a concurrent `POST /api/v1/automation:run` returns `409 automation_busy`. `/metrics` exports `kuberight_automation_changes_total{action,outcome}`, `kuberight_automation_eligible_changes`, and `kuberight_automation_last_pass_timestamp_seconds`. With `metrics.prometheusRule.enabled=true`, apply mode adds alerts for failed changes, rollbacks, and a stalled automation loop.
+Applying passes are singletons across API replicas. A PostgreSQL advisory lock (or a process lock for the in-memory store) is held for the pass, and a concurrent `POST /api/v1/automation:run` returns `409 automation_busy`. `/metrics` exports `kuberight_automation_changes_total{action,outcome}`, `kuberight_automation_eligible_changes`, `kuberight_automation_last_pass_timestamp_seconds`, and `kuberight_automation_interval_seconds`. With `metrics.prometheusRule.enabled=true`, apply mode adds alerts for failed changes, rollbacks, and a stalled automation loop.
 
 Apply mode requires `auth.mode=kubernetes` and `rbac.scope=cluster`. It adds only `patch` on those three kinds.
 
@@ -289,6 +289,52 @@ helm upgrade --install kuberight charts/kuberight --namespace kuberight \
 kubectl label namespace shop kuberight.io/automation=enabled
 ```
 
+## Monitoring
+
+`metrics.serviceMonitor.enabled` and `metrics.prometheusRule.enabled` add a ServiceMonitor and alerts: unavailable replicas, a 5xx ratio above 5%, a regressed recommendation, and, in apply mode, failed changes, rollbacks, and a stalled automation loop.
+
+`metrics.grafanaDashboard.enabled=true` adds a ConfigMap labeled for the Grafana dashboard sidecar. Set `metrics.grafanaDashboard.namespace` if the sidecar watches only Grafana's namespace, or import [the dashboard](charts/kuberight/dashboards/kuberight.json) by hand. It shows:
+
+- API rate, 5xx share, and mean latency.
+- Post-change verification outcomes and recommendations by risk.
+- Estimated savings, which needs `exportRecommendationMetrics`.
+- Automated changes by outcome, and how many intervals the last pass is behind.
+- Webhook delivery.
+
+Status colors carry meaning only: green is good, yellow and orange are warnings, red is a failure, and gray is a neutral state such as pending.
+
+Every counter exports all of its label combinations from zero. `increase()` cannot see an increment that creates a series, so the first failed change still alerts. The per-recommendation series carry the workload's own `namespace` and `container` labels. The dashboard selects them by scrape target and works with `honor_labels: true` as well as with the `exported_*` renaming a ServiceMonitor applies.
+
+`scripts/verify-monitoring.sh` renders the rules, runs promtool unit tests against them, parses every dashboard query, and evaluates the savings queries under both label layouts. CI runs it.
+
+## Live validation
+
+The chart was installed in apply mode on a two-node kind cluster running Kubernetes 1.35, with Prometheus 3.16, kube-state-metrics 2.20, OpenCost 1.121, PostgreSQL 18, and Grafana 12.3. The run covered these workloads:
+
+- A Deployment scaled from 6 to 2 replicas.
+- Two rollouts.
+- A StatefulSet pod recreated under the same name.
+- An over-requested Deployment.
+
+| Area | Result |
+| --- | --- |
+| Attribution | Every pod, including the deleted ones, was attributed to its workload and revision, and each StatefulSet pod incarnation was kept apart by UID. CPU and memory replica-time coverage was 97–99%, and every workload's coverage was complete. |
+| Approval and automation | The creator could not approve their own recommendation. A second identity approved it. The background pass patched the Deployment under the `kuberight-automation` field manager with exactly the recommended values and did not reapply. On PostgreSQL, two approved changes were applied in one pass under the advisory lock. |
+| Verification | The applied change was `verified` from exact pod-UID evidence over 3h20m: no OOM kills, restarts, or throttling. A follow-up reduction for the same workload was held by the 24-hour cooldown, detected from Prometheus resource history. |
+| Cost | Savings were priced from OpenCost's per-namespace allocation (`priceSource: opencost`). |
+| Dashboards | The web UI at 1440 and 390 px wide showed no horizontal overflow and no console errors. The Grafana dashboard loaded from the chart ConfigMap with no panel errors. |
+
+Real infrastructure found six defects that unit tests had not caught, and all are fixed:
+
+- Deleted pods' cAdvisor series lingered and were flagged as foreign usage.
+- A failed OpenCost query was cached for 15 minutes and shown as $0.00.
+- Fleet scans could not complete on PostgreSQL. The first run of the store contract suite against PostgreSQL found this.
+- A one-step CPU gap after node restarts blocked every recommendation.
+- Counters that first appeared at 1 hid the first failure from alerts.
+- The dashboard's savings panels assumed one scrape label layout.
+
+This was a functional run on a small cluster, not an accuracy evaluation on production traces.
+
 ## Repository map
 
 | Path | Purpose |
@@ -298,6 +344,7 @@ kubectl label namespace shop kuberight.io/automation=enabled
 | `internal/optimizer/stability.go`, `runtime.go` | Hysteresis, cooldown, oscillation, and confirmation controls; JVM memory rules |
 | `internal/automation/`, `internal/httpapi/automation.go` | Opt-in continuous rightsizing and rollback |
 | `scripts/attribution-replay.sh` | Real-Prometheus replay of the attribution queries |
+| `scripts/verify-monitoring.sh`, `charts/kuberight/dashboards/` | promtool tests for the alerts and dashboard queries; the Grafana dashboard |
 | `internal/repository/postgres/migrations/` | Embedded, checksummed PostgreSQL schema migrations |
 | `web/` | React and TypeScript dashboard |
 | `ml/` | Independent FastAPI forecasting service |
