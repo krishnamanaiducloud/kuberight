@@ -28,6 +28,7 @@ import { Savings } from './pages/Savings'
 import { Utilization } from './pages/Utilization'
 import { Fleet } from './pages/Fleet'
 import { Automation } from './pages/Automation'
+import { Policies } from './pages/Policies'
 import AutoModeOutlined from '@mui/icons-material/AutoModeOutlined'
 
 export type NavItem = {
@@ -61,7 +62,7 @@ export const navigation: NavItem[] = [
   { label: 'Savings', path: '/savings', endpoint: '/api/v1/savings', description: 'Request-based cost estimates from operator-configured unit prices; not billing data', icon: <SavingsOutlined />, render: (item) => <Savings title={item.label} description={item.description} /> },
   { label: 'Forecasting', path: '/forecasting', endpoint: '/api/v1/forecasts', description: 'Experimental usage forecasts with confidence intervals from the forecasting service', icon: <AutoGraphOutlined />, render: (item) => <Forecasting title={item.label} description={item.description} /> },
   { label: 'Autoscalers', path: '/autoscalers', endpoint: '/api/v1/autoscalers', description: 'HPA, KEDA, and VPA interaction awareness', icon: <TuneOutlined /> },
-  { label: 'Policies', path: '/policies', endpoint: '/api/v1/policies', description: 'Recommendation policy and risk controls', icon: <TuneOutlined /> },
+  { label: 'Policies', path: '/policies', endpoint: '/api/v1/policies', description: 'Scoped recommendation policies: where each applies, its precedence, sizing and stability tuning, and the effective policy for any container', icon: <TuneOutlined />, render: (item) => <Policies title={item.label} description={item.description} /> },
   { label: 'GitOps changes', path: '/gitops', endpoint: '/api/v1/gitops/changes', description: 'GitOps integration status; pull-request generation is not implemented', icon: <AccountTreeOutlined /> },
   { label: 'Audit history', path: '/audit', endpoint: '/api/v1/audit', description: 'Security-sensitive and operational event trail', icon: <HistoryOutlined /> },
   { label: 'Integrations', path: '/settings', endpoint: '/api/v1/settings/integrations', description: 'Live health of every configured and pending integration', icon: <SettingsOutlined />, render: (item) => <Integrations title={item.label} description={item.description} /> },

@@ -66,6 +66,8 @@ export const api = {
     headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
     signal,
   }),
+  put: <T>(path: string, body: unknown) => request<T>(path, { method: 'PUT', body: JSON.stringify(body) }),
+  delete: <T>(path: string, body: unknown) => request<T>(path, { method: 'DELETE', body: JSON.stringify(body) }),
 }
 
 /** A random key so a retried submission cannot create a duplicate record. */
@@ -660,4 +662,36 @@ export type PackingResult = {
   /** Pods that no schedulable node accepts because of taints or placement rules. */
   noEligibleNodePods?: number
   unplacedWorkloads?: string[]
+}
+
+export type PolicyLevel = 'global' | 'namespace' | 'workload' | 'container'
+
+export type PolicyScope = { level: PolicyLevel; cluster?: string; namespace?: string; kind?: string; workload?: string; container?: string }
+
+/** A persisted, versioned policy as listed by GET /api/v1/policies. */
+export type PolicyRecord = {
+  id: string
+  name: string
+  description?: string
+  scope: PolicyScope
+  priority: number
+  enabled: boolean
+  policy: Policy
+  version: number
+  createdAt: string
+  createdBy: string
+  updatedAt: string
+  updatedBy: string
+}
+
+export type PolicyListItem = (PolicyRecord & { builtIn: false }) | { name: string; builtIn: true; default: boolean; description: string; policy: Policy }
+
+export type PolicyResolution = {
+  source: 'built_in' | 'persistent'
+  name?: string
+  matchedPolicy?: PolicyRecord
+  policy: Policy
+  candidates?: PolicyRecord[]
+  ambiguous?: boolean
+  warning?: string
 }

@@ -80,6 +80,30 @@ export function PolicyTuner({ profiles, profile, policy, customized, onChange }:
             <PercentSlider label="CPU safety margin" value={policy.cpuSafetyMargin} max={1} onChange={(value) => tune({ cpuSafetyMargin: value })} />
             <PercentSlider label="Memory safety margin" value={policy.memorySafetyMargin} max={1} onChange={(value) => tune({ memorySafetyMargin: value })} />
             <PercentSlider label="Maximum reduction per change" value={policy.maximumReduction} max={0.5} onChange={(value) => tune({ maximumReduction: value })} />
+            <Typography variant="body2" sx={{ fontWeight: 700, mt: 0.5 }}>Stability</Typography>
+            <Stack direction={{ xs: 'column', sm: 'row' }} gap={1.5}>
+              <TextField
+                select size="small" fullWidth label="Minimum change" value={policy.minimumChangeRatio ?? 0.05}
+                onChange={(event) => tune({ minimumChangeRatio: Number(event.target.value) })}
+                helperText="Smaller changes are left alone"
+              >
+                {[0.03, 0.05, 0.1, 0.15, 0.2].map((value) => <MenuItem key={value} value={value}>{Math.round(value * 100)}%</MenuItem>)}
+              </TextField>
+              <TextField
+                select size="small" fullWidth label="Cooldown" value={policy.cooldownHours ?? 24}
+                onChange={(event) => tune({ cooldownHours: Number(event.target.value) })}
+                helperText="Reductions wait after a resource change"
+              >
+                {[6, 12, 24, 48, 72, 168].map((value) => <MenuItem key={value} value={value}>{value < 48 ? `${value} hours` : `${value / 24} days`}</MenuItem>)}
+              </TextField>
+              <TextField
+                select size="small" fullWidth label="Confirmations" value={policy.requiredObservations ?? 1}
+                onChange={(event) => tune({ requiredObservations: Number(event.target.value) })}
+                helperText="Consistent observations before a reduction"
+              >
+                {[1, 2, 3].map((value) => <MenuItem key={value} value={value}>{value === 1 ? 'None' : `${value} observations`}</MenuItem>)}
+              </TextField>
+            </Stack>
           </Stack>
         </AccordionDetails>
       </Accordion>

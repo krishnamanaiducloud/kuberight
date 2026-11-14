@@ -1,4 +1,4 @@
-import type { CoverageBucket, RecommendationRecord, SpikeProfile } from './api'
+import type { CoverageBucket, PolicyScope, RecommendationRecord, SpikeProfile } from './api'
 
 const binaryUnits = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
 
@@ -188,4 +188,11 @@ export function coverageGaps(timeline: CoverageBucket[] | undefined, threshold =
     }
   }
   return gaps
+}
+
+/** A readable description of where a policy applies. */
+export function scopeLabel(scope: PolicyScope): string {
+  const target = [scope.namespace, scope.kind && scope.workload ? `${scope.kind}/${scope.workload}` : '', scope.container].filter(Boolean).join(' / ')
+  const where = scope.level === 'global' ? 'All namespaces' : target
+  return scope.cluster ? `${where} · cluster ${scope.cluster}` : where
 }
