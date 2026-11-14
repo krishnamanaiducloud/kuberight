@@ -45,8 +45,18 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) == 4 && os.Args[1] == "benchmark" && os.Args[2] == "--traces" {
+		// Real-trace evaluation: rolling-origin folds with bootstrap
+		// confidence intervals. The trace format is documented in
+		// scripts/convert-bitbrains-trace.py.
+		if err := benchmarkTraces(os.Args[3]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 && (len(os.Args) != 2 || os.Args[1] != "migrate") {
-		fmt.Fprintln(os.Stderr, "usage: kuberight [healthcheck|migrate|benchmark]")
+		fmt.Fprintln(os.Stderr, "usage: kuberight [healthcheck|migrate|benchmark [--traces FILE]]")
 		os.Exit(2)
 	}
 
@@ -272,4 +282,20 @@ func storeKind(store *postgres.Store) string {
 		return "memory"
 	}
 	return store.Kind()
+}
+
+func benchmarkTraces(path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = file.Close() }()
+	series, err := benchmark.ReadTraces(file)
+	if err != nil {
+		return err
+	}
+	config := benchmark.DefaultTraceConfig()
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(benchmark.RunTraces(benchmark.TraceDatasets(series, config), config))
 }

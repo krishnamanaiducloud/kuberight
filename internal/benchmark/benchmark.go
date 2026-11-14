@@ -277,13 +277,17 @@ func Strategies() []Strategy {
 
 // kuberight applies the same preparation as live generation: deployment-
 // aware segmentation and data-quality gating, then the optimizer.
-func kuberight(dataset Dataset) Sizing {
+func kuberight(dataset Dataset) Sizing { return kuberightWithPolicy(dataset, nil) }
+
+// kuberightWithPolicy sizes with a specific policy; nil is the balanced default.
+func kuberightWithPolicy(dataset Dataset, policy *optimizer.Policy) Sizing {
 	cpu, memory := dataset.TrainCPU, dataset.TrainMemory
 	input := optimizer.Input{
 		Namespace: "benchmark", Kind: dataset.Kind, Workload: dataset.Name, Container: dataset.Container, Criticality: dataset.Criticality,
 		CPURequestsMilli: dataset.Current.CPURequestMilli, CPULimitMilli: dataset.Current.CPULimitMilli,
 		MemoryRequestsBytes: dataset.Current.MemoryRequestBytes, MemoryLimitBytes: dataset.Current.MemoryLimitBytes,
 		SampleIntervalSeconds: stepSeconds, Replicas: dataset.Replicas, Autoscaling: dataset.Autoscaling, HPA: dataset.HPA, Pod: dataset.Pod,
+		Policy: policy,
 	}
 	minimum := optimizer.DefaultPolicy().MinimumSamples
 	if dataset.RolloutIndex >= 0 && len(cpu)-dataset.RolloutIndex >= minimum {
