@@ -31,8 +31,8 @@ inventory:
   # Empty uses the release name as the stable cluster identity.
   clusterID: ""
   resync: 10m
-  qps: 10
-  burst: 20
+  qps: 50
+  burst: 100
 
 # External PostgreSQL for durable, shared recommendation, review, and audit
 # state. The chart never deploys a database. The Secret key must contain a

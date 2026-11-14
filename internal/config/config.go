@@ -229,10 +229,10 @@ func Load() (Config, error) {
 	if cfg.MaxBodyBytes, err = parseInt64("KUBERIGHT_MAX_BODY_BYTES", 1<<20, 1024, 16<<20); err != nil {
 		return Config{}, err
 	}
-	if cfg.KubernetesBurst, err = parseInt("KUBERIGHT_KUBERNETES_BURST", 20, 1, 1000); err != nil {
+	if cfg.KubernetesBurst, err = parseInt("KUBERIGHT_KUBERNETES_BURST", 100, 1, 1000); err != nil {
 		return Config{}, err
 	}
-	qps, err := parseFloat("KUBERIGHT_KUBERNETES_QPS", 10, 0.1, 1000)
+	qps, err := parseFloat("KUBERIGHT_KUBERNETES_QPS", 50, 0.1, 1000)
 	if err != nil {
 		return Config{}, err
 	}

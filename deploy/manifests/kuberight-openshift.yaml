@@ -283,9 +283,9 @@ spec:
             - name: KUBERIGHT_INVENTORY_RESYNC
               value: "10m"
             - name: KUBERIGHT_KUBERNETES_QPS
-              value: "10"
+              value: "50"
             - name: KUBERIGHT_KUBERNETES_BURST
-              value: "20"
+              value: "100"
             - name: KUBERIGHT_INVENTORY_NAMESPACE
               value: "kuberight"
             - name: KUBERIGHT_RECOMMENDATION_WINDOW
