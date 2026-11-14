@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import io
 import json
 import logging
 import math
@@ -51,6 +52,10 @@ CALIBRATION_TOLERANCE = 0.10
 SERIES_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 MAX_MODEL_ARTIFACT_BYTES = 64 * 1024 * 1024
+# Persisted artifacts are joblib (pickle) files. With a signing key they are
+# authenticated with HMAC-SHA256 before anything is unpickled.
+MIN_ARTIFACT_KEY_LENGTH = 32
+ARTIFACT_MAC_CONTEXT = "kuberight-ml-artifact-v1"
 
 logger = logging.getLogger("kuberight.ml")
 if not logger.handlers:
@@ -97,6 +102,7 @@ class Settings:
     max_model_versions: int = 5
     model_dir: Path = Path(tempfile.gettempdir()) / "kuberight-ml" / "models"
     api_key: str | None = None
+    artifact_key: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not MIN_API_SAMPLES <= self.min_samples <= self.max_samples <= MAX_API_SAMPLES:
@@ -119,10 +125,16 @@ class Settings:
             raise ValueError("max_model_versions must be positive")
         if self.api_key is not None and len(self.api_key) < 16:
             raise ValueError("KUBERIGHT_ML_API_KEY must contain at least 16 characters")
+        if self.artifact_key is not None and len(self.artifact_key) < MIN_ARTIFACT_KEY_LENGTH:
+            raise ValueError(
+                "KUBERIGHT_ML_ARTIFACT_KEY must contain at least "
+                f"{MIN_ARTIFACT_KEY_LENGTH} characters"
+            )
 
     @classmethod
     def from_env(cls) -> Settings:
         api_key = os.getenv("KUBERIGHT_ML_API_KEY") or None
+        artifact_key = os.getenv("KUBERIGHT_ML_ARTIFACT_KEY") or None
         model_dir = Path(
             os.getenv(
                 "KUBERIGHT_ML_MODEL_DIR",
@@ -151,6 +163,7 @@ class Settings:
             max_model_versions=_env_int("KUBERIGHT_ML_MAX_MODEL_VERSIONS", 5, 1, 100),
             model_dir=model_dir,
             api_key=api_key,
+            artifact_key=artifact_key,
         )
 
 
@@ -520,13 +533,31 @@ def _new_model_version(input_digest: str, now: datetime) -> str:
     return f"{MODEL_SCHEMA_VERSION}-{input_digest[:20]}-{timestamp}-{uuid.uuid4().hex[:16]}"
 
 
-class ModelStore:
-    """Versioned, atomic on-disk persistence for trusted locally trained artifacts."""
+def _artifact_mac(key: bytes, series_key: str, version: str, artifact: bytes) -> str:
+    """Authenticates an artifact's bytes together with its series and version."""
+    message = "\n".join(
+        (ARTIFACT_MAC_CONTEXT, series_key, version, hashlib.sha256(artifact).hexdigest())
+    ).encode("utf-8")
+    return hmac.new(key, message, hashlib.sha256).hexdigest()
 
-    def __init__(self, root: Path, max_versions: int) -> None:
+
+class ModelStore:
+    """Versioned, atomic on-disk persistence for trusted locally trained artifacts.
+
+    With a signing key, each artifact has a ``<version>.mac`` HMAC-SHA256 that
+    is verified over the exact bytes before they are unpickled, so a file
+    written by anyone without the key is never deserialized.
+    """
+
+    def __init__(self, root: Path, max_versions: int, signing_key: str | None = None) -> None:
         self.root = root.resolve()
         self.max_versions = max_versions
+        self._signing_key = signing_key.encode("utf-8") if signing_key else None
         self._lock = threading.Lock()
+
+    @property
+    def signed(self) -> bool:
+        return self._signing_key is not None
 
     @staticmethod
     def _series_key(series_id: str) -> str:
@@ -557,6 +588,20 @@ class ModelStore:
         finally:
             Path(temporary).unlink(missing_ok=True)
 
+    @staticmethod
+    def _atomic_text(path: Path, text: str) -> None:
+        handle, temporary = tempfile.mkstemp(prefix=".signature-", dir=path.parent)
+        try:
+            with os.fdopen(handle, "w", encoding="utf-8") as stream:
+                stream.write(text)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+            with suppress(OSError):
+                path.chmod(0o600)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+
     def save(
         self,
         series_id: str,
@@ -575,6 +620,14 @@ class ModelStore:
             os.close(handle)
             try:
                 joblib.dump(artifact, temporary, compress=3)
+                if self._signing_key is not None:
+                    signature = _artifact_mac(
+                        self._signing_key,
+                        series_dir.name,
+                        version,
+                        Path(temporary).read_bytes(),
+                    )
+                    self._atomic_text(series_dir / f"{version}.mac", signature)
                 os.replace(temporary, artifact_path)
                 with suppress(OSError):
                     artifact_path.chmod(0o600)
@@ -593,6 +646,7 @@ class ModelStore:
             for obsolete in versions[self.max_versions :]:
                 obsolete.unlink(missing_ok=True)
                 obsolete.with_suffix(".joblib").unlink(missing_ok=True)
+                obsolete.with_suffix(".mac").unlink(missing_ok=True)
 
     def latest_metadata(self, series_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -653,7 +707,9 @@ class ModelStore:
                     raise ValueError("model artifact path is unsafe")
                 metadata_stat = metadata_path.stat()
                 artifact_stat = artifact_path.stat()
-                if not stat.S_ISREG(metadata_stat.st_mode) or not stat.S_ISREG(artifact_stat.st_mode):
+                if not stat.S_ISREG(metadata_stat.st_mode) or not stat.S_ISREG(
+                    artifact_stat.st_mode
+                ):
                     raise ValueError("model files must be regular files")
                 if artifact_stat.st_size <= 0 or artifact_stat.st_size > MAX_MODEL_ARTIFACT_BYTES:
                     raise ValueError("model artifact size is outside the accepted bounds")
@@ -661,8 +717,20 @@ class ModelStore:
                     metadata_stat.st_mode & 0o022 or artifact_stat.st_mode & 0o022
                 ):
                     raise ValueError("model files must not be group- or world-writable")
+                # Read once and decode the same bytes that were authenticated.
+                content = artifact_path.read_bytes()
+                if len(content) != artifact_stat.st_size:
+                    raise ValueError("model artifact changed while it was read")
+                if self._signing_key is not None:
+                    signature_path = series_dir / f"{version}.mac"
+                    if signature_path.is_symlink() or not signature_path.is_file():
+                        raise ValueError("model artifact signature is missing")
+                    expected = signature_path.read_text(encoding="utf-8").strip()
+                    actual = _artifact_mac(self._signing_key, series_dir.name, version, content)
+                    if not hmac.compare_digest(expected, actual):
+                        raise ValueError("model artifact signature does not match")
                 try:
-                    artifact = joblib.load(artifact_path)
+                    artifact = joblib.load(io.BytesIO(content))
                 except Exception as exc:
                     raise ValueError("model artifact could not be decoded") from exc
                 if not isinstance(artifact, dict):
@@ -675,7 +743,10 @@ class ModelStore:
                     or artifact.get("version") != version
                     or artifact.get("model_name") != metadata.get("name")
                     or (estimator is not None and not isinstance(estimator, Pipeline))
-                    or (artifact.get("model_name") == "ridge-autoregression-v1" and estimator is None)
+                    or (
+                        artifact.get("model_name") == "ridge-autoregression-v1"
+                        and estimator is None
+                    )
                 ):
                     raise ValueError("model artifact integrity validation failed")
                 return artifact, metadata
@@ -1082,7 +1153,9 @@ def _forecast_confidence(
 class ForecastEngine:
     def __init__(self, settings: Settings, store: ModelStore | None = None) -> None:
         self.settings = settings
-        self.store = store or ModelStore(settings.model_dir, settings.max_model_versions)
+        self.store = store or ModelStore(
+            settings.model_dir, settings.max_model_versions, settings.artifact_key
+        )
 
     def forecast(self, request: ForecastRequest) -> ForecastResponse:
         deadline = _Deadline(self.settings.prediction_timeout_seconds)
@@ -1648,6 +1721,11 @@ def _request_id(request: Request) -> str:
 def create_app(settings: Settings | None = None, engine: ForecastEngine | None = None) -> FastAPI:
     config = settings or Settings.from_env()
     forecast_engine = engine or ForecastEngine(config)
+    if not forecast_engine.store.signed:
+        logger.warning(
+            "model artifact signing is disabled; persisted models are trusted only "
+            "because the model directory is private (set KUBERIGHT_ML_ARTIFACT_KEY)"
+        )
     metrics = _create_metrics()
     slots = threading.BoundedSemaphore(config.max_concurrent_forecasts)
     application = FastAPI(
@@ -1743,7 +1821,11 @@ def create_app(settings: Settings | None = None, engine: ForecastEngine | None =
         ready, model_store = forecast_engine.store.readiness()
         payload = {
             "status": "ready" if ready else "not-ready",
-            "checks": {"modelStore": model_store, "modelRuntime": "ready"},
+            "checks": {
+                "modelStore": model_store,
+                "modelRuntime": "ready",
+                "artifactSigning": "enabled" if forecast_engine.store.signed else "disabled",
+            },
         }
         return JSONResponse(status_code=200 if ready else 503, content=payload)
 

@@ -346,6 +346,14 @@ ml:
       - ReadWriteOnce
     size: 1Gi
     annotations: {}
+    # Required with persistence. Models are pickle (joblib) files; each is
+    # signed with HMAC-SHA256 and verified before it is loaded, so a file on
+    # the volume that was not written with this key is never deserialized.
+    # kubectl create secret generic kuberight-ml-signing \
+    #   --from-literal=artifact-key="$(openssl rand -hex 32)"
+    signingKey:
+      existingSecret: ""
+      key: artifact-key
   resources:
     requests:
       cpu: 100m

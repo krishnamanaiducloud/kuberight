@@ -430,7 +430,7 @@
         "persistence": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["enabled", "existingClaim", "storageClass", "accessModes", "size", "annotations"],
+          "required": ["enabled", "existingClaim", "storageClass", "accessModes", "size", "annotations", "signingKey"],
           "properties": {
             "enabled": { "type": "boolean" },
             "existingClaim": { "$ref": "#/definitions/optionalName" },
@@ -442,7 +442,16 @@
               "items": { "type": "string", "enum": ["ReadWriteOnce", "ReadOnlyMany", "ReadWriteMany", "ReadWriteOncePod"] }
             },
             "size": { "type": "string", "pattern": "^[1-9][0-9]*(Ei|Pi|Ti|Gi|Mi|Ki|E|P|T|G|M|K)?$" },
-            "annotations": { "$ref": "#/definitions/stringMap" }
+            "annotations": { "$ref": "#/definitions/stringMap" },
+            "signingKey": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["existingSecret", "key"],
+              "properties": {
+                "existingSecret": { "$ref": "#/definitions/optionalName" },
+                "key": { "$ref": "#/definitions/requiredName" }
+              }
+            }
           }
         },
         "resources": { "$ref": "#/definitions/resources" },

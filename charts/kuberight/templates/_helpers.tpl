@@ -107,6 +107,9 @@ app.kubernetes.io/component: ml
 {{- if and (eq .Values.operationMode "apply") (not .Values.rbac.monitoring.enabled) -}}
 {{- fail "operationMode=apply requires rbac.monitoring.enabled=true" -}}
 {{- end -}}
+{{- if and .Values.ml.enabled .Values.ml.persistence.enabled (not .Values.ml.persistence.signingKey.existingSecret) -}}
+{{- fail "ml.persistence.signingKey.existingSecret is required when ml.persistence.enabled=true: persisted models are pickle files and are loaded only after their HMAC is verified" -}}
+{{- end -}}
 {{- if and .Values.autoscaling.enabled (not (or .Values.autoscaling.targetCPUUtilizationPercentage .Values.autoscaling.targetMemoryUtilizationPercentage)) -}}
 {{- fail "at least one autoscaling CPU or memory utilization target is required when autoscaling.enabled=true" -}}
 {{- end -}}

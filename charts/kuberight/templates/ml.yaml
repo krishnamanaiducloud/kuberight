@@ -82,6 +82,11 @@ spec:
             {{- if .Values.ml.persistence.enabled }}
             - name: KUBERIGHT_ML_MODEL_DIR
               value: /var/lib/kuberight-ml/models
+            - name: KUBERIGHT_ML_ARTIFACT_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.ml.persistence.signingKey.existingSecret | quote }}
+                  key: {{ .Values.ml.persistence.signingKey.key | quote }}
             {{- end }}
             {{- with .Values.ml.apiKey.existingSecret }}
             - name: KUBERIGHT_ML_API_KEY

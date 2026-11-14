@@ -480,3 +480,111 @@ def test_readiness_distinguishes_unwritable_store(
 def test_settings_reject_insecure_api_key() -> None:
     with pytest.raises(ValueError, match="at least 16"):
         service.Settings(api_key="short")
+
+
+SIGNING_KEY = "k" * 48
+
+
+def _signed_store(tmp_path: Path, key: str | None = SIGNING_KEY) -> service.ModelStore:
+    return service.ModelStore(tmp_path / "store", max_versions=2, signing_key=key)
+
+
+def _save_loadable(store: service.ModelStore, version: str = "v1") -> None:
+    store.save(
+        "series",
+        version,
+        {
+            "artifact_schema": 1,
+            "feature_schema": service.MODEL_SCHEMA_VERSION,
+            "model_name": "seasonal-naive-v1",
+            "estimator": None,
+            "period": 24,
+            "input_digest": "digest",
+            "version": version,
+        },
+        {
+            "seriesId": "series",
+            "version": version,
+            "name": "seasonal-naive-v1",
+            "featureSchema": service.MODEL_SCHEMA_VERSION,
+            "inputDigest": "digest",
+            "resource": "cpu",
+        },
+    )
+
+
+def _artifact_path(tmp_path: Path, version: str = "v1") -> Path:
+    series_dir = next(path for path in (tmp_path / "store").iterdir() if path.is_dir())
+    return series_dir / f"{version}.joblib"
+
+
+def test_signed_artifacts_load_and_carry_a_signature(tmp_path: Path) -> None:
+    store = _signed_store(tmp_path)
+    _save_loadable(store)
+    assert _artifact_path(tmp_path).with_suffix(".mac").is_file()
+    loaded = store.load_latest("series", "digest", "cpu")
+    assert loaded is not None
+    assert loaded[0]["version"] == "v1"
+
+
+def test_tampered_artifacts_are_refused_before_unpickling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _signed_store(tmp_path)
+    _save_loadable(store)
+    artifact = _artifact_path(tmp_path)
+    artifact.write_bytes(artifact.read_bytes() + b"\x00")
+
+    def never(*_: Any, **__: Any) -> Any:
+        raise AssertionError("a tampered artifact must not be deserialized")
+
+    monkeypatch.setattr(service.joblib, "load", never)
+    assert store.load_latest("series", "digest", "cpu") is None
+
+
+@pytest.mark.parametrize(
+    ("writer_key", "reader_key", "remove_signature"),
+    [
+        (None, SIGNING_KEY, False),  # unsigned artifacts are refused once signing is on
+        ("x" * 48, SIGNING_KEY, False),  # signed with a different key
+        (SIGNING_KEY, SIGNING_KEY, True),  # signature file deleted
+    ],
+)
+def test_artifacts_without_a_valid_signature_are_refused(
+    tmp_path: Path, writer_key: str | None, reader_key: str, remove_signature: bool
+) -> None:
+    _save_loadable(_signed_store(tmp_path, writer_key))
+    if remove_signature:
+        _artifact_path(tmp_path).with_suffix(".mac").unlink()
+    assert _signed_store(tmp_path, reader_key).load_latest("series", "digest", "cpu") is None
+
+
+def test_signatures_bind_the_version(tmp_path: Path) -> None:
+    store = _signed_store(tmp_path)
+    _save_loadable(store, "v1")
+    _save_loadable(store, "v2")
+    v1, v2 = _artifact_path(tmp_path, "v1"), _artifact_path(tmp_path, "v2")
+    # A validly signed artifact copied under another version's name is refused.
+    v2.with_suffix(".mac").write_text(v1.with_suffix(".mac").read_text())
+    v2.write_bytes(v1.read_bytes())
+    assert store.load_latest("series", "digest", "cpu") is None
+
+
+def test_obsolete_versions_remove_their_signatures(tmp_path: Path) -> None:
+    store = _signed_store(tmp_path)
+    for index in range(4):
+        _save_loadable(store, f"v{index}")
+    series_dir = _artifact_path(tmp_path, "v3").parent
+    assert sorted(path.name for path in series_dir.glob("*.mac")) == ["v2.mac", "v3.mac"]
+
+
+def test_short_artifact_keys_are_rejected() -> None:
+    with pytest.raises(ValueError, match="KUBERIGHT_ML_ARTIFACT_KEY"):
+        service.Settings(artifact_key="short")
+
+
+def test_readiness_reports_artifact_signing(tmp_path: Path) -> None:
+    settings = service.Settings(model_dir=tmp_path / "models", artifact_key=SIGNING_KEY)
+    client = TestClient(service.create_app(settings))
+    body = client.get("/readyz").json()
+    assert body["checks"]["artifactSigning"] == "enabled"
