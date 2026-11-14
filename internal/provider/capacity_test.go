@@ -91,3 +91,21 @@ func TestCapacityRequiresNodeAccess(t *testing.T) {
 		t.Fatal("capacity succeeded without node access")
 	}
 }
+
+func TestSchedulingConstraintsFromPodSpec(t *testing.T) {
+	spec := corev1.PodSpec{
+		NodeSelector: map[string]string{"pool": "general"},
+		Tolerations:  []corev1.Toleration{{Key: "dedicated", Operator: corev1.TolerationOpEqual, Value: "web", Effect: corev1.TaintEffectNoSchedule}},
+		Affinity: &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+			NodeSelectorTerms: []corev1.NodeSelectorTerm{{MatchExpressions: []corev1.NodeSelectorRequirement{{Key: "kubernetes.io/arch", Operator: corev1.NodeSelectorOpIn, Values: []string{"amd64"}}}}},
+		}}},
+	}
+	constraints := schedulingConstraints(spec)
+	if constraints.NodeSelector["pool"] != "general" || len(constraints.Tolerations) != 1 || constraints.Tolerations[0].Effect != "NoSchedule" ||
+		len(constraints.RequiredTerms) != 1 || constraints.RequiredTerms[0][0].Values[0] != "amd64" {
+		t.Fatalf("constraints = %+v", constraints)
+	}
+	if !schedulingConstraints(corev1.PodSpec{}).Empty() {
+		t.Fatal("a plain pod spec must have no constraints")
+	}
+}

@@ -51,10 +51,15 @@ func (provider *KubernetesProvider) Capacity(ctx context.Context) (httpapi.Clust
 		if capacityType == "" && labels["kubernetes.azure.com/scalesetpriority"] == "spot" {
 			capacityType = "spot"
 		}
+		taints := make([]httpapi.NodeTaint, 0, len(node.Spec.Taints))
+		for _, taint := range node.Spec.Taints {
+			taints = append(taints, httpapi.NodeTaint{Key: taint.Key, Value: taint.Value, Effect: string(taint.Effect)})
+		}
 		capacity.Nodes = append(capacity.Nodes, httpapi.NodeCapacity{
 			Name: node.Name, CPUMilli: node.Status.Allocatable.Cpu().MilliValue(), MemoryBytes: node.Status.Allocatable.Memory().Value(),
 			Schedulable:  ready && !node.Spec.Unschedulable && labels["kubernetes.io/os"] != "windows",
 			InstanceType: labels["node.kubernetes.io/instance-type"], CapacityType: capacityType, NodePool: labels["karpenter.sh/nodepool"],
+			Labels: labels, Taints: taints,
 		})
 		if capacity.Nodes[len(capacity.Nodes)-1].NodePool != "" {
 			capacity.Autoscaling.Karpenter = true
@@ -87,15 +92,35 @@ func (provider *KubernetesProvider) Capacity(ctx context.Context) (httpapi.Clust
 		}
 		return result.Items, result.Continue, nil
 	})
+	capacity.Constraints = map[string]httpapi.SchedulingConstraints{}
+	addConstraints := func(namespace, kind, name string, spec corev1.PodSpec) {
+		if constraints := schedulingConstraints(spec); !constraints.Empty() {
+			capacity.Constraints[namespace+"/"+kind+"/"+name] = constraints
+		}
+	}
 	if err == nil {
 		for index := range deployments {
 			name := deployments[index].Name
 			if strings.Contains(name, "cluster-autoscaler") || deployments[index].Labels["app.kubernetes.io/name"] == "cluster-autoscaler" {
 				capacity.Autoscaling.ClusterAutoscaler = true
 			}
+			addConstraints(deployments[index].Namespace, "Deployment", name, deployments[index].Spec.Template.Spec)
 		}
 	} else {
 		capacity.Autoscaling.Warnings = append(capacity.Autoscaling.Warnings, "Cluster Autoscaler detection was unavailable: "+safeKubernetesError(err))
+	}
+	if statefulSets, listErr := listAll(ctx, func(ctx context.Context, options metav1.ListOptions) ([]appsv1.StatefulSet, string, error) {
+		result, err := provider.client.AppsV1().StatefulSets("").List(ctx, options)
+		if err != nil {
+			return nil, "", err
+		}
+		return result.Items, result.Continue, nil
+	}); listErr == nil {
+		for index := range statefulSets {
+			addConstraints(statefulSets[index].Namespace, "StatefulSet", statefulSets[index].Name, statefulSets[index].Spec.Template.Spec)
+		}
+	} else {
+		capacity.Autoscaling.Warnings = append(capacity.Autoscaling.Warnings, "StatefulSet placement rules could not be read; their pods are assumed to fit any node: "+safeKubernetesError(listErr))
 	}
 	return capacity, nil
 }
@@ -125,4 +150,30 @@ func nodePoolSummary(pool unstructured.Unstructured) httpapi.NodePool {
 	summary.CPULimit, _, _ = unstructured.NestedString(pool.Object, "spec", "limits", "cpu")
 	summary.MemoryLimit, _, _ = unstructured.NestedString(pool.Object, "spec", "limits", "memory")
 	return summary
+}
+
+// schedulingConstraints extracts the placement rules node-impact estimates
+// honor: tolerations, nodeSelector, and required node affinity.
+func schedulingConstraints(spec corev1.PodSpec) httpapi.SchedulingConstraints {
+	constraints := httpapi.SchedulingConstraints{}
+	if len(spec.NodeSelector) > 0 {
+		constraints.NodeSelector = spec.NodeSelector
+	}
+	for _, toleration := range spec.Tolerations {
+		constraints.Tolerations = append(constraints.Tolerations, httpapi.Toleration{
+			Key: toleration.Key, Operator: string(toleration.Operator), Value: toleration.Value, Effect: string(toleration.Effect),
+		})
+	}
+	if affinity := spec.Affinity; affinity != nil && affinity.NodeAffinity != nil && affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution != nil {
+		for _, term := range affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms {
+			requirements := make([]httpapi.NodeRequirement, 0, len(term.MatchExpressions))
+			for _, expression := range term.MatchExpressions {
+				requirements = append(requirements, httpapi.NodeRequirement{Key: expression.Key, Operator: string(expression.Operator), Values: expression.Values})
+			}
+			if len(requirements) > 0 {
+				constraints.RequiredTerms = append(constraints.RequiredTerms, requirements)
+			}
+		}
+	}
+	return constraints
 }

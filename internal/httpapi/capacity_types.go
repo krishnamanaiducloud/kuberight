@@ -11,6 +11,9 @@ type NodeCapacity struct {
 	InstanceType string `json:"instanceType,omitempty"`
 	CapacityType string `json:"capacityType,omitempty"`
 	NodePool     string `json:"nodePool,omitempty"`
+	// Labels and Taints decide which pods the node accepts.
+	Labels map[string]string `json:"-"`
+	Taints []NodeTaint       `json:"taints,omitempty"`
 }
 
 // NodePool summarizes a Karpenter NodePool's consolidation behavior.
@@ -36,6 +39,9 @@ type NodeAutoscaling struct {
 type ClusterCapacity struct {
 	Nodes       []NodeCapacity  `json:"nodes"`
 	Autoscaling NodeAutoscaling `json:"autoscaling"`
+	// Constraints are pod-template placement rules by "namespace/kind/name".
+	// A workload without an entry can use any schedulable node.
+	Constraints map[string]SchedulingConstraints `json:"-"`
 }
 
 // CapacityReader is implemented by inventory providers that can read nodes.

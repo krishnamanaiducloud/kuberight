@@ -599,8 +599,8 @@ export type CapacityResponse = {
   status: ApiStatus
   nodes?: { total: number; schedulable: number }
   allocatable?: { cpuMilli: number; memoryBytes: number }
-  current?: { nodesNeeded: number; unplacedPods: number; cpuRequestedMilli: number; memoryRequestedBytes: number }
-  recommended?: { nodesNeeded: number; unplacedPods: number; cpuRequestedMilli: number; memoryRequestedBytes: number }
+  current?: PackingResult
+  recommended?: PackingResult
   reclaimableNodes?: number
   containersWithRecommendations?: number
   autoscaling?: {
@@ -649,4 +649,15 @@ export type HotspotRow = {
   severity: 'critical' | 'warning' | 'info'
   issues: string[]
   advice: string
+}
+
+/** A requests-based node packing estimate that honors taints, nodeSelector, and required node affinity. */
+export type PackingResult = {
+  nodesNeeded: number
+  unplacedPods: number
+  cpuRequestedMilli: number
+  memoryRequestedBytes: number
+  /** Pods that no schedulable node accepts because of taints or placement rules. */
+  noEligibleNodePods?: number
+  unplacedWorkloads?: string[]
 }

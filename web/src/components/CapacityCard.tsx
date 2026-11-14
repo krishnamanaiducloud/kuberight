@@ -49,7 +49,13 @@ export function CapacityCard() {
             <Typography variant="caption" color="text.secondary">
               {data.nodes?.schedulable} of {data.nodes?.total} nodes schedulable · requested CPU {formatMillicores(data.current?.cpuRequestedMilli ?? 0)} → {formatMillicores(data.recommended?.cpuRequestedMilli ?? 0)} · memory {formatBytes(data.current?.memoryRequestedBytes ?? 0)} → {formatBytes(data.recommended?.memoryRequestedBytes ?? 0)}
               {(data.current?.unplacedPods ?? 0) > 0 && ` · ${data.current?.unplacedPods} pods do not fit current nodes by requests`}
+              {(data.current?.noEligibleNodePods ?? 0) > 0 && `, ${data.current?.noEligibleNodePods} of them because no node matches their taints, nodeSelector, or required affinity`}
             </Typography>
+            {(data.current?.unplacedWorkloads?.length ?? 0) > 0 && (
+              <Typography variant="caption" color="text.secondary" component="p" sx={{ overflowWrap: 'anywhere' }}>
+                Unplaced: {data.current?.unplacedWorkloads?.join(', ')}
+              </Typography>
+            )}
           </Box>
           <Box sx={{ maxWidth: { md: 520 } }}>
             <Stack direction="row" gap={1} flexWrap="wrap" sx={{ mb: 1 }}>

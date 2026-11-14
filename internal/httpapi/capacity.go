@@ -13,6 +13,10 @@ import (
 
 type podDemand struct {
 	cpuMilli, memoryBytes int64
+	// workload names the owner for unplaceable-pod reporting; constraints
+	// restrict which nodes the pod may use.
+	workload    string
+	constraints SchedulingConstraints
 }
 
 type packingResult struct {
@@ -20,21 +24,31 @@ type packingResult struct {
 	UnplacedPods   int   `json:"unplacedPods"`
 	CPURequested   int64 `json:"cpuRequestedMilli"`
 	MemoryRequests int64 `json:"memoryRequestedBytes"`
+	// NoEligibleNodePods could not use any schedulable node because of
+	// taints, nodeSelector, or required node affinity, whatever their size.
+	NoEligibleNodePods int `json:"noEligibleNodePods"`
+	// UnplacedWorkloads names up to 20 workloads with unplaced pods.
+	UnplacedWorkloads []string `json:"unplacedWorkloads"`
 }
 
 // pack places pods with first-fit-decreasing onto nodes ordered largest
-// first, after reserving DaemonSet pods on every node. It returns how many
-// nodes receive at least one pod. This mirrors scheduler requests-based
-// placement but ignores affinity, taints, topology spread, and PDBs.
+// first, after reserving DaemonSet pods on every node. A pod only uses nodes
+// whose taints it tolerates and whose labels satisfy its nodeSelector and
+// required node affinity. It returns how many nodes receive at least one
+// pod. Preferred and pod (anti-)affinity, topology spread, and PDBs are not
+// modeled, so the result is an estimate, not a scheduler simulation.
 func pack(nodes []NodeCapacity, daemon podDemand, pods []podDemand) packingResult {
-	type bin struct{ cpu, memory int64 }
+	type bin struct {
+		cpu, memory int64
+		node        NodeCapacity
+	}
 	bins := make([]bin, 0, len(nodes))
 	var maxCPU, maxMemory int64 = 1, 1
 	for _, node := range nodes {
 		if !node.Schedulable {
 			continue
 		}
-		bins = append(bins, bin{node.CPUMilli - daemon.cpuMilli, node.MemoryBytes - daemon.memoryBytes})
+		bins = append(bins, bin{node.CPUMilli - daemon.cpuMilli, node.MemoryBytes - daemon.memoryBytes, node})
 		maxCPU, maxMemory = max(maxCPU, node.CPUMilli), max(maxMemory, node.MemoryBytes)
 	}
 	sort.SliceStable(bins, func(left, right int) bool {
@@ -46,13 +60,18 @@ func pack(nodes []NodeCapacity, daemon podDemand, pods []podDemand) packingResul
 		return max(float64(pod.cpuMilli)/float64(maxCPU), float64(pod.memoryBytes)/float64(maxMemory))
 	}
 	sort.SliceStable(ordered, func(left, right int) bool { return dominant(ordered[left]) > dominant(ordered[right]) })
-	result := packingResult{}
+	result := packingResult{UnplacedWorkloads: []string{}}
 	used := make([]bool, len(bins))
+	unplaced := map[string]bool{}
 	for _, pod := range ordered {
 		result.CPURequested += pod.cpuMilli
 		result.MemoryRequests += pod.memoryBytes
-		placed := false
+		placed, eligible := false, false
 		for index := range bins {
+			if !pod.constraints.allows(bins[index].node) {
+				continue
+			}
+			eligible = true
 			if bins[index].cpu >= pod.cpuMilli && bins[index].memory >= pod.memoryBytes {
 				bins[index].cpu -= pod.cpuMilli
 				bins[index].memory -= pod.memoryBytes
@@ -66,6 +85,13 @@ func pack(nodes []NodeCapacity, daemon podDemand, pods []podDemand) packingResul
 		}
 		if !placed {
 			result.UnplacedPods++
+			if !eligible {
+				result.NoEligibleNodePods++
+			}
+			if pod.workload != "" && !unplaced[pod.workload] && len(result.UnplacedWorkloads) < 20 {
+				unplaced[pod.workload] = true
+				result.UnplacedWorkloads = append(result.UnplacedWorkloads, pod.workload)
+			}
 		}
 	}
 	return result
@@ -204,6 +230,9 @@ func (server *apiServer) capacity(w http.ResponseWriter, r *http.Request) {
 			recommendedDaemon.memoryBytes += recommended.memoryBytes
 			continue
 		}
+		key := namespace + "/" + kind + "/" + name
+		current.workload, recommended.workload = key, key
+		current.constraints, recommended.constraints = cluster.Constraints[key], cluster.Constraints[key]
 		for range numeric(record["desiredReplicas"]) {
 			currentPods = append(currentPods, current)
 			recommendedPods = append(recommendedPods, recommended)
@@ -236,7 +265,8 @@ func (server *apiServer) capacity(w http.ResponseWriter, r *http.Request) {
 		"realization":                   realization(cluster.Autoscaling),
 		"assumptions": []string{
 			"Pods are packed by requests with first-fit-decreasing onto existing node shapes, largest first.",
-			"Affinity, taints, topology spread, PodDisruptionBudgets, and pods not owned by a supported controller are ignored.",
+			"Each pod only uses nodes whose NoSchedule and NoExecute taints it tolerates and whose labels satisfy its nodeSelector and required node affinity.",
+			"Preferred affinity, pod affinity and anti-affinity, topology spread, PodDisruptionBudgets, and pods not owned by a supported controller are not modeled; this is an estimate, not a scheduler simulation.",
 			fmt.Sprintf("Recommended requests use the newest approved, unexpired, live-workload-matched recommendation for %d containers; others keep their current requests.", applied),
 		},
 	}
