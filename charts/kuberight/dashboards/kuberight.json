@@ -271,7 +271,7 @@
               }
             ]
           },
-          "decimals": 3
+          "decimals": 1
         },
         "overrides": []
       },
@@ -436,7 +436,7 @@
     {
       "type": "stat",
       "title": "Estimated monthly savings",
-      "description": "Net change in requested cost of the newest recommendation per container; increases count as negative. Requires recommendation metric export (exportRecommendationMetrics).",
+      "description": "Net change in requested cost of the newest recommendation per container; increases count as negative. Needs exportRecommendationMetrics and CPU and memory prices (OpenCost or configured).",
       "id": 7,
       "datasource": {
         "type": "prometheus",
@@ -454,7 +454,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (currency) (max without (instance, pod) (kuberight_recommendation_monthly_savings{namespace=\"$namespace\"}))",
+          "expr": "sum by (currency) (max by (cluster, workload_namespace, kind, workload, container, currency) (label_replace(label_replace(label_replace(kuberight_recommendation_monthly_savings and on (instance) kuberight_http_requests_in_flight{namespace=\"$namespace\"}, \"workload_namespace\", \"$1\", \"namespace\", \"(.+)\"), \"workload_namespace\", \"$1\", \"exported_namespace\", \"(.+)\"), \"container\", \"$1\", \"exported_container\", \"(.+)\")))",
           "legendFormat": "{{currency}}",
           "refId": "A",
           "instant": true,
@@ -477,7 +477,7 @@
             ]
           },
           "decimals": 2,
-          "noValue": "Export off"
+          "noValue": "Unavailable"
         },
         "overrides": []
       },
@@ -1085,7 +1085,7 @@
     {
       "type": "table",
       "title": "Largest estimated savings",
-      "description": "Ten containers with the largest monthly saving from their newest recommendation. Requires recommendation metric export.",
+      "description": "Ten containers with the largest monthly saving from their newest recommendation; negative values are increases. Needs exportRecommendationMetrics and prices.",
       "id": 15,
       "datasource": {
         "type": "prometheus",
@@ -1103,7 +1103,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "topk(10, max without (instance, pod, job, service, endpoint, exported_container, exported_namespace) (label_replace(label_replace(kuberight_recommendation_monthly_savings{namespace=\"$namespace\"}, \"container\", \"$1\", \"exported_container\", \"(.+)\"), \"workload_namespace\", \"$1\", \"exported_namespace\", \"(.+)\")))",
+          "expr": "topk(10, max by (cluster, workload_namespace, kind, workload, container, currency) (label_replace(label_replace(label_replace(kuberight_recommendation_monthly_savings and on (instance) kuberight_http_requests_in_flight{namespace=\"$namespace\"}, \"workload_namespace\", \"$1\", \"namespace\", \"(.+)\"), \"workload_namespace\", \"$1\", \"exported_namespace\", \"(.+)\"), \"container\", \"$1\", \"exported_container\", \"(.+)\")))",
           "legendFormat": "__auto",
           "refId": "A",
           "instant": true,
