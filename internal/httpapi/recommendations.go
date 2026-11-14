@@ -598,7 +598,12 @@ func (server *apiServer) collectEvidence(ctx context.Context, subject usage.Subj
 		evidence.input.Provenance.QueryFingerprint = fingerprint
 	}
 	if changes, ok := server.usage.(resourceChangeSource); ok && exactAttribution {
-		changedAt, changeErr := changes.ResourceChangedAt(ctx, subject, *metricIdentity, queryWindow)
+		cooldownHours := optimizer.DefaultPolicy().CooldownHours
+		if policy != nil && policy.CooldownHours > 0 {
+			cooldownHours = policy.CooldownHours
+		}
+		changeWindow := changeHistoryWindow(queryWindow, time.Duration(cooldownHours)*time.Hour)
+		changedAt, changeErr := changes.ResourceChangedAt(ctx, subject, *metricIdentity, changeWindow)
 		if changeErr != nil {
 			server.logger.Warn("resource change history query failed", "request_id", requestIDFromContext(ctx), "error", changeErr)
 			evidence.informational = append(evidence.informational, "the request and limit change history could not be read, so the stability cooldown was not evaluated")
@@ -885,4 +890,23 @@ func observationStart(history usage.History, window usage.Window) *time.Time {
 		}
 	}
 	return timePointer(start)
+}
+
+// maxChangeHistorySteps bounds the change-history lookup to one day of
+// one-minute samples per series.
+const maxChangeHistorySteps = 1440
+
+// changeHistoryWindow looks back at least as far as the cooldown. A change
+// made before a short analysis window must still hold reductions, so the
+// lookup covers the cooldown, with the step coarsened to keep it bounded.
+// A coarser step only blurs when the change happened, by at most one step.
+func changeHistoryWindow(window usage.Window, cooldown time.Duration) usage.Window {
+	if cooldown <= window.Duration {
+		return window
+	}
+	window.Duration = cooldown
+	if window.Step <= 0 || cooldown/window.Step > maxChangeHistorySteps {
+		window.Step = max(window.Step, (cooldown / maxChangeHistorySteps).Truncate(time.Second))
+	}
+	return window
 }

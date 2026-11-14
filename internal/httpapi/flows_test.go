@@ -897,3 +897,22 @@ func TestGenerateRecommendationPairsGridsAfterARestart(t *testing.T) {
 		t.Fatalf("missing alignment note: %s", warnings)
 	}
 }
+
+func TestChangeHistoryCoversTheCooldownWhateverTheWindow(t *testing.T) {
+	end := fixedNow
+	short := usage.Window{Duration: 4 * time.Hour, Step: time.Minute, End: end}
+	// The 24-hour default cooldown must see a change made 5 hours ago.
+	if got := changeHistoryWindow(short, 24*time.Hour); got.Duration != 24*time.Hour || got.Step != time.Minute || !got.End.Equal(end) {
+		t.Fatalf("24h cooldown: %+v", got)
+	}
+	// The 30-day maximum stays within the step budget.
+	long := changeHistoryWindow(short, 720*time.Hour)
+	if long.Duration != 720*time.Hour || long.Duration/long.Step > maxChangeHistorySteps {
+		t.Fatalf("720h cooldown: %+v (%d steps)", long, long.Duration/long.Step)
+	}
+	// A window already longer than the cooldown is used as it is.
+	week := usage.Window{Duration: 7 * 24 * time.Hour, Step: 5 * time.Minute, End: end}
+	if got := changeHistoryWindow(week, 24*time.Hour); got != week {
+		t.Fatalf("long window changed: %+v", got)
+	}
+}
