@@ -52,7 +52,7 @@ const recommendation = {
     minimumCpuMilli: 10,
     minimumMemoryBytes: 16_777_216,
     maximumCpuMilli: 1_000_000_000,
-    maximumMemoryBytes: 2_305_843_009_213_693_951,
+    maximumMemoryBytes: 1_099_511_627_776,
     maximumReduction: 0.5,
     minimumSamples: 30,
     highConfidenceSamples: 120,

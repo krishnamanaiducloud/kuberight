@@ -10,7 +10,11 @@ WARNING: authentication is disabled. Do not expose this release outside a truste
 {{- if and .Values.networkPolicy.enabled .Values.ingress.enabled }}
 IMPORTANT: networkPolicy permits same-namespace traffic by default. Add your ingress controller namespace/pod selectors to networkPolicy.ingress.
 {{- end }}
-{{- if eq .Values.rbac.scope "cluster" }}
+{{- if eq .Values.operationMode "apply" }}
+AUTOMATION IS ENABLED (operationMode=apply). KubeRight can patch the pod template resources of Deployments, StatefulSets, and DaemonSets, but only in namespaces labeled kuberight.io/automation=enabled and only for approved, fresh recommendations:
+  kubectl label namespace <namespace> kuberight.io/automation=enabled
+  GET /api/v1/automation shows the plan before anything changes. Review the rendered ClusterRole before installation.
+{{- else if eq .Values.rbac.scope "cluster" }}
 Cluster-wide read-only inventory RBAC is enabled. Review the rendered ClusterRole before installation.
 {{- else }}
 Inventory RBAC is namespace scoped to {{ .Release.Namespace }}.

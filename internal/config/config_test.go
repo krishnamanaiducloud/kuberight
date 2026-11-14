@@ -133,3 +133,15 @@ func TestNormalizedFillsUnsetValues(t *testing.T) {
 		t.Fatalf("Normalized() = %#v", cfg)
 	}
 }
+
+func TestOpenCostURLFollowsUpstreamTransportRules(t *testing.T) {
+	cfg := validConfig()
+	cfg.OpenCostURL = "http://opencost.opencost.svc:9003"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("cleartext OpenCost was accepted without the insecure-upstream opt-in")
+	}
+	cfg.AllowInsecureUpstreams = true
+	if err := cfg.Validate(); err != nil || !cfg.CostConfigured() {
+		t.Fatalf("explicit in-cluster OpenCost: err=%v costConfigured=%v", err, cfg.CostConfigured())
+	}
+}

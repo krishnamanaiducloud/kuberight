@@ -149,6 +149,7 @@ func (server *apiServer) efficiency(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	costed := server.config.CostConfigured()
+	reclaimableCost := 0.0
 	summary := efficiencySummary{Window: window.String(), Basis: "requests x desired replicas from inventory; average and P95 usage of all containers in the namespace from Prometheus; reclaimable = requested - P95"}
 	items := make([]efficiencyRow, 0, len(namespaces))
 	for _, name := range namespaces {
@@ -165,7 +166,9 @@ func (server *apiServer) efficiency(w http.ResponseWriter, r *http.Request) {
 			row.MemoryEfficiency = ratio(usage.MemoryAverageBytes, row.MemoryRequestedBytes)
 			row.CPUReclaimableMilli, row.MemoryReclaimableBytes = pointer(roundMilli(cpuReclaimable)), pointer(math.Round(memoryReclaimable))
 			if costed {
-				row.ReclaimableMonthlyCost = pointer(roundCents(server.monthlyCost(int64(cpuReclaimable), int64(memoryReclaimable), 1)))
+				cost, _ := server.monthlyCost(r.Context(), name, int64(cpuReclaimable), int64(memoryReclaimable), 1)
+				row.ReclaimableMonthlyCost = pointer(roundCents(cost))
+				reclaimableCost += cost
 			}
 			summary.CPURequestedMilli += row.CPURequestedMilli
 			summary.MemoryRequestedBytes += row.MemoryRequestedBytes
@@ -175,7 +178,8 @@ func (server *apiServer) efficiency(w http.ResponseWriter, r *http.Request) {
 			summary.MemoryReclaimableBytes += memoryReclaimable
 		}
 		if costed {
-			row.RequestedMonthlyCost = pointer(roundCents(server.monthlyCost(row.CPURequestedMilli, row.MemoryRequestedBytes, 1)))
+			cost, _ := server.monthlyCost(r.Context(), name, row.CPURequestedMilli, row.MemoryRequestedBytes, 1)
+			row.RequestedMonthlyCost = pointer(roundCents(cost))
 		}
 		items = append(items, *row)
 	}
@@ -196,7 +200,8 @@ func (server *apiServer) efficiency(w http.ResponseWriter, r *http.Request) {
 	summary.CPUAverageMilli, summary.CPUReclaimableMilli = roundMilli(summary.CPUAverageMilli), roundMilli(summary.CPUReclaimableMilli)
 	summary.MemoryAverageBytes, summary.MemoryReclaimableBytes = math.Round(summary.MemoryAverageBytes), math.Round(summary.MemoryReclaimableBytes)
 	if costed {
-		summary.ReclaimableMonthlyCost = pointer(roundCents(server.monthlyCost(int64(summary.CPUReclaimableMilli), int64(summary.MemoryReclaimableBytes), 1)))
+		// Namespaces can have different prices, so the total sums row costs.
+		summary.ReclaimableMonthlyCost = pointer(roundCents(reclaimableCost))
 		summary.Currency = server.config.CostCurrency
 	}
 	respondJSON(w, http.StatusOK, map[string]any{
@@ -319,7 +324,8 @@ func (server *apiServer) workloadEfficiency(w http.ResponseWriter, r *http.Reque
 			memoryReclaimable := math.Max(0, float64(row.MemoryRequestPerPodBytes)-memoryPeak) * replicas
 			row.CPUReclaimableMilli, row.MemoryReclaimableBytes = pointer(roundMilli(cpuReclaimable)), pointer(math.Round(memoryReclaimable))
 			if costed {
-				row.ReclaimableMonthlyCost = pointer(roundCents(server.monthlyCost(int64(cpuReclaimable), int64(memoryReclaimable), 1)))
+				cost, _ := server.monthlyCost(r.Context(), namespace, int64(cpuReclaimable), int64(memoryReclaimable), 1)
+				row.ReclaimableMonthlyCost = pointer(roundCents(cost))
 			}
 		}
 		items = append(items, row)

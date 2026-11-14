@@ -108,7 +108,15 @@
       "properties": {
         "cpuCoreHour": { "$ref": "#/definitions/optionalPositiveCost" },
         "memoryGiBHour": { "$ref": "#/definitions/optionalPositiveCost" },
-        "currency": { "type": "string", "pattern": "^[A-Z]{3}$" }
+        "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+        "opencost": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "url": { "type": "string", "maxLength": 2048, "pattern": "^$|^https?://[^\\s?#]+$" },
+            "allowHTTP": { "type": "boolean" }
+          }
+        }
       }
     },
     "latencyQuery": {

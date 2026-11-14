@@ -240,20 +240,22 @@ func (server *apiServer) createForecast(w http.ResponseWriter, r *http.Request) 
 }
 
 type savingsItem struct {
-	RecommendationID         string   `json:"id"`
-	Cluster                  string   `json:"cluster,omitempty"`
-	Namespace                string   `json:"namespace"`
-	Kind                     string   `json:"kind,omitempty"`
-	Workload                 string   `json:"workload"`
-	Container                string   `json:"container"`
-	Replicas                 int32    `json:"replicas"`
-	ReviewStatus             string   `json:"reviewStatus"`
-	Stage                    string   `json:"stage"`
-	Stale                    bool     `json:"stale"`
-	Approvable               bool     `json:"approvable"`
-	EligibilityReason        string   `json:"eligibilityReason,omitempty"`
-	CostAvailable            bool     `json:"costAvailable"`
-	CostUnavailableReason    string   `json:"costUnavailableReason,omitempty"`
+	RecommendationID      string `json:"id"`
+	Cluster               string `json:"cluster,omitempty"`
+	Namespace             string `json:"namespace"`
+	Kind                  string `json:"kind,omitempty"`
+	Workload              string `json:"workload"`
+	Container             string `json:"container"`
+	Replicas              int32  `json:"replicas"`
+	ReviewStatus          string `json:"reviewStatus"`
+	Stage                 string `json:"stage"`
+	Stale                 bool   `json:"stale"`
+	Approvable            bool   `json:"approvable"`
+	EligibilityReason     string `json:"eligibilityReason,omitempty"`
+	CostAvailable         bool   `json:"costAvailable"`
+	CostUnavailableReason string `json:"costUnavailableReason,omitempty"`
+	// PriceSource is "configured", "opencost", or "opencost-cluster".
+	PriceSource              string   `json:"priceSource,omitempty"`
 	CurrentMonthlyCost       *float64 `json:"currentMonthlyCost,omitempty"`
 	RecommendedMonthlyCost   *float64 `json:"recommendedMonthlyCost,omitempty"`
 	TheoreticalMonthlyChange *float64 `json:"theoreticalMonthlyChange,omitempty"`
@@ -299,9 +301,12 @@ func roundCents(value float64) float64 { return math.Round(value*100) / 100 }
 // roundMilli removes floating-point noise introduced by unit conversion.
 func roundMilli(value float64) float64 { return math.Round(value*1000) / 1000 }
 
-func (server *apiServer) monthlyCost(cpuMilli, memoryBytes int64, replicas int32) float64 {
-	perReplica := float64(cpuMilli)/1000*server.config.CostCPUCoreHour + float64(memoryBytes)/bytesPerGiB*server.config.CostMemoryGiBHour
-	return perReplica * float64(replicas) * hoursPerMonth
+// monthlyCost prices requested CPU and memory with the namespace's unit
+// prices (OpenCost when configured, otherwise the operator's prices).
+func (server *apiServer) monthlyCost(ctx context.Context, namespace string, cpuMilli, memoryBytes int64, replicas int32) (float64, string) {
+	prices := server.pricer.Prices(ctx, namespace)
+	perReplica := float64(cpuMilli)/1000*prices.CPUCoreHour + float64(memoryBytes)/bytesPerGiB*prices.MemoryGiBHour
+	return perReplica * float64(replicas) * hoursPerMonth, prices.Source
 }
 
 const (
@@ -320,7 +325,7 @@ const (
 func (server *apiServer) computeSavings(ctx context.Context, namespace string) ([]savingsItem, savingsSummary, error) {
 	summary := savingsSummary{
 		Currency: server.config.CostCurrency,
-		Basis:    "requested CPU and memory x the recorded replica snapshot x operator-configured unit prices x 730 hours; modeled changes, not billing or realized savings",
+		Basis:    server.savingsBasis(),
 		Realized: realizedSavingsAvailability{
 			Available: false,
 			Reason:    "realized infrastructure savings require billing allocation and a counterfactual cost baseline; neither provider is configured",
@@ -363,10 +368,12 @@ func (server *apiServer) computeSavings(ctx context.Context, namespace string) (
 			if record.Replicas <= 0 {
 				item.CostUnavailableReason = "the recorded replica snapshot is zero or unavailable; KubeRight will not assume one replica"
 			} else {
-				current := roundCents(server.monthlyCost(record.CurrentCPURequestMilli, record.CurrentMemoryRequestBytes, record.Replicas))
-				recommended := roundCents(server.monthlyCost(record.CPURequestMilli, record.MemoryRequestBytes, record.Replicas))
+				currentCost, source := server.monthlyCost(ctx, record.Namespace, record.CurrentCPURequestMilli, record.CurrentMemoryRequestBytes, record.Replicas)
+				recommendedCost, _ := server.monthlyCost(ctx, record.Namespace, record.CPURequestMilli, record.MemoryRequestBytes, record.Replicas)
+				current, recommended := roundCents(currentCost), roundCents(recommendedCost)
 				change := roundCents(current - recommended)
 				item.CostAvailable = true
+				item.PriceSource = source
 				item.CurrentMonthlyCost = &current
 				item.RecommendedMonthlyCost = &recommended
 				item.TheoreticalMonthlyChange = &change
@@ -673,4 +680,12 @@ func (server *apiServer) optionalIntegration(name string, configured bool, ready
 		return dependencyStatus{Name: name, Configured: true, Healthy: true, Detail: ready}
 	}
 	return dependencyStatus{Name: name, Detail: missing}
+}
+
+func (server *apiServer) savingsBasis() string {
+	prices := "operator-configured unit prices"
+	if server.config.OpenCostURL != "" {
+		prices = "per-namespace unit prices derived from OpenCost allocation (configured prices as fallback)"
+	}
+	return "requested CPU and memory x the recorded replica snapshot x " + prices + " x 730 hours; modeled changes, not billing or realized savings"
 }

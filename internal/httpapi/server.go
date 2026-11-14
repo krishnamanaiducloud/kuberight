@@ -14,6 +14,7 @@ import (
 	"github.com/kuberight/kuberight/internal/forecast"
 	"github.com/kuberight/kuberight/internal/notify"
 	"github.com/kuberight/kuberight/internal/optimizer"
+	"github.com/kuberight/kuberight/internal/pricing"
 	"github.com/kuberight/kuberight/internal/repository"
 	"github.com/kuberight/kuberight/internal/usage"
 )
@@ -78,8 +79,11 @@ type Dependencies struct {
 	Usage      UsageSource
 	Forecaster Forecaster
 	Notifier   notify.Notifier
-	Logger     *slog.Logger
-	Now        func() time.Time
+	// Pricer supplies per-namespace unit prices; nil uses the configured
+	// prices for every namespace.
+	Pricer pricing.Pricer
+	Logger *slog.Logger
+	Now    func() time.Time
 }
 
 type apiServer struct {
@@ -90,6 +94,7 @@ type apiServer struct {
 	usage      UsageSource
 	forecaster Forecaster
 	notifier   notify.Notifier
+	pricer     pricing.Pricer
 	logger     *slog.Logger
 	metrics    *apiMetrics
 	now        func() time.Time
@@ -142,6 +147,10 @@ func newAPIServer(cfg config.Config, dependencies Dependencies) (*apiServer, err
 	if now == nil {
 		now = time.Now
 	}
+	pricer := dependencies.Pricer
+	if pricer == nil {
+		pricer = pricing.Static{CPUCoreHour: cfg.CostCPUCoreHour, MemoryGiBHour: cfg.CostMemoryGiBHour}
+	}
 	server := &apiServer{
 		config:     cfg,
 		access:     access,
@@ -150,6 +159,7 @@ func newAPIServer(cfg config.Config, dependencies Dependencies) (*apiServer, err
 		usage:      dependencies.Usage,
 		forecaster: dependencies.Forecaster,
 		notifier:   dependencies.Notifier,
+		pricer:     pricer,
 		logger:     logger,
 		metrics:    newAPIMetrics(),
 		now:        now,

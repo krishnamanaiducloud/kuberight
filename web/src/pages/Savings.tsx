@@ -4,7 +4,7 @@ import { api, type CollectionEnvelope, type SavingsSummary } from '../api'
 import { DataPage } from '../components/DataPage'
 import { formatCurrency } from '../format'
 
-const columns = ['stage', 'namespace', 'workload', 'container', 'replicas', 'currentMonthlyCost', 'recommendedMonthlyCost', 'theoreticalMonthlyChange', 'verificationStatus', 'stale'] as const
+const columns = ['stage', 'namespace', 'workload', 'container', 'replicas', 'currentMonthlyCost', 'recommendedMonthlyCost', 'theoreticalMonthlyChange', 'priceSource', 'verificationStatus', 'stale'] as const
 
 const stageLabels: Record<string, string> = {
   theoretical: 'Theoretical',

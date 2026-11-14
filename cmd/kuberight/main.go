@@ -19,6 +19,7 @@ import (
 	"github.com/kuberight/kuberight/internal/httpapi"
 	"github.com/kuberight/kuberight/internal/metrics"
 	"github.com/kuberight/kuberight/internal/notify"
+	"github.com/kuberight/kuberight/internal/pricing"
 	"github.com/kuberight/kuberight/internal/provider"
 	"github.com/kuberight/kuberight/internal/repository"
 	"github.com/kuberight/kuberight/internal/repository/postgres"
@@ -109,6 +110,17 @@ func main() {
 			os.Exit(1)
 		}
 		dependencies.Notifier = webhook
+	}
+	if cfg.OpenCostURL != "" {
+		pricer, pricerErr := pricing.NewOpenCost(pricing.OpenCostOptions{
+			Endpoint: cfg.OpenCostURL, AllowHTTP: cfg.AllowInsecureUpstreams,
+			Fallback: pricing.Static{CPUCoreHour: cfg.CostCPUCoreHour, MemoryGiBHour: cfg.CostMemoryGiBHour},
+		})
+		if pricerErr != nil {
+			logger.Error("OpenCost pricing initialization failed", "error", pricerErr)
+			os.Exit(1)
+		}
+		dependencies.Pricer = pricer
 	}
 	if cfg.InventoryEnabled {
 		inventory, inventoryErr := provider.NewKubernetesProvider(cfg)

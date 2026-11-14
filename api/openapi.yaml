@@ -3201,6 +3201,10 @@ components:
           description: Why an item is excluded from the active recommendation funnel.
         costAvailable: { type: boolean }
         costUnavailableReason: { type: string }
+        priceSource:
+          type: string
+          enum: [configured, opencost, opencost-cluster]
+          description: Where the unit prices came from. `opencost` is the namespace's effective OpenCost price; `opencost-cluster` is OpenCost's cluster-wide blend for a namespace without its own allocation.
         currentMonthlyCost:
           type: number
           description: Omitted when the replica snapshot is zero or unavailable.

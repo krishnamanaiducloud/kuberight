@@ -89,6 +89,14 @@ cost:
   cpuCoreHour: ""
   memoryGiBHour: ""
   currency: USD
+  # Price CPU and memory per namespace from OpenCost allocation data (cloud
+  # or custom pricing), for example http://opencost.opencost.svc:9003.
+  # The prices above remain the fallback. Estimates stay request-based; they
+  # are not billing or realized savings.
+  opencost:
+    url: ""
+    # Permit an in-cluster http:// URL. Prefer HTTPS.
+    allowHTTP: false
 
 # Correlate an application latency series with resource signals. A one-line
 # PromQL template in seconds using $namespace, $workload, or $container.

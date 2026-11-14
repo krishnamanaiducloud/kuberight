@@ -124,10 +124,10 @@ spec:
               value: {{ $.Values.prometheus.timeout | quote }}
             - name: KUBERIGHT_PROMETHEUS_MAX_IN_FLIGHT
               value: {{ $.Values.prometheus.maxInFlight | quote }}
-            {{- if $.Values.prometheus.allowHTTP }}
+            {{- end }}
+            {{- if or (and .Values.prometheus.url .Values.prometheus.allowHTTP) (and .Values.cost.opencost.url .Values.cost.opencost.allowHTTP) }}
             - name: KUBERIGHT_ALLOW_INSECURE_UPSTREAMS
               value: "true"
-            {{- end }}
             {{- end }}
             - name: KUBERIGHT_RECOMMENDATION_WINDOW
               value: {{ .Values.recommendations.window | quote }}
@@ -188,6 +188,14 @@ spec:
               value: {{ .Values.cost.memoryGiBHour | quote }}
             - name: KUBERIGHT_COST_CURRENCY
               value: {{ .Values.cost.currency | quote }}
+            {{- end }}
+            {{- with .Values.cost.opencost.url }}
+            - name: KUBERIGHT_OPENCOST_URL
+              value: {{ . | quote }}
+            {{- if not $.Values.cost.cpuCoreHour }}
+            - name: KUBERIGHT_COST_CURRENCY
+              value: {{ $.Values.cost.currency | quote }}
+            {{- end }}
             {{- end }}
             {{- with .Values.secretEnv }}
             {{- toYaml . | nindent 12 }}

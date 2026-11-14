@@ -97,7 +97,10 @@ type Config struct {
 	// WebhookURL receives recommendation lifecycle events. WebhookSecret,
 	// when set, signs each body with HMAC-SHA256. WebhookFormat is json or
 	// slack.
-	WebhookURL    string
+	WebhookURL string
+	// OpenCostURL, when set, prices CPU and memory per namespace from the
+	// OpenCost allocation API; configured prices remain the fallback.
+	OpenCostURL   string
 	WebhookSecret string
 	WebhookFormat string
 
@@ -158,7 +161,7 @@ func (c Config) Normalized() Config {
 
 // CostConfigured reports whether savings can be estimated.
 func (c Config) CostConfigured() bool {
-	return c.CostCPUCoreHour > 0 && c.CostMemoryGiBHour > 0
+	return (c.CostCPUCoreHour > 0 && c.CostMemoryGiBHour > 0) || c.OpenCostURL != ""
 }
 
 // Load reads configuration from the process environment and rejects unsafe or
@@ -181,6 +184,7 @@ func Load() (Config, error) {
 		LatencyQuery:       strings.TrimSpace(os.Getenv("KUBERIGHT_LATENCY_QUERY")),
 		RequestRateQuery:   strings.TrimSpace(os.Getenv("KUBERIGHT_REQUEST_RATE_QUERY")),
 		WebhookURL:         strings.TrimSpace(os.Getenv("KUBERIGHT_WEBHOOK_URL")),
+		OpenCostURL:        strings.TrimSpace(os.Getenv("KUBERIGHT_OPENCOST_URL")),
 		WebhookSecret:      os.Getenv("KUBERIGHT_WEBHOOK_SECRET"),
 		WebhookFormat:      strings.ToLower(envOr("KUBERIGHT_WEBHOOK_FORMAT", "json")),
 	}
@@ -375,6 +379,9 @@ func (c Config) Validate() error {
 	}
 	if c.VerificationInterval != 0 && (c.VerificationInterval < time.Minute || c.VerificationInterval > 24*time.Hour) {
 		return errors.New("KUBERIGHT_VERIFICATION_INTERVAL must be 0 (disabled) or between 1m and 24h")
+	}
+	if err := validateUpstream("KUBERIGHT_OPENCOST_URL", c.OpenCostURL, c.AllowInsecureUpstreams, "KUBERIGHT_ALLOW_INSECURE_UPSTREAMS=true"); err != nil {
+		return err
 	}
 	if err := validateUpstream("KUBERIGHT_WEBHOOK_URL", c.WebhookURL, c.AllowInsecureUpstreams, "KUBERIGHT_ALLOW_INSECURE_UPSTREAMS=true"); err != nil {
 		return err

@@ -463,6 +463,8 @@ export type SavingsItem = {
   eligibilityReason?: string
   costAvailable: boolean
   costUnavailableReason?: string
+  /** configured, opencost (namespace price), or opencost-cluster (cluster blend). */
+  priceSource?: 'configured' | 'opencost' | 'opencost-cluster'
   currentMonthlyCost?: number
   recommendedMonthlyCost?: number
   theoreticalMonthlyChange?: number
