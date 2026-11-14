@@ -221,6 +221,8 @@ the API on loopback with X-Forwarded-User, -Email, and -Groups.
     {{- end }}
     - --pass-user-headers=true
     - --skip-provider-button=true
+    # Ask for consent once, not on every login.
+    - --approval-prompt=auto
     - --skip-auth-route=^/(healthz|readyz|metrics)$
     - --api-route=^/api/
     - --cookie-name=_kuberight
