@@ -540,6 +540,13 @@ func (server *apiServer) collectEvidence(ctx context.Context, subject usage.Subj
 			}
 		}
 	}
+	// The optimizer correlates CPU and memory index by index; a rate has no
+	// value at the first step after a restart, so pair the grids by time.
+	var folded int
+	history.CPU, history.Memory, folded = usage.AlignPoints(history.CPU, history.Memory)
+	if folded > 0 {
+		evidence.informational = append(evidence.informational, fmt.Sprintf("%d CPU or memory samples without a counterpart at the same step, typically the first step after a restart, were merged into the nearest shared step by maximum", folded))
+	}
 	blockingCPU, informationalCPU := history.CPU.QualityIssues()
 	blockingCPU = append(blockingCPU, rolloutIssues...)
 	blockingMemory, informationalMemory := history.Memory.QualityIssues()

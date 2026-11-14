@@ -874,3 +874,26 @@ func TestEfficiencyComparesRequestsWithUsage(t *testing.T) {
 		t.Fatalf("unconfigured status=%d", response.Code)
 	}
 }
+
+func TestGenerateRecommendationPairsGridsAfterARestart(t *testing.T) {
+	// Every replica restarted at sample 300: memory has a value at that step,
+	// the CPU rate does not. The history must still be sized, and the
+	// startup memory peak must survive the alignment.
+	source := healthyUsage(600)
+	source.history.CPU.Points = append(source.history.CPU.Points[:300:300], source.history.CPU.Points[301:]...)
+	source.history.Memory.Points[300].Value = 700 << 20
+	api := newTestAPI(t, nil, Dependencies{Provider: fakeInventory{spec: checkoutSpec()}, Usage: source})
+	response, body := api.do(t, http.MethodPost, "/api/v1/recommendations:generate", "alice", generateBody)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if body["cpuRequestMilli"].(float64) != 800 {
+		t.Fatalf("a one-step restart gap blocked the reduction: %v", body)
+	}
+	if body["memoryStatisticsBytes"].(map[string]any)["max"].(float64) != 700<<20 {
+		t.Fatalf("the startup memory peak was lost: %v", body["memoryStatisticsBytes"])
+	}
+	if warnings := strings.Join(toStrings(body["warnings"]), "|"); !strings.Contains(warnings, "1 CPU or memory samples without a counterpart") {
+		t.Fatalf("missing alignment note: %s", warnings)
+	}
+}
