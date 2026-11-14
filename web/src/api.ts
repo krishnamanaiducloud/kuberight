@@ -54,6 +54,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       : String(problem?.message ?? body.message ?? `Request failed (${response.status})`)
     throw new ApiError(message, response.status, requestId)
   }
+  // A collection's items are always an array, even when an older server
+  // encoded an empty page as null.
+  if (body && typeof body === 'object' && 'items' in body && body.items === null) body.items = []
   return body as T
 }
 

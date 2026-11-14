@@ -104,6 +104,12 @@ async function mockControlPlane(page: Page) {
       case `/api/v1/recommendations/${recommendationId}`:
         body = recommendation
         break
+      case '/api/v1/automation':
+        body = {
+          mode: 'recommend', enabled: false, dryRun: true, window: '', windowOpen: true, maxChangesPerRun: 5,
+          evaluatedAt: '2026-11-03T15:00:00Z', evaluated: 0, eligible: 0, applied: 0, rolledBack: 0, deferred: 0, failed: 0, decisions: [],
+        }
+        break
       default:
         body = { items: [], pagination: { page: 1, pageSize: 25, total: 0 }, status: { available: true, source: 'browser-smoke' } }
     }
@@ -155,7 +161,7 @@ test('opens a recommendation and exposes provenance and uncertainty evidence', a
   await expect(workload).toHaveCount(1)
   await workload.click()
   await expect(page.getByRole('heading', { name: 'Recommendation decision' })).toBeVisible()
-  await expect(page.getByText('Evidence valid')).toBeVisible()
+  await expect(page.getByRole('dialog').getByText('Evidence valid')).toBeVisible()
   await expect(page.getByText('CPU throttled 2.0% · peak 8.0%')).toBeVisible()
   await expect(page.getByText('Rare spikes')).toBeVisible()
   await expectNoSeriousAccessibilityViolations(page)
@@ -175,3 +181,20 @@ test('keeps primary navigation usable at desktop and mobile widths', async ({ pa
   await expect(page.getByRole('heading', { level: 1, name: 'CPU hotspots' })).toBeVisible()
   expect(failures).toEqual([])
 })
+
+// Every primary view, audited against WCAG 2.0/2.1 A and AA at desktop and
+// mobile widths with the mocked control plane.
+const auditedRoutes = ['/', '/efficiency', '/hotspots', '/clusters', '/namespaces', '/workloads', '/utilization', '/correlation',
+  '/recommendations/cpu', '/recommendations/memory', '/approvals', '/automation', '/fleet', '/savings', '/forecasting',
+  '/autoscalers', '/policies', '/gitops', '/audit', '/settings']
+
+for (const route of auditedRoutes) {
+  test(`has no serious accessibility violations on ${route}`, async ({ page }) => {
+    const failures = captureRuntimeFailures(page)
+    await page.goto(route)
+    await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
+    await page.waitForLoadState('networkidle')
+    await expectNoSeriousAccessibilityViolations(page)
+    expect(failures).toEqual([])
+  })
+}

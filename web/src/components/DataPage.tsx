@@ -211,7 +211,7 @@ export function DataPage({ title, description, endpoint, columnKeys, actions, ch
               sx={{ minWidth: { md: 320 } }}
               InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon fontSize="small" /></InputAdornment> }}
             />
-            {!hideSort && <Select size="small" value={sort} onChange={(event) => updateSearchParam('sort', event.target.value)} aria-label="Sort records">
+            {!hideSort && <Select size="small" value={sort} onChange={(event) => updateSearchParam('sort', event.target.value)} inputProps={{ 'aria-label': 'Sort records' }}>
               {recommendationPage ? <MenuItem value="createdAt">Created</MenuItem> : <MenuItem value="name">Name</MenuItem>}
               <MenuItem value="namespace">Namespace</MenuItem>
               {recommendationPage ? <MenuItem value="workload">Workload</MenuItem> : <MenuItem value="updatedAt">Freshness</MenuItem>}
@@ -226,7 +226,7 @@ export function DataPage({ title, description, endpoint, columnKeys, actions, ch
             <Stack gap={1} aria-label="Loading data"><Skeleton height={48} /><Skeleton height={48} /><Skeleton height={48} /></Stack>
           ) : items.length === 0 && !query.error ? (
             <Box sx={{ textAlign: 'center', py: 8 }}>
-              <CircularProgress size={28} variant="determinate" value={100} sx={{ color: 'text.secondary', mb: 2 }} />
+              <CircularProgress size={28} variant="determinate" value={100} aria-hidden="true" aria-label={undefined} sx={{ color: 'text.secondary', mb: 2 }} />
               <Typography variant="h6">No records</Typography>
               <Typography color="text.secondary">KubeRight will not substitute demo data for a missing or empty provider response.</Typography>
               {(search || namespace) && <Button sx={{ mt: 1 }} onClick={() => {

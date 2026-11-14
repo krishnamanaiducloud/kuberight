@@ -50,7 +50,7 @@ export function Overview() {
       <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, 1fr)', xl: 'repeat(4, 1fr)' }, gap: 2 }}>
         {metricCards.map((card) => (
           <Card key={card.key}>
-            <CardActionArea component={RouterLink} to={card.path} aria-label={`Open ${card.label.toLowerCase()}`} sx={{ height: '100%' }}>
+            <CardActionArea component={RouterLink} to={card.path} sx={{ height: '100%' }}>
               <CardContent>
                 <Stack direction="row" justifyContent="space-between" alignItems="center"><Typography color="text.secondary">{card.label}</Typography><Box color="primary.main">{card.icon}</Box></Stack>
                 {query.isLoading ? <Skeleton width="45%" height={60} /> : <Typography variant="h3" sx={{ mt: 2 }}>{typeof metricValue(card.key) === 'number' ? metricValue(card.key) : '—'}</Typography>}

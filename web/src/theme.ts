@@ -44,5 +44,16 @@ export const theme = createTheme({
     },
     MuiButton: { defaultProps: { disableElevation: true } },
     MuiTableCell: { styleOverrides: { root: { borderColor: 'rgba(148,188,196,.12)' }, head: { color: '#cde0e5' } } },
+    // Tables scroll horizontally on narrow screens; keyboard users must be
+    // able to focus the region to scroll it (WCAG 2.1.1).
+    MuiTableContainer: {
+      defaultProps: { tabIndex: 0 },
+      styleOverrides: { root: { '&:focus-visible': { outline: '3px solid rgba(157,243,225,.72)', outlineOffset: 2 } } },
+    },
+    // Tooltips add a description; they never replace a control's visible
+    // name (WCAG 2.5.3). Icon-only controls carry their own aria-label.
+    MuiTooltip: { defaultProps: { describeChild: true } },
+    // A spinner is announced as a progress bar and needs a name (WCAG 4.1.2).
+    MuiCircularProgress: { defaultProps: { 'aria-label': 'Loading' } },
   },
 })
