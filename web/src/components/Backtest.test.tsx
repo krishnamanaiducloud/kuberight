@@ -34,6 +34,12 @@ describe('CpuBehaviorChips', () => {
     expect(screen.getByText('Spikes recur daily ~09:00 UTC, 4.2× median')).toBeInTheDocument()
   })
 
+  it('flags CPU waiting and memory stalls as saturation', () => {
+    render(<CpuBehaviorChips cpuPressure={0.02} cpuPressurePeak={0.15} memoryPressurePeak={0.01} />)
+    expect(screen.getByText('CPU waiting 2.0% · peak 15.0%').closest('.MuiChip-root')).toHaveClass('MuiChip-colorWarning')
+    expect(screen.getByText('Memory stalled peak 1.0%').closest('.MuiChip-root')).toHaveClass('MuiChip-colorSuccess')
+  })
+
   it('renders nothing without throttling or spike data', () => {
     const { container } = render(<CpuBehaviorChips spikes={{ classification: 'none', count: 0, spikesPerDay: 0, medianDurationMinutes: 0, peakToMedian: 0, threshold: 0 }} />)
     expect(container).toBeEmptyDOMElement()

@@ -228,6 +228,10 @@ type ReplicaEvents struct {
 	ThrottlingAvailable bool    `json:"throttlingAvailable"`
 	ThrottlingRatio     float64 `json:"throttlingRatio"`
 	ThrottlingPeakRatio float64 `json:"throttlingPeakRatio"`
+	// Pressure ratios are 0 when PSI is not exported.
+	CPUPressureRatio        float64 `json:"cpuPressureRatio,omitempty"`
+	CPUPressurePeakRatio    float64 `json:"cpuPressurePeakRatio,omitempty"`
+	MemoryPressurePeakRatio float64 `json:"memoryPressurePeakRatio,omitempty"`
 }
 
 func validateIdentity(identity WorkloadIdentity) error {
@@ -555,10 +559,15 @@ func (plan attributionPlan) historyRequests() historyRequests {
 // eventRequests are the per-pod restart, OOM, and throttling evaluations.
 type eventRequests struct {
 	restartsMax, restartsMin, oom, throttledSum, periodsSum, peak, created *promRequest
+	// Pressure stall information: the share of time the container's tasks
+	// waited for CPU or for memory reclaim. Absent unless the kubelet exports
+	// PSI (Kubernetes 1.34+ on cgroup v2).
+	cpuPressure, cpuPressurePeak, memoryPressurePeak *promRequest
 }
 
 func (requests eventRequests) all() []*promRequest {
-	return []*promRequest{requests.restartsMax, requests.restartsMin, requests.oom, requests.throttledSum, requests.periodsSum, requests.peak, requests.created}
+	return []*promRequest{requests.restartsMax, requests.restartsMin, requests.oom, requests.throttledSum, requests.periodsSum, requests.peak, requests.created,
+		requests.cpuPressure, requests.cpuPressurePeak, requests.memoryPressurePeak}
 }
 
 func (plan attributionPlan) eventRequests() eventRequests {
@@ -567,14 +576,19 @@ func (plan attributionPlan) eventRequests() eventRequests {
 	restarts := "max by (namespace, pod) (kube_pod_container_status_restarts_total{" + plan.selector + "})" + join
 	throttled := "sum by (pod, uid) (sum by (namespace, pod) (rate(container_cpu_cfs_throttled_periods_total{" + plan.selector + "}[" + rateWindow(plan.step) + "]))" + join + ")"
 	periods := "sum by (pod, uid) (sum by (namespace, pod) (rate(container_cpu_cfs_periods_total{" + plan.selector + "}[" + rateWindow(plan.step) + "]))" + join + ")"
+	cpuWaiting := "max by (pod, uid) (max by (namespace, pod) (rate(container_pressure_cpu_waiting_seconds_total{" + plan.selector + "}[" + rateWindow(plan.step) + "]))" + join + ")"
+	memoryWaiting := "max by (pod, uid) (max by (namespace, pod) (rate(container_pressure_memory_waiting_seconds_total{" + plan.selector + "}[" + rateWindow(plan.step) + "]))" + join + ")"
 	return eventRequests{
-		restartsMax:  plan.instantRequest("max by (pod, uid) (max_over_time((" + restarts + ")" + rng + "))"),
-		restartsMin:  plan.instantRequest("min by (pod, uid) (min_over_time((" + restarts + ")" + rng + "))"),
-		oom:          plan.instantRequest("max by (pod, uid) (max_over_time((max by (namespace, pod) (kube_pod_container_status_last_terminated_reason{" + plan.selector + `,reason="OOMKilled"})` + join + ")" + rng + "))"),
-		throttledSum: plan.instantRequest("sum_over_time((" + throttled + ")" + rng + ")"),
-		periodsSum:   plan.instantRequest("sum_over_time((" + periods + ")" + rng + ")"),
-		peak:         plan.instantRequest("quantile_over_time(0.95, (" + throttled + " / (" + periods + " > 0))" + rng + ")"),
-		created:      plan.instantRequest(plan.podCreatedExpression()),
+		cpuPressure:        plan.instantRequest("avg_over_time((" + cpuWaiting + ")" + rng + ")"),
+		cpuPressurePeak:    plan.instantRequest("quantile_over_time(0.95, (" + cpuWaiting + ")" + rng + ")"),
+		memoryPressurePeak: plan.instantRequest("quantile_over_time(0.95, (" + memoryWaiting + ")" + rng + ")"),
+		restartsMax:        plan.instantRequest("max by (pod, uid) (max_over_time((" + restarts + ")" + rng + "))"),
+		restartsMin:        plan.instantRequest("min by (pod, uid) (min_over_time((" + restarts + ")" + rng + "))"),
+		oom:                plan.instantRequest("max by (pod, uid) (max_over_time((max by (namespace, pod) (kube_pod_container_status_last_terminated_reason{" + plan.selector + `,reason="OOMKilled"})` + join + ")" + rng + "))"),
+		throttledSum:       plan.instantRequest("sum_over_time((" + throttled + ")" + rng + ")"),
+		periodsSum:         plan.instantRequest("sum_over_time((" + periods + ")" + rng + ")"),
+		peak:               plan.instantRequest("quantile_over_time(0.95, (" + throttled + " / (" + periods + " > 0))" + rng + ")"),
+		created:            plan.instantRequest(plan.podCreatedExpression()),
 	}
 }
 
@@ -1085,6 +1099,8 @@ func (source *Source) EventsForIdentity(ctx context.Context, subject Subject, id
 	maxima, minima := replicaValues(restartsMax.result, nil), replicaValues(restartsMin.result, nil)
 	oomValues, throttledValues, periodValues, peakValues := replicaValues(oom.result, nil), replicaValues(throttledSum.result, nil), replicaValues(periodsSum.result, nil), replicaValues(peak.result, nil)
 	createdValues := replicaValues(created.result, nil)
+	cpuPressure, cpuPressurePeak := replicaValues(requests.cpuPressure.result, nil), replicaValues(requests.cpuPressurePeak.result, nil)
+	memoryPressurePeak := replicaValues(requests.memoryPressurePeak.result, nil)
 
 	live := map[replicaKey]bool{}
 	keys := map[replicaKey]bool{}
@@ -1133,6 +1149,21 @@ func (source *Source) EventsForIdentity(ctx context.Context, subject Subject, id
 		if value, ok := peakValues[key]; ok {
 			replica.ThrottlingPeakRatio = math.Min(1, math.Max(0, value))
 			events.ThrottlingPeakRatio = math.Max(events.ThrottlingPeakRatio, replica.ThrottlingPeakRatio)
+		}
+		ratio := func(value float64) float64 { return math.Min(1, math.Max(0, value)) }
+		if value, ok := cpuPressure[key]; ok {
+			replica.CPUPressureRatio = ratio(value)
+			events.PressureAvailable = true
+			events.CPUPressureRatio = math.Max(events.CPUPressureRatio, replica.CPUPressureRatio)
+		}
+		if value, ok := cpuPressurePeak[key]; ok {
+			replica.CPUPressurePeakRatio = ratio(value)
+			events.CPUPressurePeakRatio = math.Max(events.CPUPressurePeakRatio, replica.CPUPressurePeakRatio)
+		}
+		if value, ok := memoryPressurePeak[key]; ok {
+			replica.MemoryPressurePeakRatio = ratio(value)
+			events.PressureAvailable = true
+			events.MemoryPressurePeakRatio = math.Max(events.MemoryPressurePeakRatio, replica.MemoryPressurePeakRatio)
 		}
 		events.Replicas = append(events.Replicas, replica)
 	}

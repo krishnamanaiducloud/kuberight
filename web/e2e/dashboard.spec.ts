@@ -27,6 +27,9 @@ const recommendation = {
   burstable: true,
   cpuThrottlingRatio: 0.02,
   cpuThrottlingPeakRatio: 0.08,
+  cpuPressureRatio: 0.01,
+  cpuPressurePeakRatio: 0.03,
+  memoryPressurePeakRatio: 0.002,
   cpuLimitPinned: false,
   spikes: { classification: 'rare', count: 2, spikesPerDay: 0.3, medianDurationMinutes: 5, peakToMedian: 2.7, threshold: 380 },
   trends: {
@@ -163,6 +166,8 @@ test('opens a recommendation and exposes provenance and uncertainty evidence', a
   await expect(page.getByRole('heading', { name: 'Recommendation decision' })).toBeVisible()
   await expect(page.getByRole('dialog').getByText('Evidence valid')).toBeVisible()
   await expect(page.getByText('CPU throttled 2.0% · peak 8.0%')).toBeVisible()
+  await expect(page.getByText('CPU waiting 1.0% · peak 3.0%')).toBeVisible()
+  await expect(page.getByText('Memory stalled peak 0.2%')).toBeVisible()
   await expect(page.getByText('Rare spikes')).toBeVisible()
   await expectNoSeriousAccessibilityViolations(page)
   await attachScreenshot(page, testInfo, 'recommendation-evidence')

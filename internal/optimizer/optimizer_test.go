@@ -288,3 +288,49 @@ func TestThrottlingBlocksCPUReductionAndRaisesLimit(t *testing.T) {
 		t.Fatal("throttling ratio above 1 was accepted")
 	}
 }
+
+func TestCPUPressureIsSaturationNotSpareCapacity(t *testing.T) {
+	// Low usage, no CPU limit, no throttling: only PSI shows the container
+	// waited for CPU (for example on a saturated node).
+	input := baseInput()
+	input.CPULimitMilli = 0
+	baseline, err := Recommend(input)
+	if err != nil || baseline.CPURequestMilli >= 1000 {
+		t.Fatalf("without pressure the idle CPU request should be reduced: %d err=%v", baseline.CPURequestMilli, err)
+	}
+	input.ObservedCPUPressurePeakRatio = 0.15
+	held, err := Recommend(input)
+	if err != nil || held.CPURequestMilli < 1000 || held.CPUPressurePeakRatio != 0.15 {
+		t.Fatalf("peak CPU pressure must hold the request: %d err=%v", held.CPURequestMilli, err)
+	}
+	if !strings.Contains(strings.Join(held.Warnings, "|"), "waited for CPU") {
+		t.Fatalf("missing pressure warning: %v", held.Warnings)
+	}
+	// Starved: waiting a fifth of the time raises the request.
+	input.ObservedCPUPressureRatio = 0.25
+	raised, err := Recommend(input)
+	if err != nil || raised.CPURequestMilli != 1250 {
+		t.Fatalf("severe CPU pressure should raise the request to 1250m: %d err=%v", raised.CPURequestMilli, err)
+	}
+}
+
+func TestMemoryPressureHoldsMemoryReductions(t *testing.T) {
+	input := baseInput()
+	baseline, _ := Recommend(input)
+	if baseline.MemoryRequestBytes >= input.MemoryRequestsBytes {
+		t.Fatalf("without pressure memory should be reduced: %d", baseline.MemoryRequestBytes)
+	}
+	input.ObservedMemoryPressurePeakRatio = 0.08
+	held, err := Recommend(input)
+	if err != nil || held.MemoryRequestBytes < input.MemoryRequestsBytes || held.MemoryLimitBytes < input.MemoryLimitBytes {
+		t.Fatalf("memory pressure must hold memory: request %d limit %d err=%v", held.MemoryRequestBytes, held.MemoryLimitBytes, err)
+	}
+	// CPU is unaffected by memory pressure.
+	if held.CPURequestMilli != baseline.CPURequestMilli {
+		t.Fatalf("CPU changed with memory pressure: %d vs %d", held.CPURequestMilli, baseline.CPURequestMilli)
+	}
+	input.ObservedCPUPressureRatio = 1.5
+	if _, err := Recommend(input); err == nil {
+		t.Fatal("a pressure ratio above 1 was accepted")
+	}
+}

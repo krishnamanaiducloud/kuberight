@@ -160,6 +160,9 @@ export type ReplicaEvents = {
   throttlingAvailable: boolean
   throttlingRatio: number
   throttlingPeakRatio: number
+  cpuPressureRatio?: number
+  cpuPressurePeakRatio?: number
+  memoryPressurePeakRatio?: number
 }
 
 export type RecommendationRecord = {
@@ -186,6 +189,9 @@ export type RecommendationRecord = {
   burstable: boolean
   cpuThrottlingRatio?: number
   cpuThrottlingPeakRatio?: number
+  cpuPressureRatio?: number
+  cpuPressurePeakRatio?: number
+  memoryPressurePeakRatio?: number
   cpuLimitPinned?: boolean
   spikes?: SpikeProfile
   trends?: Trends
@@ -525,7 +531,7 @@ export type RecommendationPreview = {
   source?: 'prometheus'
   window: string
   step: string
-  events: { available: boolean; restarts: number; oomKills: number; throttlingAvailable: boolean; throttlingRatio: number; throttlingPeakRatio: number; replicas?: ReplicaEvents[] }
+  events: { available: boolean; restarts: number; oomKills: number; throttlingAvailable: boolean; throttlingRatio: number; throttlingPeakRatio: number; pressureAvailable?: boolean; cpuPressureRatio?: number; cpuPressurePeakRatio?: number; memoryPressurePeakRatio?: number; replicas?: ReplicaEvents[] }
 }
 
 export type EfficiencyRow = {

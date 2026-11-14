@@ -67,6 +67,9 @@ type replayPod struct {
 	noCAdvisor, noKSM, oom      bool
 	reportFrom, reportTo        time.Time
 	throttled                   float64
+	// cpuPressure and memoryPressure are the fractions of time tasks wait
+	// for CPU or stall on memory reclaim (PSI "some").
+	cpuPressure, memoryPressure float64
 	// cpuRequestCores, when set, emits kube_pod_container_resource_requests.
 	cpuRequestCores float64
 }
@@ -104,6 +107,9 @@ func (fixture *replayFixture) pod(pod replayPod) {
 	periods, throttled := 0.0, 0.0
 	fixture.add("container_cpu_cfs_periods_total", labels, from, to, func(time.Time) float64 { periods += 600; return periods })
 	fixture.add("container_cpu_cfs_throttled_periods_total", labels, from, to, func(time.Time) float64 { throttled += 600 * pod.throttled; return throttled })
+	cpuWaiting, memoryWaiting := 0.0, 0.0
+	fixture.add("container_pressure_cpu_waiting_seconds_total", labels, from, to, func(time.Time) float64 { cpuWaiting += 60 * pod.cpuPressure; return cpuWaiting })
+	fixture.add("container_pressure_memory_waiting_seconds_total", labels, from, to, func(time.Time) float64 { memoryWaiting += 60 * pod.memoryPressure; return memoryWaiting })
 }
 
 func (fixture *replayFixture) replicaSet(deployment, name string, created, from, to time.Time) {
@@ -153,6 +159,7 @@ func buildReplayFixture() *replayFixture {
 	fixture.desired("Deployment", "deployment", "rollout", replayOrigin, replayEnd, constant(2))
 	old := steadyPods("rollout", "aaaa1", 2, replayOrigin, replayMiddle.Add(2*time.Minute), 900)
 	old[0].oom = true
+	old[1].cpuPressure, old[1].memoryPressure = 0.3, 0.1
 	all(old, steadyPods("rollout", "bbbb2", 2, replayMiddle.Add(-2*time.Minute), replayEnd, 300))
 
 	// scaledown: six replicas until the middle, then two. A removed replica
@@ -381,6 +388,10 @@ func TestAttributionReplayAgainstPrometheus(t *testing.T) {
 		}
 		if !events.Available || events.OOMKills != 1 || len(events.Replicas) != 4 || !events.ThrottlingAvailable {
 			t.Fatalf("events=%+v", events)
+		}
+		// The replaced revision's CPU wait and memory stall survive the rollout.
+		if !events.PressureAvailable || math.Abs(events.CPUPressureRatio-0.3) > 0.02 || math.Abs(events.CPUPressurePeakRatio-0.3) > 0.02 || math.Abs(events.MemoryPressurePeakRatio-0.1) > 0.02 {
+			t.Fatalf("pressure=%v cpu=%v cpuPeak=%v memoryPeak=%v", events.PressureAvailable, events.CPUPressureRatio, events.CPUPressurePeakRatio, events.MemoryPressurePeakRatio)
 		}
 	})
 	t.Run("scale-down keeps removed replica peak", func(t *testing.T) {

@@ -44,6 +44,9 @@ function PreviewPanel({ preview }: { preview: RecommendationPreview }) {
       <CpuBehaviorChips
         throttling={events.throttlingAvailable ? events.throttlingRatio : undefined}
         throttlingPeak={events.throttlingAvailable ? events.throttlingPeakRatio : undefined}
+        cpuPressure={events.pressureAvailable ? events.cpuPressureRatio ?? 0 : undefined}
+        cpuPressurePeak={events.pressureAvailable ? events.cpuPressurePeakRatio ?? 0 : undefined}
+        memoryPressurePeak={events.pressureAvailable ? events.memoryPressurePeakRatio ?? 0 : undefined}
         pinned={recommendation.cpuLimitPinned}
         spikes={recommendation.spikes}
       />

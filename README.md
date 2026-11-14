@@ -10,6 +10,7 @@ KubeRight is a Kubernetes resource-inventory and right-sizing project. It combin
 - Historical workload attribution: usage is attributed to the current workload UID across rollouts, scale-downs, replaced StatefulSet pods, Jobs, and same-name recreation, using kube-state-metrics ownership and creation history rather than today's pod list. Replica coverage is time-aware. See [historical attribution and replica coverage](#historical-attribution-and-replica-coverage).
 - Deterministic CPU and memory recommendations, including confidence, risk, data-quality, burst, HPA, VPA, KEDA, restart, and OOM warnings. Recommendations can be calculated from caller-supplied samples or **generated server-side** from the workload's live requests, limits, replicas, and autoscalers plus its Prometheus usage history. Sparse, stale, or missing history blocks reductions.
 - CPU-throttling awareness: five-minute usage averages hide sub-second bursts, so KubeRight also reads CFS throttling. A throttled container is never given less CPU, and an existing CPU limit is raised instead.
+- Saturation awareness: on cgroup v2 nodes with Kubernetes 1.34 or later, cAdvisor exports pressure stall information (PSI). Tasks that wait for a CPU indicate saturation even when usage looks low, for example on a busy node or with no CPU limit. KubeRight does not reduce CPU when tasks wait 5% of the time overall or 10% in peak intervals. At 20% or more it raises the CPU request by 25%. It does not reduce memory when tasks stall on memory reclaim 5% of the time in peak intervals. Without PSI series, these checks are skipped and the other signals apply.
 - A fleet hotspot view ranks workload containers by sustained and peak throttling, CPU-limit pinning, and peak-to-median spike ratio. Spike analysis distinguishes rare, frequent, and daily recurring bursts; frequent bursts size from P99 and keep CPU-limit headroom.
 - Validated values: every recommendation is backtested against the observed history, showing how often usage would have exceeded the current and the recommended requests and limits. A recommended memory limit always keeps 10% headroom above the observed peak, so it would not have caused an OOM kill.
 - Trend-aware sizing: a sustained rising trend (linear fit over at least a day, R² ≥ 0.5, ≥ 2% per day) is projected over a configurable horizon. Growing memory is never reduced and is flagged as a possible leak.
@@ -175,7 +176,7 @@ KubeRight reconstructs the population for every step from kube-state-metrics:
 2. Every pod and intermediate owner must have been created at or after the current workload's creation (`kube_pod_created`, `kube_replicaset_created`, `kube_job_created`). Pods of an earlier same-name workload are therefore excluded.
 3. Steps where one pod name maps to two UIDs are excluded. These are the overlap when a StatefulSet pod is replaced.
 
-The workload series is the busiest attributed replica at each step. Restart, OOM, and throttling evidence covers replaced pods too.
+The workload series is the busiest attributed replica at each step. Restart, OOM, throttling, and pressure evidence covers replaced pods too.
 
 Coverage is time-aware. At each step the expected population is the larger of `spec.replicas` history and the attributed running pods; scaled-to-zero steps are excluded. Evidence is complete only when all of the following hold:
 

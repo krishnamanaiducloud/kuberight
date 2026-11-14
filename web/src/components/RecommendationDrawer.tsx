@@ -118,7 +118,7 @@ export function RecommendationDrawer({ id, onClose }: { id: string | undefined; 
             {record.assessment && <AssessmentPanel assessment={record.assessment} />}
             {record.stability && <StabilityPanel stability={record.stability} />}
             <ResourceTable record={record} />
-            <CpuBehaviorChips throttling={record.cpuThrottlingRatio} throttlingPeak={record.cpuThrottlingPeakRatio} pinned={record.cpuLimitPinned} spikes={record.spikes} />
+            <CpuBehaviorChips throttling={record.cpuThrottlingRatio} throttlingPeak={record.cpuThrottlingPeakRatio} pinned={record.cpuLimitPinned} spikes={record.spikes} cpuPressure={record.cpuPressureRatio} cpuPressurePeak={record.cpuPressurePeakRatio} memoryPressurePeak={record.memoryPressurePeakRatio} />
             <TrendChips trends={record.trends} />
             {record.backtest && <BacktestTable backtest={record.backtest} />}
             <Box>

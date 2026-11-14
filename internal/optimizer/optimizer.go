@@ -92,6 +92,14 @@ const (
 	severePeakThrottlingThreshold = 0.5
 	// Usage at or above this share of the CPU limit is treated as capped.
 	pinnedLimitFraction = 0.95
+	// Pressure stall information (PSI) is the share of time a container's
+	// tasks waited for a resource. It exposes contention that usage and CFS
+	// throttling miss: a container without a CPU limit, or on a saturated
+	// node, can wait for CPU while its usage looks low.
+	cpuPressureThreshold        = 0.05
+	cpuPressurePeakThreshold    = 0.10
+	severeCPUPressureThreshold  = 0.20
+	memoryPressurePeakThreshold = 0.05
 	// CPU limits keep this headroom above the largest observed spike.
 	cpuLimitPeakHeadroom = 0.10
 )
@@ -230,6 +238,13 @@ type Input struct {
 	// ObservedCPUThrottlingPeakRatio is the P95 of per-interval throttling, so
 	// throttling concentrated in peak hours is not averaged away.
 	ObservedCPUThrottlingPeakRatio float64 `json:"observedCpuThrottlingPeakRatio,omitempty"`
+	// ObservedCPUPressureRatio is the mean share of time the container's
+	// tasks waited for CPU (PSI "some"), and the peak ratio its P95 over
+	// intervals. ObservedMemoryPressurePeakRatio is the P95 share of time
+	// spent waiting on memory reclaim. All are 0 when PSI is not exported.
+	ObservedCPUPressureRatio        float64 `json:"observedCpuPressureRatio,omitempty"`
+	ObservedCPUPressurePeakRatio    float64 `json:"observedCpuPressurePeakRatio,omitempty"`
+	ObservedMemoryPressurePeakRatio float64 `json:"observedMemoryPressurePeakRatio,omitempty"`
 	// SamplesStartTime anchors the samples in time so recurring spikes can be
 	// reported as an hour of day.
 	SamplesStartTime *time.Time `json:"samplesStartTime,omitempty"`
@@ -392,6 +407,9 @@ type Recommendation struct {
 	Burstable                 bool        `json:"burstable"`
 	CPUThrottlingRatio        float64     `json:"cpuThrottlingRatio,omitempty"`
 	CPUThrottlingPeakRatio    float64     `json:"cpuThrottlingPeakRatio,omitempty"`
+	CPUPressureRatio          float64     `json:"cpuPressureRatio,omitempty"`
+	CPUPressurePeakRatio      float64     `json:"cpuPressurePeakRatio,omitempty"`
+	MemoryPressurePeakRatio   float64     `json:"memoryPressurePeakRatio,omitempty"`
 	// CPULimitPinned means usage reached the CPU limit, so observed usage is
 	// capped and true demand is unknown.
 	CPULimitPinned            bool         `json:"cpuLimitPinned,omitempty"`
@@ -539,6 +557,11 @@ func validateInput(input Input, policy Policy) error {
 	}
 	if math.IsNaN(input.ObservedCPUThrottlingPeakRatio) || input.ObservedCPUThrottlingPeakRatio < 0 || input.ObservedCPUThrottlingPeakRatio > 1 {
 		return errors.New("CPU throttling peak ratio must be between 0 and 1")
+	}
+	for _, ratio := range []float64{input.ObservedCPUPressureRatio, input.ObservedCPUPressurePeakRatio, input.ObservedMemoryPressurePeakRatio} {
+		if math.IsNaN(ratio) || ratio < 0 || ratio > 1 {
+			return errors.New("pressure ratios must be between 0 and 1")
+		}
 	}
 	if input.Replicas < 0 || input.Replicas > 100_000 {
 		return errors.New("replicas must be between 0 and 100000")
@@ -932,6 +955,19 @@ func Recommend(input Input) (Recommendation, error) {
 		cpuMaximumReduction = 0
 		warnings = append(warnings, "CPU usage reached the CPU limit, so observed usage is capped and true demand is higher than measured; CPU was not reduced")
 	}
+	// Waiting for CPU is saturation even when usage looks low.
+	if input.ObservedCPUPressureRatio >= cpuPressureThreshold || input.ObservedCPUPressurePeakRatio >= cpuPressurePeakThreshold {
+		cpuMaximumReduction = 0
+		warnings = append(warnings, fmt.Sprintf("tasks waited for CPU %.1f%% of the time overall and %.1f%% in peak intervals (PSI); CPU was not reduced", input.ObservedCPUPressureRatio*100, input.ObservedCPUPressurePeakRatio*100))
+	}
+	if input.ObservedCPUPressureRatio >= severeCPUPressureThreshold && input.CPURequestsMilli > 0 {
+		cpuRequest = max(cpuRequest, min(int64(math.Ceil(float64(input.CPURequestsMilli)*1.25)), policy.MaximumCPUMilli))
+		warnings = append(warnings, "the CPU request was raised 25% because the container waited for CPU at least a fifth of the time; a larger request gives it a larger CPU share under contention")
+	}
+	if input.ObservedMemoryPressurePeakRatio >= memoryPressurePeakThreshold {
+		memoryMaximumReduction = 0
+		warnings = append(warnings, fmt.Sprintf("tasks stalled on memory reclaim %.1f%% of the time in peak intervals (PSI); memory was not reduced", input.ObservedMemoryPressurePeakRatio*100))
+	}
 	if input.CPURequestsMilli > 0 {
 		cpuRequest = max(cpuRequest, reductionFloor(input.CPURequestsMilli, cpuMaximumReduction))
 	}
@@ -1088,6 +1124,9 @@ func Recommend(input Input) (Recommendation, error) {
 		Burstable:                 burstable,
 		CPUThrottlingRatio:        math.Round(input.ObservedCPUThrottlingRatio*10_000) / 10_000,
 		CPUThrottlingPeakRatio:    math.Round(input.ObservedCPUThrottlingPeakRatio*10_000) / 10_000,
+		CPUPressureRatio:          math.Round(input.ObservedCPUPressureRatio*10_000) / 10_000,
+		CPUPressurePeakRatio:      math.Round(input.ObservedCPUPressurePeakRatio*10_000) / 10_000,
+		MemoryPressurePeakRatio:   math.Round(input.ObservedMemoryPressurePeakRatio*10_000) / 10_000,
 		CPULimitPinned:            pinned,
 		Spikes:                    spikes,
 		DataQuality:               quality,

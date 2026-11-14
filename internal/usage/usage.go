@@ -164,6 +164,14 @@ type Events struct {
 	ThrottlingRatio     float64 `json:"throttlingRatio"`
 	// ThrottlingPeakRatio is the P95 of per-interval throttling over the window.
 	ThrottlingPeakRatio float64 `json:"throttlingPeakRatio"`
+	// PressureAvailable is true when the kubelet exports pressure stall
+	// information. The ratios are the largest across replicas: the mean and
+	// P95 share of time spent waiting for CPU, and the P95 share spent
+	// waiting on memory reclaim.
+	PressureAvailable       bool    `json:"pressureAvailable"`
+	CPUPressureRatio        float64 `json:"cpuPressureRatio"`
+	CPUPressurePeakRatio    float64 `json:"cpuPressurePeakRatio"`
+	MemoryPressurePeakRatio float64 `json:"memoryPressurePeakRatio"`
 	// Replicas retains evidence by exact pod UID when attributed queries are
 	// used. It is omitted by legacy, name-pattern history callers.
 	Replicas []ReplicaEvents `json:"replicas,omitempty"`

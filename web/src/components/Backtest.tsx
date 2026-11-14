@@ -74,16 +74,40 @@ export function TrendChips({ trends }: { trends?: Trends }) {
 
 const percent = (value: number) => `${(value * 100).toFixed(1)}%`
 
-/** CPU throttling, capped usage, and spike behavior behind a recommendation. */
-export function CpuBehaviorChips({ throttling, throttlingPeak, pinned, spikes }: { throttling?: number; throttlingPeak?: number; pinned?: boolean; spikes?: SpikeProfile }) {
+type BehaviorProps = {
+  throttling?: number
+  throttlingPeak?: number
+  pinned?: boolean
+  spikes?: SpikeProfile
+  /** Pressure stall (PSI) ratios: CPU wait mean and P95, memory stall P95. */
+  cpuPressure?: number
+  cpuPressurePeak?: number
+  memoryPressurePeak?: number
+}
+
+/** CPU throttling, saturation, capped usage, and spike behavior behind a recommendation. */
+export function CpuBehaviorChips({ throttling, throttlingPeak, pinned, spikes, cpuPressure, cpuPressurePeak, memoryPressurePeak }: BehaviorProps) {
   const throttled = (throttling ?? 0) >= 0.05 || (throttlingPeak ?? 0) >= 0.25
+  const cpuSaturated = (cpuPressure ?? 0) >= 0.05 || (cpuPressurePeak ?? 0) >= 0.10
+  const memoryStalled = (memoryPressurePeak ?? 0) >= 0.05
+  const hasCpuPressure = cpuPressure !== undefined || cpuPressurePeak !== undefined
   const spike = spikes ? spikeLabel(spikes) : undefined
-  if (throttling === undefined && throttlingPeak === undefined && !pinned && !spike) return null
+  if (throttling === undefined && throttlingPeak === undefined && !hasCpuPressure && memoryPressurePeak === undefined && !pinned && !spike) return null
   return (
     <Stack direction="row" gap={1} flexWrap="wrap">
       {(throttling !== undefined || throttlingPeak !== undefined) && (
         <Tooltip title="Share of CFS scheduling periods in which the container was throttled: across the window, and at the 95th percentile of intervals">
           <Chip size="small" variant="outlined" color={throttled ? 'warning' : 'success'} label={`CPU throttled ${percent(throttling ?? 0)} · peak ${percent(throttlingPeak ?? 0)}`} />
+        </Tooltip>
+      )}
+      {hasCpuPressure && (
+        <Tooltip title="Share of time runnable tasks waited for a CPU (pressure stall information). Waiting with low usage is saturation, not spare capacity">
+          <Chip size="small" variant="outlined" color={cpuSaturated ? 'warning' : 'success'} label={`CPU waiting ${percent(cpuPressure ?? 0)} · peak ${percent(cpuPressurePeak ?? 0)}`} />
+        </Tooltip>
+      )}
+      {memoryPressurePeak !== undefined && (
+        <Tooltip title="95th percentile of the share of time tasks stalled on memory reclaim (pressure stall information)">
+          <Chip size="small" variant="outlined" color={memoryStalled ? 'warning' : 'success'} label={`Memory stalled peak ${percent(memoryPressurePeak)}`} />
         </Tooltip>
       )}
       {pinned && (
