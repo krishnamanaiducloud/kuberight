@@ -8,11 +8,17 @@ counts, and are compared with the seasonal-naive baseline (skill above zero mean
 the forecast beat it).
 
 Run: python -m ml.benchmark --output report.json
+
+Real traces: python -m ml.benchmark --traces trace.jsonl.gz --limit 300 scores
+the same backtest on measured usage in KubeRight's trace format (see
+scripts/convert-bitbrains-trace.py), aggregated to hourly means, with 95%
+bootstrap intervals over workloads.
 """
 
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import math
 import tempfile
@@ -183,6 +189,106 @@ def run(config: Config) -> dict[str, Any]:
     }
 
 
+def _hourly(values: list[float | None], step_seconds: int) -> list[float]:
+    """Hourly means of a trace series; an hour with no samples is skipped."""
+    per_hour = max(1, 3_600 // step_seconds)
+    hours: list[float] = []
+    for start in range(0, len(values) - per_hour + 1, per_hour):
+        present = [value for value in values[start : start + per_hour] if value is not None]
+        if present:
+            hours.append(float(np.mean(present)))
+    return hours
+
+
+def _interval(values: list[float], random: np.random.Generator, resamples: int) -> list[float]:
+    """Two-sided 95% percentile bootstrap interval of the mean."""
+    data = np.asarray(values, dtype=float)
+    means = data[random.integers(0, len(data), size=(resamples, len(data)))].mean(axis=1)
+    return [round(float(np.percentile(means, 2.5)), 4), round(float(np.percentile(means, 97.5)), 4)]
+
+
+def run_traces(path: Path, limit: int, config: Config, resamples: int = 2_000) -> dict[str, Any]:
+    """Backtest hourly CPU and memory of measured workloads."""
+    opener = gzip.open if path.suffix == ".gz" else open
+    with opener(path, "rt", encoding="utf-8") as stream:
+        workloads = [json.loads(line) for line in stream if line.strip()]
+    random = np.random.default_rng(config.seed)
+    if limit and len(workloads) > limit:
+        chosen = sorted(random.choice(len(workloads), size=limit, replace=False))
+        workloads = [workloads[index] for index in chosen]
+    rows: dict[str, list[dict[str, float]]] = {"cpu": [], "memory": []}
+    skipped = 0
+    with tempfile.TemporaryDirectory() as model_dir:
+        engine = service.ForecastEngine(
+            service.Settings(
+                min_samples=48,
+                max_samples=4_096,
+                max_horizon=max(config.horizon, 1),
+                max_body_bytes=10_000_000,
+                max_concurrent_forecasts=1,
+                prediction_timeout_seconds=60,
+                training_sample_limit=4_096,
+                model_dir=Path(model_dir),
+            )
+        )
+        for workload in workloads:
+            for resource, key in (("cpu", "cpuMilli"), ("memory", "memoryBytes")):
+                hours = _hourly(workload[key], int(workload["stepSeconds"]))
+                needed = config.horizon * (config.origins + 1) + 48
+                if len(hours) < needed or max(hours) <= 0:
+                    skipped += 1
+                    continue
+                report = engine.backtest(
+                    service.BacktestRequest(
+                        samples=hours,
+                        horizon=config.horizon,
+                        origins=config.origins,
+                        interval_seconds=3_600,
+                        confidence_level=config.confidence_level,
+                    )
+                )
+                overall = report.overall
+                rows[resource].append(
+                    {
+                        "coverage": overall.coverage,
+                        "skill": overall.skill if overall.skill is not None else math.nan,
+                        "samples": overall.samples,
+                    }
+                )
+    summaries = {}
+    for resource, results in rows.items():
+        coverages = [row["coverage"] for row in results]
+        skills = [row["skill"] for row in results if not math.isnan(row["skill"])]
+        beats = [1.0 if skill > 0 else 0.0 for skill in skills]
+        summaries[resource] = {
+            "workloads": len(results),
+            "scoredSamples": int(sum(row["samples"] for row in results)),
+            "meanCoverage": round(float(np.mean(coverages)), 4),
+            "meanCoverageCI": _interval(coverages, random, resamples),
+            "nominalCoverage": config.confidence_level,
+            "shareBeatingBaseline": round(float(np.mean(beats)), 4),
+            "shareBeatingBaselineCI": _interval(beats, random, resamples),
+            "medianSkill": round(float(np.median(skills)), 4),
+        }
+    return {
+        "methodology": {
+            "method": (
+                "rolling-origin backtest on hourly means of measured usage; "
+                "each forecast sees only earlier samples"
+            ),
+            "trace": path.name,
+            "workloads": len(workloads),
+            "horizon": config.horizon,
+            "origins": config.origins,
+            "seed": config.seed,
+            "baseline": "seasonal-naive (or last value without detected seasonality)",
+            "confidence": f"95% percentile bootstrap over workloads, {resamples} resamples",
+            "skipped": skipped,
+        },
+        "summary": summaries,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--samples", type=int, default=Config.samples)
@@ -190,14 +296,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--origins", type=int, default=Config.origins)
     parser.add_argument("--seed", type=int, default=Config.seed)
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--traces", type=Path, help="evaluate measured usage in KubeRight's trace format"
+    )
+    parser.add_argument(
+        "--limit", type=int, default=0, help="sample this many workloads from the trace"
+    )
     arguments = parser.parse_args(argv)
-    report = run(
-        Config(
-            samples=arguments.samples,
-            horizon=arguments.horizon,
-            origins=arguments.origins,
-            seed=arguments.seed,
-        )
+    config = Config(
+        samples=arguments.samples,
+        horizon=arguments.horizon,
+        origins=arguments.origins,
+        seed=arguments.seed,
+    )
+    report = (
+        run_traces(arguments.traces, arguments.limit, config) if arguments.traces else run(config)
     )
     text = json.dumps(report, indent=2)
     if arguments.output:

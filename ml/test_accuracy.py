@@ -189,3 +189,70 @@ def test_benchmark_cli_writes_json(tmp_path: Path) -> None:
     )
     assert output.read_text().startswith("{")
     assert benchmark.main(["--samples", "200", "--horizon", "6", "--origins", "1"]) == 0
+
+
+def test_trace_benchmark_scores_hourly_usage_with_intervals(tmp_path: Path) -> None:
+    import gzip
+    import json
+
+    random = np.random.default_rng(7)
+    path = tmp_path / "trace.jsonl.gz"
+    with gzip.open(path, "wt", encoding="utf-8") as stream:
+        for workload in range(6):
+            steps = 12 * 24 * 14  # two weeks of five-minute samples
+            index = np.arange(steps)
+            cpu = 300 + 100 * np.sin(2 * math.pi * index / (12 * 24)) + random.normal(0, 5, steps)
+            memory = 512e6 + 1e6 * index / steps + random.normal(0, 1e5, steps)
+            cpu_values: list[float | None] = [round(float(v), 3) for v in cpu]
+            cpu_values[workload * 7] = None  # a missing sample
+            stream.write(
+                json.dumps(
+                    {
+                        "id": f"vm-{workload}",
+                        "stepSeconds": 300,
+                        "cpuMilli": cpu_values,
+                        "memoryBytes": [float(v) for v in memory],
+                        "cpuCapacityMilli": 2000,
+                    }
+                )
+                + "\n"
+            )
+        # Too short to backtest: skipped, not scored.
+        stream.write(
+            json.dumps(
+                {
+                    "id": "short",
+                    "stepSeconds": 300,
+                    "cpuMilli": [1.0] * 24,
+                    "memoryBytes": [1.0] * 24,
+                }
+            )
+            + "\n"
+        )
+    report = benchmark.run_traces(path, limit=0, config=benchmark.Config(), resamples=200)
+    assert report["methodology"]["workloads"] == 7
+    assert report["methodology"]["skipped"] == 2
+    cpu = report["summary"]["cpu"]
+    assert cpu["workloads"] == 6
+    low, high = cpu["meanCoverageCI"]
+    assert low <= cpu["meanCoverage"] <= high
+    assert 0 <= cpu["shareBeatingBaseline"] <= 1
+    # A limit samples workloads deterministically.
+    limited = benchmark.run_traces(path, limit=3, config=benchmark.Config(), resamples=50)
+    assert limited["methodology"]["workloads"] == 3
+    assert benchmark._hourly([1.0, None, 3.0, None, None, None], 600) == [2.0]
+
+
+def test_trace_benchmark_command_line(tmp_path: Path) -> None:
+    import json
+
+    path = tmp_path / "trace.jsonl"
+    steps = 12 * 24 * 14
+    values = [float(200 + (i % 288)) for i in range(steps)]
+    path.write_text(
+        json.dumps({"id": "vm", "stepSeconds": 300, "cpuMilli": values, "memoryBytes": values})
+        + "\n"
+    )
+    output = tmp_path / "report.json"
+    assert benchmark.main(["--traces", str(path), "--output", str(output)]) == 0
+    assert json.loads(output.read_text())["summary"]["cpu"]["workloads"] == 1
