@@ -229,13 +229,35 @@ python -m ml.benchmark --output report.json # forecasting service
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | KubeRight (balanced, full assessment) | 10 | 0 | 0 | 0 | 11.7% | 12.0% |
 | Keep current | 0 | 0 | 0 | 0 | 0% | 0% |
-| P95, no margin | 11 | 8 | 8 | 8 | 56.3% | 45.2% |
+| P95, no margin | 11 | 8 | 8 | 8 | 56.2% | 45.2% |
 | VPA-style (P90 + 15%) | 11 | 0 | 0 | 0 | 51.5% | 37.6% |
 | Peak + 10% | 11 | 0 | 0 | 0 | 34.4% | 37.9% |
 
 - **Savings cap:** the balanced policy reduces at most 20% per change, so KubeRight saves less per step than the uncapped VPA-style strategy on these datasets.
 - **Withheld change:** it made no change on the incomplete-metrics dataset (`insufficient_data`).
 - **Increase:** it raised requests on the CronJob dataset, whose busy hours exceed the current settings.
+
+**Real production traces.** `kuberight benchmark --traces FILE` runs the same strategies on measured usage. The published run uses the Bitbrains GWA-T-12 fastStorage trace. It holds 30 days of 5-minute CPU and memory usage from 1,250 business-critical enterprise VMs, taken from the [GIFT-Eval](https://huggingface.co/datasets/Salesforce/GiftEval) redistribution. `scripts/convert-bitbrains-trace.py` converts it into the trace format.
+
+- **Scope:** 945 VMs with measurable CPU use, giving 2,809 evaluations.
+- **Method:** rolling origin. Each strategy sizes from 7 days and is scored on the next 7 unseen days, three times per VM.
+- **Current settings:** the VM's provisioned CPU is the current request and limit. The trace has no provisioned memory, so current memory is assumed to be 1.5× the training peak, and memory savings are not reported.
+- **Confidence:** intervals are 95% bootstrap intervals over VMs.
+
+| Strategy | Regressions | False positives | CPU under-provisioned | Mean CPU savings |
+| --- | ---: | ---: | ---: | ---: |
+| KubeRight balanced | **1.9%** (1.5–2.4) | 9.3% (8.2–10.2) | 0.6% | 3.5% (1.5–5.3) |
+| KubeRight aggressive | 2.4% (1.9–3.0) | 9.4% (8.4–10.4) | 0.8% | 20.1% (18.1–22.0) |
+| Peak + 10% | 18.3% (16.9–19.7) | 26.4% | 1.3% | 60.2% |
+| P95, no margin | 39.0% (37.2–40.7) | 52.0% | 42.9% | 77.2% |
+| VPA-style (P90 + 15%) | 86.9% (85.4–88.5) | 91.8% | 26.0% | 75.6% |
+| Keep current | 0% | 0% | 12.5% | 0% |
+
+- **A regression** is a new limit breach in the unseen week that the current settings did not have.
+- **CPU under-provisioned** means CPU above the request in more than 5% of samples.
+- **Baselines:** strategies that size to percentiles of one week save more but regress 10 to 45 times as often. KubeRight saves less per step because a single change is capped (20% balanced, 40% aggressive) and because it raised CPU on VMs that ran at their provisioned capacity.
+- **Defect found and fixed:** the first run found that a fixed 10% memory-limit headroom above the training peak let 9.1% of evaluations regress. Next week's memory peaks were 1.2 to 1.5× this week's. The headroom is now three coefficients of variation of the daily peaks, between 10% and 50%. This rule was chosen on the first week of each VM and confirmed on the two held-out weeks (1.7%).
+- **Limitations:** these are virtual machines, not containers, and the memory baseline is assumed. Treat the numbers as evidence about the sizing rules, not as a prediction for your clusters.
 
 **Forecast benchmark (`ml/benchmark.py`).**
 
