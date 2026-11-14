@@ -21,18 +21,19 @@ KubeRight is a Kubernetes resource-inventory and right-sizing project. It combin
 - JVM-aware memory sizing: with an explicit `-Xmx`, memory is never sized below the heap plus 25% non-heap overhead. A JVM without one (defaults or `MaxRAMPercentage`) is limited to 10% memory reductions per change.
 - Built-in conservative, balanced, and aggressive profiles, plus fine-tuning of the sizing percentile (P90, P95, P99, or peak), safety margins, and maximum reduction per change. The dashboard recalculates a live preview against real usage as you adjust them, before anything is saved.
 - Fleet efficiency per namespace, with a per-workload drill-down: requested versus average and P95 usage, reclaimable CPU and memory, reclaimable monthly cost, and containers that set no requests.
-- Node impact: pods are bin-packed by requests onto the cluster's node shapes to estimate how many nodes are needed now and after the recommendations are applied. The view also explains how Karpenter or Cluster Autoscaler would realize the savings.
+- Node impact: pods are bin-packed by requests onto the cluster's node shapes to estimate how many nodes are needed now and after the recommendations are applied. Packing honors taints and tolerations, nodeSelector, and required node affinity, and reports pods that no node accepts. The view also explains how Karpenter or Cluster Autoscaler would realize the savings.
 - A workload page with every container's settings, latest recommendation, usage charts, and recommendation history. Whole namespaces or workloads can be analyzed in one action.
 - Prometheus usage history per container, charted against current requests and limits.
 - A review workflow: recommendations are approved or rejected, individually or in bulk, with optional separation of duties, and every decision is audited. Prometheus-generated advice carries workload/specification identity, observation/query/policy provenance, and a 24-hour expiry; approval fails if that advice is expired or no longer matches the live workload and resources. Approval records a decision. Changes are applied only by opt-in [continuous rightsizing](#continuous-rightsizing). Otherwise the dashboard shows a `kubectl` command or a strategic-merge YAML patch for each approved change, and exports approved changes as a patch file for GitOps or `kubectl patch`.
 - Durable PostgreSQL storage for recommendations, reviews, idempotency keys, and audit events. Embedded checksummed migrations run transactionally under an advisory lock; the chart uses a bounded pre-install/pre-upgrade migration Job while serving pods verify the exact schema without DDL. An append-only trigger rejects audit-table mutation. Without a database, a bounded in-process store is used.
 - Forecasts from the forecasting service using Prometheus history, with confidence intervals and model diagnostics.
-- Request-based monthly cost estimates from operator-configured unit prices.
+- Request-based monthly cost estimates priced per namespace from [OpenCost](#cost-and-opencost) when configured, or from operator-configured unit prices. Every savings item names its price source.
+- Persistent scoped policies (global, namespace, workload, container) with deterministic precedence. A cluster-specific scope wins over an all-clusters scope at the same level, then higher priority wins. Duplicate enabled scopes with equal priority are rejected, and resolution lists every applicable policy in order.
 - Bearer authentication using Kubernetes `TokenReview` plus per-request `SubjectAccessReview`, or a development-only static token mode.
 - A dashboard backed by the versioned Go API. Views whose integrations are unavailable display that state instead of fabricated data.
 - Secure-by-default workload settings in a Helm chart, plus development, production-shaped, OpenShift, and cluster-wide rendering profiles.
 
-KubeRight does **not** integrate with OpenCost or cloud billing, provide a complete FinOps ledger, register remote clusters, or create GitOps pull requests. It never changes workloads unless `operationMode=apply` is set and a namespace opts in. ML model files and the webhook delivery queue are pod/process-local. See [known limitations](docs/known-limitations.md) before evaluating it for production.
+KubeRight does **not** ingest cloud billing, provide a complete FinOps ledger, register remote clusters, or create GitOps pull requests. It never changes workloads unless `operationMode=apply` is set and a namespace opts in. ML model files and the webhook delivery queue are pod/process-local. See [known limitations](docs/known-limitations.md) before evaluating it for production.
 
 ## Quick start from source
 
@@ -270,7 +271,17 @@ At most `automation.maxChangesPerRun` changes (default 5) run per pass, inside t
 
 Every attempt is audited, and `recommendation.applied` and `recommendation.rolled_back` webhooks are sent. `POST /api/v1/automation:run` runs a pass on demand and requires `update` on the virtual `automation` resource.
 
+Applying passes are singletons across API replicas. A PostgreSQL advisory lock (or a process lock for the in-memory store) is held for the pass, and a concurrent `POST /api/v1/automation:run` returns `409 automation_busy`. `/metrics` exports `kuberight_automation_changes_total{action,outcome}`, `kuberight_automation_eligible_changes`, and `kuberight_automation_last_pass_timestamp_seconds`. With `metrics.prometheusRule.enabled=true`, apply mode adds alerts for failed changes, rollbacks, and a stalled automation loop.
+
 Apply mode requires `auth.mode=kubernetes` and `rbac.scope=cluster`. It adds only `patch` on those three kinds.
+
+## Cost and OpenCost
+
+Set `cost.opencost.url` (for example `http://opencost.opencost.svc:9003` with `cost.opencost.allowHTTP=true`) to price each namespace from the OpenCost allocation API. KubeRight takes the effective unit prices from the last 7 days: `cpuCost / cpuCoreHours` and `ramCost / ramGiBHours`. These reflect the cluster's cloud or custom pricing.
+
+When a namespace has no priced allocation, OpenCost's cluster-wide blend is used, then `cost.cpuCoreHour` and `cost.memoryGiBHour`. Allocations are cached for 15 minutes and bounded in size. Implausible unit prices are rejected, and negative allocations, which OpenCost reports for pods that just started, are ignored.
+
+Each savings item reports `priceSource` as `opencost`, `opencost-cluster`, or `configured`. Estimates remain request-based: realized savings stay unavailable without billing evidence and a counterfactual.
 
 ```sh
 helm upgrade --install kuberight charts/kuberight --namespace kuberight \
