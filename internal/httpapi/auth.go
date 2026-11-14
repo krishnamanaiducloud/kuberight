@@ -185,7 +185,7 @@ func configuredAccess(cfg config.Config) (AccessController, error) {
 		if err != nil {
 			return nil, err
 		}
-		return newKubernetesAccess(client, cfg.TokenAudience), nil
+		return newCachedAccess(newKubernetesAccess(client, cfg.TokenAudience), nil), nil
 	default:
 		return nil, errors.New("authentication mode must be explicitly configured")
 	}
