@@ -79,8 +79,11 @@ func (server *apiServer) renderIntegrationMetrics(ctx context.Context, w io.Writ
 		for _, key := range keys {
 			record := latest[key]
 			replicas := max(record.Replicas, 1)
-			current, _ := server.monthlyCost(ctx, record.Namespace, record.CurrentCPURequestMilli, record.CurrentMemoryRequestBytes, replicas)
-			recommended, _ := server.monthlyCost(ctx, record.Namespace, record.CPURequestMilli, record.MemoryRequestBytes, replicas)
+			current, _, priced := server.monthlyCost(ctx, record.Namespace, record.CurrentCPURequestMilli, record.CurrentMemoryRequestBytes, replicas)
+			recommended, _, _ := server.monthlyCost(ctx, record.Namespace, record.CPURequestMilli, record.MemoryRequestBytes, replicas)
+			if !priced {
+				continue
+			}
 			savings := current - recommended
 			_, _ = fmt.Fprintf(w, "kuberight_recommendation_monthly_savings{cluster=\"%s\",namespace=\"%s\",kind=\"%s\",workload=\"%s\",container=\"%s\",currency=\"%s\"} %s\n",
 				prometheusLabel(record.Cluster), prometheusLabel(record.Namespace), prometheusLabel(record.Kind), prometheusLabel(record.Workload), prometheusLabel(record.Container),

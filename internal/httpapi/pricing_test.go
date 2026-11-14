@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -56,5 +57,30 @@ func TestSavingsUsePerNamespacePricesAndReportTheirSource(t *testing.T) {
 	summary := body["summary"].(map[string]any)
 	if summary["theoreticalMonthlyChange"].(float64) != 54.75 || summary["realized"].(map[string]any)["available"] != false {
 		t.Fatalf("summary = %v", summary)
+	}
+}
+
+func TestSavingsReportUnpricedCostsAsUnavailableNotZero(t *testing.T) {
+	// OpenCost is configured but has no price for this namespace, and no
+	// fallback prices are set.
+	api := newTestAPI(t, func(cfg *config.Config) {
+		cfg.OpenCostURL, cfg.AllowInsecureUpstreams = "http://opencost.opencost.svc:9003", true
+	}, Dependencies{Pricer: namespacePricer{"shop": {Source: pricing.SourceConfigured}}})
+	fresh := fixedNow.Add(time.Hour)
+	recommendation := optimizer.Recommendation{
+		Namespace: "shop", Kind: "Deployment", Workload: "api", Container: "app", Replicas: 2, Confidence: "high", Risk: "low",
+		CurrentCPURequestMilli: 1000, CurrentMemoryRequestBytes: 2 << 30, CPURequestMilli: 500, MemoryRequestBytes: 1 << 30,
+		Provenance: optimizer.Provenance{ExpiresAt: &fresh},
+	}
+	if _, _, err := api.store.CreateRecommendation(context.Background(), recommendation, repository.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	_, body := api.do(t, http.MethodGet, "/api/v1/savings?pageSize=25", "alice", "")
+	item := body["items"].([]any)[0].(map[string]any)
+	if item["costAvailable"] != false || item["currentMonthlyCost"] != nil || !strings.Contains(item["costUnavailableReason"].(string), "OpenCost") {
+		t.Fatalf("an unpriced item was reported as a cost: %v", item)
+	}
+	if body["status"].(map[string]any)["source"] != "opencost_unit_prices" {
+		t.Fatalf("status = %v", body["status"])
 	}
 }

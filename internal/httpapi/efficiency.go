@@ -166,9 +166,10 @@ func (server *apiServer) efficiency(w http.ResponseWriter, r *http.Request) {
 			row.MemoryEfficiency = ratio(usage.MemoryAverageBytes, row.MemoryRequestedBytes)
 			row.CPUReclaimableMilli, row.MemoryReclaimableBytes = pointer(roundMilli(cpuReclaimable)), pointer(math.Round(memoryReclaimable))
 			if costed {
-				cost, _ := server.monthlyCost(r.Context(), name, int64(cpuReclaimable), int64(memoryReclaimable), 1)
-				row.ReclaimableMonthlyCost = pointer(roundCents(cost))
-				reclaimableCost += cost
+				if cost, _, priced := server.monthlyCost(r.Context(), name, int64(cpuReclaimable), int64(memoryReclaimable), 1); priced {
+					row.ReclaimableMonthlyCost = pointer(roundCents(cost))
+					reclaimableCost += cost
+				}
 			}
 			summary.CPURequestedMilli += row.CPURequestedMilli
 			summary.MemoryRequestedBytes += row.MemoryRequestedBytes
@@ -178,8 +179,9 @@ func (server *apiServer) efficiency(w http.ResponseWriter, r *http.Request) {
 			summary.MemoryReclaimableBytes += memoryReclaimable
 		}
 		if costed {
-			cost, _ := server.monthlyCost(r.Context(), name, row.CPURequestedMilli, row.MemoryRequestedBytes, 1)
-			row.RequestedMonthlyCost = pointer(roundCents(cost))
+			if cost, _, priced := server.monthlyCost(r.Context(), name, row.CPURequestedMilli, row.MemoryRequestedBytes, 1); priced {
+				row.RequestedMonthlyCost = pointer(roundCents(cost))
+			}
 		}
 		items = append(items, *row)
 	}
@@ -324,8 +326,9 @@ func (server *apiServer) workloadEfficiency(w http.ResponseWriter, r *http.Reque
 			memoryReclaimable := math.Max(0, float64(row.MemoryRequestPerPodBytes)-memoryPeak) * replicas
 			row.CPUReclaimableMilli, row.MemoryReclaimableBytes = pointer(roundMilli(cpuReclaimable)), pointer(math.Round(memoryReclaimable))
 			if costed {
-				cost, _ := server.monthlyCost(r.Context(), namespace, int64(cpuReclaimable), int64(memoryReclaimable), 1)
-				row.ReclaimableMonthlyCost = pointer(roundCents(cost))
+				if cost, _, priced := server.monthlyCost(r.Context(), namespace, int64(cpuReclaimable), int64(memoryReclaimable), 1); priced {
+					row.ReclaimableMonthlyCost = pointer(roundCents(cost))
+				}
 			}
 		}
 		items = append(items, row)

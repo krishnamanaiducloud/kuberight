@@ -115,6 +115,7 @@ func main() {
 		pricer, pricerErr := pricing.NewOpenCost(pricing.OpenCostOptions{
 			Endpoint: cfg.OpenCostURL, AllowHTTP: cfg.AllowInsecureUpstreams,
 			Fallback: pricing.Static{CPUCoreHour: cfg.CostCPUCoreHour, MemoryGiBHour: cfg.CostMemoryGiBHour},
+			Logger:   logger,
 		})
 		if pricerErr != nil {
 			logger.Error("OpenCost pricing initialization failed", "error", pricerErr)

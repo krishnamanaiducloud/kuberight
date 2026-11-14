@@ -125,3 +125,50 @@ func TestOpenCostLiveResponseShape(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenCostRetriesFailuresSoonAndServesLastGoodPricesThroughOutages(t *testing.T) {
+	var failing atomic.Bool
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		if failing.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte(allocationResponse))
+	}))
+	defer server.Close()
+	now := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+	opencost, err := NewOpenCost(OpenCostOptions{Endpoint: server.URL, AllowHTTP: true, Fallback: Static{CPUCoreHour: 0.05, MemoryGiBHour: 0.01}, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A first failure is retried after a minute, not after the cache TTL.
+	failing.Store(true)
+	if prices := opencost.Prices(context.Background(), "shop"); prices.Source != SourceConfigured {
+		t.Fatalf("first failure: %+v", prices)
+	}
+	failing.Store(false)
+	now = now.Add(30 * time.Second)
+	if prices := opencost.Prices(context.Background(), "shop"); prices.Source != SourceConfigured || calls.Load() != 1 {
+		t.Fatalf("retried too early: %+v calls=%d", prices, calls.Load())
+	}
+	now = now.Add(31 * time.Second)
+	if prices := opencost.Prices(context.Background(), "shop"); prices.Source != SourceOpenCost || calls.Load() != 2 {
+		t.Fatalf("not retried after a minute: %+v calls=%d", prices, calls.Load())
+	}
+	// During an outage the last good prices keep serving...
+	failing.Store(true)
+	now = now.Add(20 * time.Minute)
+	if prices := opencost.Prices(context.Background(), "shop"); prices.Source != SourceOpenCost {
+		t.Fatalf("last good prices were dropped during an outage: %+v", prices)
+	}
+	if succeeded, lastError := opencost.Status(); lastError == nil || succeeded.IsZero() {
+		t.Fatalf("status = %v %v", succeeded, lastError)
+	}
+	// ...but not forever.
+	now = now.Add(7 * time.Hour)
+	if prices := opencost.Prices(context.Background(), "shop"); prices.Source != SourceConfigured {
+		t.Fatalf("stale prices served after six hours: %+v", prices)
+	}
+}

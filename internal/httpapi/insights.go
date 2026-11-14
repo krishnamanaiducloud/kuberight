@@ -302,11 +302,24 @@ func roundCents(value float64) float64 { return math.Round(value*100) / 100 }
 func roundMilli(value float64) float64 { return math.Round(value*1000) / 1000 }
 
 // monthlyCost prices requested CPU and memory with the namespace's unit
-// prices (OpenCost when configured, otherwise the operator's prices).
-func (server *apiServer) monthlyCost(ctx context.Context, namespace string, cpuMilli, memoryBytes int64, replicas int32) (float64, string) {
+// prices (OpenCost when configured, otherwise the operator's prices). ok is
+// false when no CPU and memory price is known, so callers report the cost as
+// unavailable instead of zero.
+func (server *apiServer) monthlyCost(ctx context.Context, namespace string, cpuMilli, memoryBytes int64, replicas int32) (cost float64, source string, ok bool) {
 	prices := server.pricer.Prices(ctx, namespace)
+	if prices.CPUCoreHour <= 0 || prices.MemoryGiBHour <= 0 {
+		return 0, prices.Source, false
+	}
 	perReplica := float64(cpuMilli)/1000*prices.CPUCoreHour + float64(memoryBytes)/bytesPerGiB*prices.MemoryGiBHour
-	return perReplica * float64(replicas) * hoursPerMonth, prices.Source
+	return perReplica * float64(replicas) * hoursPerMonth, prices.Source, true
+}
+
+// unpricedReason explains why a cost could not be calculated.
+func (server *apiServer) unpricedReason() string {
+	if server.config.OpenCostURL != "" {
+		return "OpenCost has no CPU and memory prices for this namespace yet or is unreachable, and no fallback unit prices are configured"
+	}
+	return "CPU and memory unit prices are not configured"
 }
 
 const (
@@ -365,11 +378,14 @@ func (server *apiServer) computeSavings(ctx context.Context, namespace string) (
 				Stage: savingsStageTheoretical, Stale: stale, Approvable: approvable, EligibilityReason: eligibilityReason,
 				VerificationStatus: "not_checked", Currency: server.config.CostCurrency, CreatedAt: record.CreatedAt,
 			}
-			if record.Replicas <= 0 {
+			currentCost, source, priced := server.monthlyCost(ctx, record.Namespace, record.CurrentCPURequestMilli, record.CurrentMemoryRequestBytes, record.Replicas)
+			recommendedCost, _, _ := server.monthlyCost(ctx, record.Namespace, record.CPURequestMilli, record.MemoryRequestBytes, record.Replicas)
+			switch {
+			case record.Replicas <= 0:
 				item.CostUnavailableReason = "the recorded replica snapshot is zero or unavailable; KubeRight will not assume one replica"
-			} else {
-				currentCost, source := server.monthlyCost(ctx, record.Namespace, record.CurrentCPURequestMilli, record.CurrentMemoryRequestBytes, record.Replicas)
-				recommendedCost, _ := server.monthlyCost(ctx, record.Namespace, record.CPURequestMilli, record.MemoryRequestBytes, record.Replicas)
+			case !priced:
+				item.CostUnavailableReason = server.unpricedReason()
+			default:
 				current, recommended := roundCents(currentCost), roundCents(recommendedCost)
 				change := roundCents(current - recommended)
 				item.CostAvailable = true
@@ -508,7 +524,7 @@ func (server *apiServer) savings(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]any{
 		"items": items[start:end], "pagination": map[string]int{"page": page, "pageSize": pageSize, "total": len(items)},
 		"summary": summary,
-		"status":  Availability{Available: true, Source: "configured_unit_prices"},
+		"status":  Availability{Available: true, Source: server.priceSourceLabel()},
 	})
 }
 
@@ -688,4 +704,12 @@ func (server *apiServer) savingsBasis() string {
 		prices = "per-namespace unit prices derived from OpenCost allocation (configured prices as fallback)"
 	}
 	return "requested CPU and memory x the recorded replica snapshot x " + prices + " x 730 hours; modeled changes, not billing or realized savings"
+}
+
+// priceSourceLabel names where savings prices come from.
+func (server *apiServer) priceSourceLabel() string {
+	if server.config.OpenCostURL != "" {
+		return "opencost_unit_prices"
+	}
+	return "configured_unit_prices"
 }

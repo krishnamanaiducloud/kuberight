@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"net/url"
@@ -65,7 +66,17 @@ type OpenCostOptions struct {
 	// usable allocation for it.
 	Fallback Pricer
 	Now      func() time.Time
+	Logger   *slog.Logger
 }
+
+const (
+	// retryAfterFailure is how soon a failed OpenCost query is retried; the
+	// cache TTL only applies to successful responses.
+	retryAfterFailure = time.Minute
+	// maximumStaleness bounds how long the last good OpenCost prices are used
+	// while OpenCost is unavailable.
+	maximumStaleness = 6 * time.Hour
+)
 
 // OpenCost derives effective per-namespace prices from OpenCost's
 // allocation API: cpuCost / cpuCoreHours and ramCost / ramGiBHours.
@@ -74,11 +85,12 @@ type OpenCost struct {
 	options  OpenCostOptions
 	client   *http.Client
 
-	mu        sync.Mutex
-	fetchedAt time.Time
-	prices    map[string]Prices
-	cluster   Prices
-	lastError error
+	mu          sync.Mutex
+	attemptedAt time.Time
+	succeededAt time.Time
+	prices      map[string]Prices
+	cluster     Prices
+	lastError   error
 }
 
 const maximumResponseBytes = 8 << 20
@@ -110,6 +122,9 @@ func NewOpenCost(options OpenCostOptions) (*OpenCost, error) {
 	}
 	if options.Now == nil {
 		options.Now = time.Now
+	}
+	if options.Logger == nil {
+		options.Logger = slog.Default()
 	}
 	client := options.HTTPClient
 	if client == nil {
@@ -209,31 +224,43 @@ func (opencost *OpenCost) fetch(ctx context.Context) (map[string]Prices, Prices,
 	return prices, cluster, nil
 }
 
-// Prices implements Pricer. OpenCost is queried at most once per cache TTL;
-// failures fall back to configured prices until the next attempt.
+// Prices implements Pricer. A successful OpenCost response is reused for
+// the cache TTL; a failure is retried after a minute. The last good prices
+// keep serving through an outage of up to six hours, after which the
+// configured prices apply. Every failed attempt is logged.
 func (opencost *OpenCost) Prices(ctx context.Context, namespace string) Prices {
 	opencost.mu.Lock()
 	defer opencost.mu.Unlock()
 	now := opencost.options.Now()
-	if opencost.fetchedAt.IsZero() || now.Sub(opencost.fetchedAt) >= opencost.options.CacheTTL {
-		prices, cluster, err := opencost.fetch(ctx)
-		opencost.fetchedAt, opencost.lastError = now, err
+	due := opencost.attemptedAt.IsZero() ||
+		(opencost.lastError == nil && now.Sub(opencost.attemptedAt) >= opencost.options.CacheTTL) ||
+		(opencost.lastError != nil && now.Sub(opencost.attemptedAt) >= retryAfterFailure)
+	if due {
+		// The query must not inherit a caller's short or canceled deadline.
+		fetchContext := context.WithoutCancel(ctx)
+		prices, cluster, err := opencost.fetch(fetchContext)
+		opencost.attemptedAt, opencost.lastError = now, err
 		if err == nil {
-			opencost.prices, opencost.cluster = prices, cluster
+			opencost.prices, opencost.cluster, opencost.succeededAt = prices, cluster, now
+		} else {
+			opencost.options.Logger.Warn("OpenCost pricing is unavailable; using the last good or configured prices", "error", err)
 		}
 	}
-	if value, ok := opencost.prices[namespace]; ok {
-		return value
-	}
-	if opencost.cluster.Available() && opencost.lastError == nil {
-		return opencost.cluster
+	if !opencost.succeededAt.IsZero() && now.Sub(opencost.succeededAt) <= maximumStaleness {
+		if value, ok := opencost.prices[namespace]; ok {
+			return value
+		}
+		if opencost.cluster.Available() {
+			return opencost.cluster
+		}
 	}
 	return opencost.options.Fallback.Prices(ctx, namespace)
 }
 
-// Status reports the last fetch for the integrations view.
+// Status reports the last successful fetch and the last error for the
+// integrations view.
 func (opencost *OpenCost) Status() (time.Time, error) {
 	opencost.mu.Lock()
 	defer opencost.mu.Unlock()
-	return opencost.fetchedAt, opencost.lastError
+	return opencost.succeededAt, opencost.lastError
 }
