@@ -152,6 +152,27 @@
         "format": { "type": "string", "enum": ["json", "slack"] }
       }
     },
+    "gitops": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "apiURL", "allowHTTP", "repository", "baseBranch", "token"],
+      "properties": {
+        "provider": { "type": "string", "enum": ["", "github", "gitea"] },
+        "apiURL": { "type": "string", "maxLength": 2048, "pattern": "^(|https?://[^\\s]+)$" },
+        "allowHTTP": { "type": "boolean" },
+        "repository": { "type": "string", "pattern": "^(|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)$" },
+        "baseBranch": { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "^[A-Za-z0-9._/-]+$" },
+        "token": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["existingSecret", "key"],
+          "properties": {
+            "existingSecret": { "$ref": "#/definitions/optionalName" },
+            "key": { "$ref": "#/definitions/requiredName" }
+          }
+        }
+      }
+    },
     "exportRecommendationMetrics": { "type": "boolean" },
     "serviceAccount": {
       "type": "object",

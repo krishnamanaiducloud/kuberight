@@ -168,6 +168,7 @@ export function RecommendationDrawer({ id, onClose }: { id: string | undefined; 
                   {record.reviewStatus === 'approved' ? 'Approved' : 'Rejected'} by <strong>{record.reviewedBy}</strong>{record.reviewedAt ? ` on ${formatDate(record.reviewedAt)}` : ''}.
                 </Typography>
                 {record.reviewComment && <Typography variant="body2" color="text.secondary">“{record.reviewComment}”</Typography>}
+                {record.reviewStatus === 'approved' && <PullRequestAction record={record} />}
                 {record.reviewStatus === 'approved' && <ApplyCommand record={record} />}
               </Stack>
             )}
@@ -175,5 +176,38 @@ export function RecommendationDrawer({ id, onClose }: { id: string | undefined; 
         )}
       </Box>
     </Drawer>
+  )
+}
+
+type PullRequestResult = { url: string; number: number; branch: string; existing: boolean; repository: string; path: string }
+
+// Proposes the approved change as a pull request against the manifest in Git,
+// for workloads a GitOps controller owns.
+function PullRequestAction({ record }: { record: RecommendationRecord }) {
+  const mutation = useMutation({
+    mutationFn: () => api.post<PullRequestResult>(`/api/v1/recommendations/${encodeURIComponent(record.id)}/pull-request`, {}),
+  })
+  const result = mutation.data
+  return (
+    <Stack gap={1}>
+      <Stack direction="row" gap={1} alignItems="center">
+        <Button variant="outlined" disabled={mutation.isPending || Boolean(result)} onClick={() => mutation.mutate()}
+          startIcon={mutation.isPending ? <CircularProgress size={16} /> : undefined}>
+          Open pull request
+        </Button>
+        <Typography variant="caption" color="text.secondary">Edits the manifest named by the workload's kuberight.io/gitops-path annotation.</Typography>
+      </Stack>
+      {result && (
+        <Alert severity="success">
+          {result.existing ? 'A pull request is already open: ' : 'Pull request opened: '}
+          <a href={result.url} target="_blank" rel="noreferrer">{result.repository}#{result.number}</a> ({result.path}, branch {result.branch})
+        </Alert>
+      )}
+      {mutation.error && (
+        <Alert severity={mutation.error instanceof ApiError && [409, 422, 503].includes(mutation.error.status) ? 'warning' : 'error'}>
+          {mutation.error instanceof ApiError ? mutation.error.message : 'The pull request could not be opened.'}
+        </Alert>
+      )}
+    </Stack>
   )
 }

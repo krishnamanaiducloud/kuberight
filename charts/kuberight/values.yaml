@@ -141,6 +141,24 @@ webhook:
   signingSecretKey: ""
   format: json
 
+# Pull requests for GitOps-managed workloads. An approved recommendation can
+# be proposed as a pull request that edits the manifest named by the
+# workload annotation kuberight.io/gitops-path (repository and base branch
+# from kuberight.io/gitops-repository and kuberight.io/gitops-base-branch or
+# the defaults below). The token needs contents and pull-request write access.
+gitops:
+  # "", github (github.com or GitHub Enterprise), or gitea (Gitea or Forgejo).
+  provider: ""
+  # API base. Empty is https://api.github.com for github; required for gitea,
+  # for example https://git.example.com/api/v1.
+  apiURL: ""
+  allowHTTP: false
+  repository: ""
+  baseBranch: main
+  token:
+    existingSecret: ""
+    key: token
+
 # Export one gauge per container recommendation on /metrics for Grafana,
 # Coralogix, Datadog, or any OpenMetrics consumer. /metrics is
 # unauthenticated, so keep it reachable only by your monitoring stack.

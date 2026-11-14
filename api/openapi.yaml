@@ -317,6 +317,64 @@ paths:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "503": { $ref: "#/components/responses/AccessUnavailable" }
 
+  /api/v1/recommendations/{id}/pull-request:
+    post:
+      tags: [Recommendations]
+      operationId: openRecommendationPullRequest
+      summary: Propose an approved recommendation as a GitOps pull request
+      description: |
+        Edits the workload's manifest in Git and opens a pull request, for
+        workloads a GitOps controller owns. The file is named by the
+        workload annotation `kuberight.io/gitops-path`; the repository and
+        base branch come from `kuberight.io/gitops-repository` and
+        `kuberight.io/gitops-base-branch` or the configured defaults. Only the
+        resource values change; comments and formatting are kept. Idempotent
+        per recommendation: the branch is `kuberight/<id>` and an open pull
+        request for it is returned with 200. Authorized with verb `create`,
+        resource `recommendations`, subresource `pullrequest`.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^rec_.+$'
+            minLength: 5
+            maxLength: 64
+      responses:
+        "200":
+          description: A pull request for this recommendation is already open.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PullRequestResult" }
+        "201":
+          description: The pull request was opened.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PullRequestResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: |
+            The recommendation is not approved or is stale, the workload has no
+            GitOps target annotation, or the manifest already has the values.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "422":
+          description: The manifest does not define the container, or its layout cannot be edited in place.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "502":
+          description: The Git provider rejected the request or could not be reached.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "503": { $ref: "#/components/responses/AccessUnavailable" }
+
   /api/v1/policies:
     get:
       tags: [Configuration]
@@ -3623,6 +3681,19 @@ components:
         status:
           $ref: "#/components/schemas/Availability"
 
+    PullRequestResult:
+      type: object
+      additionalProperties: false
+      required: [url, number, branch, existing, repository, path, baseBranch, provider]
+      properties:
+        url: { type: string, format: uri }
+        number: { type: integer, minimum: 1 }
+        branch: { type: string, examples: ["kuberight/rec_0123456789abcdef0123456789abcdef"] }
+        existing: { type: boolean, description: True when an open pull request for the branch was returned. }
+        repository: { type: string, examples: ["acme/deploy"] }
+        path: { type: string, examples: ["apps/shop/checkout.yaml"] }
+        baseBranch: { type: string }
+        provider: { type: string, enum: [github, gitea] }
     ErrorResponse:
       type: object
       additionalProperties: false

@@ -103,6 +103,14 @@ type Config struct {
 	OpenCostURL   string
 	WebhookSecret string
 	WebhookFormat string
+	// GitOps pull requests: provider is "", "github", or "gitea". The
+	// repository and base branch are defaults that workload annotations
+	// override.
+	GitOpsProvider   string
+	GitOpsURL        string
+	GitOpsToken      string
+	GitOpsRepository string
+	GitOpsBaseBranch string
 
 	// ExportRecommendationMetrics adds per-container recommendation gauges to
 	// /metrics for Grafana and other Prometheus-compatible consumers.
@@ -187,6 +195,11 @@ func Load() (Config, error) {
 		OpenCostURL:        strings.TrimSpace(os.Getenv("KUBERIGHT_OPENCOST_URL")),
 		WebhookSecret:      os.Getenv("KUBERIGHT_WEBHOOK_SECRET"),
 		WebhookFormat:      strings.ToLower(envOr("KUBERIGHT_WEBHOOK_FORMAT", "json")),
+		GitOpsProvider:     strings.ToLower(strings.TrimSpace(os.Getenv("KUBERIGHT_GITOPS_PROVIDER"))),
+		GitOpsURL:          strings.TrimSpace(os.Getenv("KUBERIGHT_GITOPS_URL")),
+		GitOpsToken:        os.Getenv("KUBERIGHT_GITOPS_TOKEN"),
+		GitOpsRepository:   strings.TrimSpace(os.Getenv("KUBERIGHT_GITOPS_REPOSITORY")),
+		GitOpsBaseBranch:   strings.TrimSpace(envOr("KUBERIGHT_GITOPS_BASE_BRANCH", "main")),
 	}
 
 	var err error
@@ -395,7 +408,39 @@ func (c Config) Validate() error {
 	if c.CostCurrency != "" && !validCurrency(c.CostCurrency) {
 		return errors.New("KUBERIGHT_COST_CURRENCY must be a three-letter ISO 4217 code")
 	}
+	return c.validateGitOps()
+}
+
+func (c Config) validateGitOps() error {
+	switch c.GitOpsProvider {
+	case "":
+		return nil
+	case "github", "gitea":
+	default:
+		return errors.New("KUBERIGHT_GITOPS_PROVIDER must be github or gitea")
+	}
+	if c.GitOpsURL == "" {
+		if c.GitOpsProvider != "github" {
+			return errors.New("KUBERIGHT_GITOPS_URL is required for gitea, for example https://git.example.com/api/v1")
+		}
+	} else if err := validateUpstream("KUBERIGHT_GITOPS_URL", c.GitOpsURL, c.AllowInsecureUpstreams, "KUBERIGHT_ALLOW_INSECURE_UPSTREAMS=true"); err != nil {
+		return err
+	}
+	if len(c.GitOpsToken) < 8 {
+		return errors.New("KUBERIGHT_GITOPS_TOKEN is required with KUBERIGHT_GITOPS_PROVIDER")
+	}
+	if c.GitOpsBaseBranch == "" {
+		return errors.New("KUBERIGHT_GITOPS_BASE_BRANCH must not be empty")
+	}
 	return nil
+}
+
+// GitOpsAPIURL is the provider API base, defaulting to github.com.
+func (c Config) GitOpsAPIURL() string {
+	if c.GitOpsURL == "" && c.GitOpsProvider == "github" {
+		return "https://api.github.com"
+	}
+	return c.GitOpsURL
 }
 
 func validateUpstream(name, raw string, allowHTTP bool, httpOptIn string) error {

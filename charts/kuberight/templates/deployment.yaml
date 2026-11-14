@@ -125,7 +125,7 @@ spec:
             - name: KUBERIGHT_PROMETHEUS_MAX_IN_FLIGHT
               value: {{ $.Values.prometheus.maxInFlight | quote }}
             {{- end }}
-            {{- if or (and .Values.prometheus.url .Values.prometheus.allowHTTP) (and .Values.cost.opencost.url .Values.cost.opencost.allowHTTP) }}
+            {{- if or (and .Values.prometheus.url .Values.prometheus.allowHTTP) (and .Values.cost.opencost.url .Values.cost.opencost.allowHTTP) (and .Values.gitops.apiURL .Values.gitops.allowHTTP) }}
             - name: KUBERIGHT_ALLOW_INSECURE_UPSTREAMS
               value: "true"
             {{- end }}
@@ -164,6 +164,25 @@ spec:
             {{- if .Values.exportRecommendationMetrics }}
             - name: KUBERIGHT_EXPORT_RECOMMENDATION_METRICS
               value: "true"
+            {{- end }}
+            {{- with .Values.gitops.provider }}
+            - name: KUBERIGHT_GITOPS_PROVIDER
+              value: {{ . | quote }}
+            {{- with $.Values.gitops.apiURL }}
+            - name: KUBERIGHT_GITOPS_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with $.Values.gitops.repository }}
+            - name: KUBERIGHT_GITOPS_REPOSITORY
+              value: {{ . | quote }}
+            {{- end }}
+            - name: KUBERIGHT_GITOPS_BASE_BRANCH
+              value: {{ $.Values.gitops.baseBranch | quote }}
+            - name: KUBERIGHT_GITOPS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.gitops.token.existingSecret | quote }}
+                  key: {{ $.Values.gitops.token.key | quote }}
             {{- end }}
             {{- with .Values.webhook.existingSecret }}
             - name: KUBERIGHT_WEBHOOK_URL

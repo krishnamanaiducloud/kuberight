@@ -121,6 +121,12 @@ func telemetryRoute(request *http.Request) string {
 			return "GET /api/v1/recommendations/{id}"
 		}
 	}
+	if request.Method == http.MethodPost && strings.HasPrefix(request.URL.Path, "/api/v1/recommendations/") && strings.HasSuffix(request.URL.Path, "/pull-request") {
+		identifier := strings.TrimSuffix(strings.TrimPrefix(request.URL.Path, "/api/v1/recommendations/"), "/pull-request")
+		if identifier != "" && !strings.Contains(identifier, "/") {
+			return "POST /api/v1/recommendations/{id}/pull-request"
+		}
+	}
 	if request.Method == http.MethodPost && strings.HasPrefix(request.URL.Path, "/api/v1/recommendations/") && strings.HasSuffix(request.URL.Path, "/review") {
 		identifier := strings.TrimSuffix(strings.TrimPrefix(request.URL.Path, "/api/v1/recommendations/"), "/review")
 		if identifier != "" && !strings.Contains(identifier, "/") {

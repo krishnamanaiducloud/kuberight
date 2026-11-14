@@ -12,6 +12,7 @@ import (
 
 	"github.com/kuberight/kuberight/internal/config"
 	"github.com/kuberight/kuberight/internal/forecast"
+	"github.com/kuberight/kuberight/internal/gitops"
 	"github.com/kuberight/kuberight/internal/notify"
 	"github.com/kuberight/kuberight/internal/optimizer"
 	"github.com/kuberight/kuberight/internal/pricing"
@@ -82,6 +83,8 @@ type Dependencies struct {
 	// Pricer supplies per-namespace unit prices; nil uses the configured
 	// prices for every namespace.
 	Pricer pricing.Pricer
+	// GitOps opens pull requests; nil builds the configured provider, if any.
+	GitOps gitops.Provider
 	Logger *slog.Logger
 	Now    func() time.Time
 }
@@ -95,6 +98,7 @@ type apiServer struct {
 	forecaster Forecaster
 	notifier   notify.Notifier
 	pricer     pricing.Pricer
+	gitops     gitops.Provider
 	logger     *slog.Logger
 	metrics    *apiMetrics
 	now        func() time.Time
@@ -151,6 +155,13 @@ func newAPIServer(cfg config.Config, dependencies Dependencies) (*apiServer, err
 	if pricer == nil {
 		pricer = pricing.Static{CPUCoreHour: cfg.CostCPUCoreHour, MemoryGiBHour: cfg.CostMemoryGiBHour}
 	}
+	gitOps := dependencies.GitOps
+	if gitOps == nil && cfg.GitOpsProvider != "" {
+		var err error
+		if gitOps, err = gitops.NewProvider(cfg.GitOpsProvider, cfg.GitOpsAPIURL(), cfg.GitOpsToken); err != nil {
+			return nil, err
+		}
+	}
 	server := &apiServer{
 		config:     cfg,
 		access:     access,
@@ -160,6 +171,7 @@ func newAPIServer(cfg config.Config, dependencies Dependencies) (*apiServer, err
 		forecaster: dependencies.Forecaster,
 		notifier:   dependencies.Notifier,
 		pricer:     pricer,
+		gitops:     gitOps,
 		logger:     logger,
 		metrics:    newAPIMetrics(),
 		now:        now,
@@ -182,6 +194,7 @@ func (server *apiServer) routes() (http.Handler, error) {
 	mux.HandleFunc("POST /api/v1/recommendations:generate", server.generateRecommendation)
 	mux.HandleFunc("GET /api/v1/recommendations/{id}", server.getRecommendation)
 	mux.HandleFunc("POST /api/v1/recommendations/{id}/review", server.reviewRecommendation)
+	mux.HandleFunc("POST /api/v1/recommendations/{id}/pull-request", server.openPullRequest)
 	mux.HandleFunc("GET /api/v1/approvals", server.approvals)
 	mux.HandleFunc("GET /api/v1/metrics/history", server.metricsHistory)
 	mux.HandleFunc("GET /api/v1/forecasts", server.forecastStatus)

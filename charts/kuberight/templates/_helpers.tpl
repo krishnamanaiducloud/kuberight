@@ -107,6 +107,15 @@ app.kubernetes.io/component: ml
 {{- if and (eq .Values.operationMode "apply") (not .Values.rbac.monitoring.enabled) -}}
 {{- fail "operationMode=apply requires rbac.monitoring.enabled=true" -}}
 {{- end -}}
+{{- if and .Values.gitops.provider (not .Values.gitops.token.existingSecret) -}}
+{{- fail "gitops.token.existingSecret is required when gitops.provider is set" -}}
+{{- end -}}
+{{- if and (eq .Values.gitops.provider "gitea") (not .Values.gitops.apiURL) -}}
+{{- fail "gitops.apiURL is required for gitea, for example https://git.example.com/api/v1" -}}
+{{- end -}}
+{{- if and .Values.gitops.apiURL (hasPrefix "http://" .Values.gitops.apiURL) (not .Values.gitops.allowHTTP) -}}
+{{- fail "gitops.apiURL uses http; set gitops.allowHTTP=true only for a trusted in-cluster Git server" -}}
+{{- end -}}
 {{- if and .Values.ml.enabled .Values.ml.persistence.enabled (not .Values.ml.persistence.signingKey.existingSecret) -}}
 {{- fail "ml.persistence.signingKey.existingSecret is required when ml.persistence.enabled=true: persisted models are pickle files and are loaded only after their HMAC is verified" -}}
 {{- end -}}

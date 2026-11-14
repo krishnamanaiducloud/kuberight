@@ -73,4 +73,27 @@ describe('RecommendationDrawer', () => {
     expect(screen.getByRole('button', { name: 'Approve' })).toBeDisabled()
     expect(screen.getByText(/Approval is disabled/)).toBeInTheDocument()
   })
+
+  it('opens a pull request for an approved recommendation', async () => {
+    const approved = { ...record, reviewStatus: 'approved', reviewedBy: 'bob', reviewedAt: '2026-10-20T12:00:00Z' }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(respond(approved))
+      .mockResolvedValueOnce(respond({ url: 'https://git.example/acme/deploy/pulls/7', number: 7, branch: `kuberight/${record.id}`, existing: false, repository: 'acme/deploy', path: 'apps/checkout.yaml', baseBranch: 'main', provider: 'gitea' }, 201))
+    vi.stubGlobal('fetch', fetchMock)
+    renderDrawer()
+    fireEvent.click(await screen.findByRole('button', { name: 'Open pull request' }))
+    expect(await screen.findByRole('link', { name: 'acme/deploy#7' })).toHaveAttribute('href', 'https://git.example/acme/deploy/pulls/7')
+    expect(fetchMock.mock.calls[1][0]).toBe(`/api/v1/recommendations/${record.id}/pull-request`)
+    expect(screen.getByRole('button', { name: 'Open pull request' })).toBeDisabled()
+  })
+
+  it('explains why a pull request cannot be opened', async () => {
+    const approved = { ...record, reviewStatus: 'approved', reviewedBy: 'bob' }
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(respond(approved))
+      .mockResolvedValueOnce(respond({ error: { code: 'gitops_target_missing', message: 'annotate the workload with kuberight.io/gitops-path' } }, 409)))
+    renderDrawer()
+    fireEvent.click(await screen.findByRole('button', { name: 'Open pull request' }))
+    expect(await screen.findByText('annotate the workload with kuberight.io/gitops-path')).toBeInTheDocument()
+  })
 })

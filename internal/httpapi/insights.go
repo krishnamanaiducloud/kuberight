@@ -584,7 +584,7 @@ func (server *apiServer) dependencyStatuses(ctx context.Context) []dependencySta
 	}
 	statuses = append(statuses,
 		cost,
-		dependencyStatus{Name: "GitOps", Configured: true, Healthy: true, Detail: "export approved recommendations as strategic-merge patches for Argo CD, Flux, or kubectl"},
+		server.gitOpsStatus(),
 		server.optionalIntegration("Webhooks", server.notifier != nil, "recommendation events are delivered to the configured webhook", "KUBERIGHT_WEBHOOK_URL is not set"),
 		server.optionalIntegration("Latency correlation", server.config.LatencyQuery != "", "application latency is correlated with resource signals", "KUBERIGHT_LATENCY_QUERY is not set"),
 		server.optionalIntegration("Recommendation metrics", server.config.ExportRecommendationMetrics, "recommendations are exported on /metrics for Grafana and other OpenMetrics tools", "KUBERIGHT_EXPORT_RECOMMENDATION_METRICS is not enabled"),
