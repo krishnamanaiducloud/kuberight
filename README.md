@@ -34,15 +34,14 @@ KubeRight is a Kubernetes resource-inventory and right-sizing project. It combin
   - [Browser single sign-on](#single-sign-on) with any OIDC provider.
   - A development-only static token.
 - Every request is authorized with `SubjectAccessReview`. Verified identities and decisions are cached briefly; see [Single sign-on](#single-sign-on).
-- [GitOps pull requests](#gitops-pull-requests): an approved recommendation can be proposed as a pull request that edits the workload's manifest on GitHub or Gitea/Forgejo.
+- [GitOps pull requests](#gitops-pull-requests): an approved recommendation can be proposed as a pull request (GitHub, Gitea/Forgejo) or merge request (GitLab) that edits the workload's manifest.
 - A dashboard backed by the versioned Go API. It passes an automated WCAG 2.1 AA audit on every view. Views whose integrations are unavailable display that state instead of fabricated data.
 - Secure-by-default workload settings in a Helm chart, plus development, production-shaped, OpenShift, and cluster-wide rendering profiles.
 
 KubeRight does **not**:
 
 - ingest cloud billing or provide a complete FinOps ledger;
-- register remote clusters;
-- open GitLab merge requests.
+- register remote clusters.
 
 It never changes workloads unless `operationMode=apply` is set and a namespace opts in. The webhook delivery queue is process-local. Persisted ML models are signed, and the forecasting service refuses any model file whose signature does not verify. See [known limitations](docs/known-limitations.md) before evaluating it for production.
 
@@ -282,6 +281,11 @@ Results:
 - **Against the baseline:** 7 of 11 beat it (skill > 0). On the GC-sawtooth, KEDA-scaled, and CronJob datasets the service selected the seasonal-naive model itself.
 - **Weak case:** a level shift (the recent-rollout dataset) reached 75% coverage and was worse than the baseline. KubeRight therefore sizes from post-rollout samples only, shortens validity to 6 hours, and uses a forecast for sizing only when it is calibrated.
 
+**Forecasts on real traces.** `python -m ml.benchmark --traces FILE --limit 200` runs the same backtest on hourly means of the Bitbrains trace: 200 random VMs, 3 origins with a 24-hour horizon, and 95% bootstrap intervals over VMs.
+
+- **Memory:** intervals covered 90.5% (89.0–91.9) of held-out hours against a nominal 90%. The service beat seasonal-naive on 49% of VMs.
+- **CPU:** intervals covered 86%, because the calibration factor was fitted on the last validation fold only. It is now the largest factor any fold needs. Chosen on one set of 100 VMs and confirmed on a different 100, coverage rose to 88.4% (85.0–91.2). The remaining shortfall comes from VMs whose CPU level shifts abruptly; there the service usually selects the seasonal-naive model itself (median skill 0). KubeRight uses a forecast for sizing only when its own calibration check passes.
+
 `POST /api/v1/backtest` on the forecasting service runs the same rolling-origin evaluation on your own history. The Correlation analysis page shows its result for the selected container.
 
 ## Continuous rightsizing
@@ -318,7 +322,7 @@ helm upgrade --install kuberight charts/kuberight --namespace kuberight \
   --set gitops.provider=github --set gitops.repository=acme/deploy --set gitops.token.existingSecret=kuberight-gitops
 ```
 
-For GitHub Enterprise, set `gitops.apiURL` to `https://<host>/api/v3`. For Gitea or Forgejo, use `gitops.provider=gitea` and set `gitops.apiURL` to `https://<host>/api/v1`.
+For GitHub Enterprise, set `gitops.apiURL` to `https://<host>/api/v3`. For GitLab, use `gitops.provider=gitlab`; it opens merge requests, and repositories may be nested group paths. For self-managed GitLab, set `gitops.apiURL` to `https://<host>/api/v4`. For Gitea or Forgejo, use `gitops.provider=gitea` and set `gitops.apiURL` to `https://<host>/api/v1`.
 
 Then annotate each workload with the file that defines it:
 
@@ -455,7 +459,7 @@ These were functional runs on a small cluster. Accuracy is evaluated separately,
 | `internal/optimizer/stability.go`, `runtime.go` | Hysteresis, cooldown, oscillation, and confirmation controls; JVM memory rules |
 | `internal/automation/`, `internal/httpapi/automation.go` | Opt-in continuous rightsizing and rollback |
 | `scripts/attribution-replay.sh` | Real-Prometheus replay of the attribution queries |
-| `internal/gitops/` | In-place manifest editing and the GitHub and Gitea/Forgejo pull-request providers |
+| `internal/gitops/` | In-place manifest editing and the GitHub, GitLab, and Gitea/Forgejo providers |
 | `internal/benchmark/traces.go`, `scripts/convert-bitbrains-trace.py` | Real-trace evaluation with rolling-origin folds and bootstrap intervals |
 | `scripts/verify-monitoring.sh`, `charts/kuberight/dashboards/` | promtool tests for the alerts and dashboard queries; the Grafana dashboard |
 | `internal/repository/postgres/migrations/` | Embedded, checksummed PostgreSQL schema migrations |
