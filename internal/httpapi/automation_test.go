@@ -324,3 +324,24 @@ func TestAutomationRunsAreSingletonsAndExportMetrics(t *testing.T) {
 		}
 	}
 }
+
+func TestCounterSeriesExistBeforeTheirFirstIncrement(t *testing.T) {
+	// increase() cannot see an increment that creates a series, so every
+	// label pair the alerts and dashboard use must be exported from the start.
+	api := newTestAPI(t, nil, Dependencies{})
+	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	recorder := httptest.NewRecorder()
+	api.handler.ServeHTTP(recorder, request)
+	metrics := recorder.Body.String()
+	for _, series := range []string{
+		`kuberight_automation_changes_total{action="apply",outcome="failed"} `,
+		`kuberight_automation_changes_total{action="rollback",outcome="rolled_back"} `,
+		`kuberight_automation_changes_total{action="rollback",outcome="failed"} `,
+		`kuberight_recommendations_total{confidence="high",risk="low"} 0`,
+		`kuberight_recommendations_total{confidence="low",risk="high"} 0`,
+	} {
+		if !strings.Contains(metrics, series) {
+			t.Errorf("metrics lack %q", series)
+		}
+	}
+}

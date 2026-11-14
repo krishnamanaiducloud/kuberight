@@ -64,7 +64,16 @@ var fixedTelemetryRoutes = map[string]struct{}{
 }
 
 func newAPIMetrics() *apiMetrics {
-	return &apiMetrics{requests: make(map[metricKey]metricValue), recommendations: make(map[string]uint64)}
+	// Every confidence and risk pair is exported from the start: a counter
+	// series that first appears at 1 hides that increment from rate() and
+	// increase().
+	recommendations := make(map[string]uint64)
+	for _, confidence := range []string{"low", "medium", "high"} {
+		for _, risk := range []string{"low", "medium", "high"} {
+			recommendations[confidence+"\x00"+risk] = 0
+		}
+	}
+	return &apiMetrics{requests: make(map[metricKey]metricValue), recommendations: recommendations}
 }
 
 func (metrics *apiMetrics) observeRequest(method, route string, status int, duration time.Duration) {

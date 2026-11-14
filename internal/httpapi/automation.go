@@ -84,14 +84,24 @@ const automationLockName = "automation"
 var errAutomationBusy = errors.New("another automation pass is running")
 
 // automationMetrics are process-wide, because the background automator and
-// the HTTP server are separate server instances in one process.
+// the HTTP server are separate server instances in one process. Every action
+// and outcome pair starts at zero: a counter series that first appears at 1
+// hides that change from increase(), and the failure and rollback alerts
+// would miss the first event.
 var automationMetrics = struct {
 	sync.Mutex
 	changes  map[string]uint64
 	lastPass time.Time
 	eligible int
 	busy     uint64
-}{changes: map[string]uint64{}}
+}{changes: map[string]uint64{
+	AutomationApply + "\x00" + AutomationApplied:       0,
+	AutomationApply + "\x00" + AutomationDeferred:      0,
+	AutomationApply + "\x00" + AutomationFailed:        0,
+	AutomationRollback + "\x00" + AutomationRolledBack: 0,
+	AutomationRollback + "\x00" + AutomationDeferred:   0,
+	AutomationRollback + "\x00" + AutomationFailed:     0,
+}}
 
 func recordAutomationPass(report AutomationReport) {
 	automationMetrics.Lock()
