@@ -256,3 +256,17 @@ def test_trace_benchmark_command_line(tmp_path: Path) -> None:
     output = tmp_path / "report.json"
     assert benchmark.main(["--traces", str(path), "--output", str(output)]) == 0
     assert json.loads(output.read_text())["summary"]["cpu"]["workloads"] == 1
+
+
+def test_calibration_uses_the_largest_factor_any_fold_needs() -> None:
+    # A noisy middle fold is followed by a calm last fold. Fitting on the last
+    # fold alone would keep the intervals as they are; the next window can be
+    # as noisy as any earlier one, so the noisy fold sets the factor.
+    calm = [float(value) for value in np.random.default_rng(5).normal(0, 0.1, 24)]
+    noisy = [float(value) for value in np.random.default_rng(6).normal(0, 0.5, 24)]
+    later = [float(value) for value in np.random.default_rng(7).normal(0, 0.1, 24)]
+    summary = service._calibrate(calm + noisy + later, [24, 24, 24], 0.9)
+    last_fold_only = service._required_factor(calm + noisy, later, 0.9)
+    assert last_fold_only == 1.0
+    assert summary.factor > 1.5
+    assert summary.factor == service._required_factor(calm, noisy, 0.9)
