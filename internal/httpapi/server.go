@@ -334,6 +334,16 @@ func (server *apiServer) withAuthentication(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		if server.config.AuthMode == "oidc" {
+			principal, ok := proxyPrincipal(r.Header, server.config.OIDCUsernamePrefix, server.config.OIDCGroupsPrefix)
+			if !ok {
+				respondError(w, r, http.StatusUnauthorized, "unauthorized", "sign in through the KubeRight login")
+				return
+			}
+			recordTelemetrySubject(r.Context(), principal.Username)
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey, principal)))
+			return
+		}
 		bearer, ok := extractBearer(r.Header.Get("Authorization"))
 		if !ok {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="kuberight"`)

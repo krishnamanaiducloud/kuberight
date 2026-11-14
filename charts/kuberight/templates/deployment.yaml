@@ -59,12 +59,23 @@ spec:
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           ports:
-            - name: http
+            - name: {{ if eq .Values.auth.mode "oidc" }}api{{ else }}http{{ end }}
               containerPort: 8080
               protocol: TCP
           env:
             - name: KUBERIGHT_LISTEN_ADDR
+              {{- if eq .Values.auth.mode "oidc" }}
+              # Only the oauth2-proxy sidecar in this pod can reach the API.
+              value: "127.0.0.1:8080"
+              {{- else }}
               value: ":8080"
+              {{- end }}
+            {{- if eq .Values.auth.mode "oidc" }}
+            - name: KUBERIGHT_OIDC_USERNAME_PREFIX
+              value: {{ .Values.auth.oidc.usernamePrefix | quote }}
+            - name: KUBERIGHT_OIDC_GROUPS_PREFIX
+              value: {{ .Values.auth.oidc.groupsPrefix | quote }}
+            {{- end }}
             - name: KUBERIGHT_AUTH_MODE
               value: {{ .Values.auth.mode | quote }}
             - name: KUBERIGHT_OPERATION_MODE
@@ -237,7 +248,7 @@ spec:
           startupProbe:
             httpGet:
               path: /healthz
-              port: http
+              port: {{ include "kuberight.probePort" . }}
             failureThreshold: {{ .Values.probes.startup.failureThreshold }}
             periodSeconds: {{ .Values.probes.startup.periodSeconds }}
           {{- end }}
@@ -245,7 +256,7 @@ spec:
           readinessProbe:
             httpGet:
               path: /readyz
-              port: http
+              port: {{ include "kuberight.probePort" . }}
             initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
             periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
             timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
@@ -255,7 +266,7 @@ spec:
           livenessProbe:
             httpGet:
               path: /healthz
-              port: http
+              port: {{ include "kuberight.probePort" . }}
             initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
             periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
             timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
@@ -269,6 +280,13 @@ spec:
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+        {{- if eq .Values.auth.mode "oidc" }}
+        {{- include "kuberight.oauth2ProxyContainer" . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.hostAliases }}
+      hostAliases:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       volumes:
         - name: tmp
           emptyDir:

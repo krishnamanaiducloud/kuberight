@@ -5,12 +5,16 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	authzv1 "k8s.io/api/authorization/v1"
+
+	"github.com/kuberight/kuberight/internal/config"
 )
 
 // countingAccess stands in for the Kubernetes API server.
@@ -199,5 +203,48 @@ func TestTTLCacheEvictsTheLeastRecentlyUsedEntry(t *testing.T) {
 	}
 	if value, _, ok := cache.get("a", now); !ok || value != 1 {
 		t.Fatal("a should remain")
+	}
+}
+
+func TestProxyPrincipalPrefixesTheAssertedIdentity(t *testing.T) {
+	header := http.Header{}
+	header.Set("X-Forwarded-User", "CiQwOGE4Njg0Yi1kYjg4")
+	header.Set("X-Forwarded-Email", "alice@example.com")
+	header.Add("X-Forwarded-Groups", "platform, sre")
+	header.Add("X-Forwarded-Groups", "admins")
+	principal, ok := proxyPrincipal(header, "oidc:", "oidc:")
+	if !ok || principal.Username != "oidc:alice@example.com" {
+		t.Fatalf("principal=%+v ok=%v", principal, ok)
+	}
+	if want := []string{"system:authenticated", "oidc:platform", "oidc:sre", "oidc:admins"}; strings.Join(principal.Groups, ",") != strings.Join(want, ",") {
+		t.Fatalf("groups=%v", principal.Groups)
+	}
+	for name, mutate := range map[string]func(http.Header){
+		"no identity":      func(h http.Header) { h.Del("X-Forwarded-Email"); h.Del("X-Forwarded-User") },
+		"header splitting": func(h http.Header) { h.Set("X-Forwarded-Email", "alice\r\nX-Admin: true") },
+	} {
+		copied := header.Clone()
+		mutate(copied)
+		if _, ok := proxyPrincipal(copied, "oidc:", "oidc:"); ok {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+func TestOIDCModeTrustsOnlyProxyHeadersAndStillAuthorizes(t *testing.T) {
+	api := newTestAPI(t, func(cfg *config.Config) { cfg.AuthMode = "oidc"; cfg.ListenAddress = "127.0.0.1:8080" }, Dependencies{})
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/recommendations", nil)
+	request.Header.Set("Authorization", "Bearer forged")
+	response := httptest.NewRecorder()
+	api.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("a bearer token without proxy headers: %d", response.Code)
+	}
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/recommendations", nil)
+	request.Header.Set("X-Forwarded-Email", "alice@example.com")
+	response = httptest.NewRecorder()
+	api.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || len(api.access.calls) == 0 || api.access.calls[len(api.access.calls)-1].Resource != "recommendations" {
+		t.Fatalf("proxy identity: %d calls=%v", response.Code, api.access.calls)
 	}
 }

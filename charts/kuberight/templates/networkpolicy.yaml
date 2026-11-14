@@ -23,7 +23,7 @@ spec:
         - podSelector: {}
       ports:
         - protocol: TCP
-          port: 8080
+          port: {{ include "kuberight.httpPort" . }}
     {{- end }}
     {{- if $monitoringIngress }}
     - from:
@@ -35,7 +35,7 @@ spec:
           {{- end }}
       ports:
         - protocol: TCP
-          port: 8080
+          port: {{ include "kuberight.httpPort" . }}
     {{- end }}
     {{- with .Values.networkPolicy.ingress }}
     {{- toYaml . | nindent 4 }}

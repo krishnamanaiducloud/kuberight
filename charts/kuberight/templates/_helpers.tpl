@@ -98,14 +98,23 @@ app.kubernetes.io/component: ml
 {{- if and (eq .Values.auth.mode "static") (not .Values.auth.staticToken.existingSecret) -}}
 {{- fail "auth.staticToken.existingSecret is required when auth.mode=static" -}}
 {{- end -}}
-{{- if and (eq .Values.operationMode "apply") (ne .Values.auth.mode "kubernetes") -}}
-{{- fail "operationMode=apply requires auth.mode=kubernetes so every approval and change has an audited identity" -}}
+{{- if and (eq .Values.operationMode "apply") (not (has .Values.auth.mode (list "kubernetes" "oidc"))) -}}
+{{- fail "operationMode=apply requires auth.mode=kubernetes or oidc so every approval and change has an audited identity" -}}
 {{- end -}}
 {{- if and (eq .Values.operationMode "apply") (ne .Values.rbac.scope "cluster") -}}
 {{- fail "operationMode=apply requires rbac.scope=cluster because automation reads the kuberight.io/automation namespace opt-in label" -}}
 {{- end -}}
 {{- if and (eq .Values.operationMode "apply") (not .Values.rbac.monitoring.enabled) -}}
 {{- fail "operationMode=apply requires rbac.monitoring.enabled=true" -}}
+{{- end -}}
+{{- if eq .Values.auth.mode "oidc" -}}
+{{- $oidc := .Values.auth.oidc -}}
+{{- if not (and $oidc.issuerURL $oidc.clientID $oidc.existingSecret $oidc.redirectURL) -}}
+{{- fail "auth.mode=oidc requires auth.oidc.issuerURL, clientID, existingSecret, and redirectURL" -}}
+{{- end -}}
+{{- if and (not $oidc.insecureHTTP) (or (hasPrefix "http://" $oidc.issuerURL) (hasPrefix "http://" $oidc.redirectURL)) -}}
+{{- fail "auth.oidc URLs must use https; auth.oidc.insecureHTTP=true is for local development only" -}}
+{{- end -}}
 {{- end -}}
 {{- if and .Values.gitops.provider (not .Values.gitops.token.existingSecret) -}}
 {{- fail "gitops.token.existingSecret is required when gitops.provider is set" -}}
@@ -175,3 +184,74 @@ app.kubernetes.io/component: ml
 {{- with regexFind "[0-9]+m" $value }}{{ $minutes = trimSuffix "m" . | int }}{{ end -}}
 {{- add (mul $hours 3600) (mul $minutes 60) -}}
 {{- end -}}
+
+{{/* The port probes use: the API itself, or the oauth2-proxy in oidc mode. */}}
+{{- define "kuberight.probePort" -}}
+{{- if eq .Values.auth.mode "oidc" }}4180{{ else }}http{{ end -}}
+{{- end }}
+
+{{/* The port the Service and NetworkPolicy expose. */}}
+{{- define "kuberight.httpPort" -}}
+{{- if eq .Values.auth.mode "oidc" }}4180{{ else }}8080{{ end -}}
+{{- end }}
+
+{{/*
+oauth2-proxy sidecar for auth.mode=oidc. It performs the OIDC login, keeps
+the session in an encrypted cookie, and forwards authenticated requests to
+the API on loopback with X-Forwarded-User, -Email, and -Groups.
+*/}}
+{{- define "kuberight.oauth2ProxyContainer" -}}
+{{- $oidc := .Values.auth.oidc -}}
+- name: oauth2-proxy
+  image: {{ printf "%s%s" $oidc.image.repository (ternary (printf "@%s" $oidc.image.digest) (printf ":%s" $oidc.image.tag) (ne $oidc.image.digest "")) | quote }}
+  imagePullPolicy: {{ $oidc.image.pullPolicy }}
+  securityContext:
+    {{- toYaml .Values.securityContext | nindent 4 }}
+  args:
+    - --http-address=0.0.0.0:4180
+    - --upstream=http://127.0.0.1:8080/
+    - --provider=oidc
+    - --oidc-issuer-url={{ $oidc.issuerURL }}
+    - --client-id={{ $oidc.clientID }}
+    - --redirect-url={{ $oidc.redirectURL }}
+    - --scope={{ $oidc.scopes }}
+    - --oidc-groups-claim={{ $oidc.groupsClaim }}
+    {{- range $oidc.emailDomains }}
+    - --email-domain={{ . }}
+    {{- end }}
+    - --pass-user-headers=true
+    - --skip-provider-button=true
+    - --skip-auth-route=^/(healthz|readyz|metrics)$
+    - --api-route=^/api/
+    - --cookie-name=_kuberight
+    - --cookie-samesite=lax
+    - --cookie-secure={{ not $oidc.insecureHTTP }}
+    - --cookie-expire=8h
+    - --cookie-refresh=1h
+    - --silence-ping-logging=true
+    {{- with $oidc.extraArgs }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  env:
+    - name: OAUTH2_PROXY_CLIENT_SECRET
+      valueFrom:
+        secretKeyRef:
+          name: {{ $oidc.existingSecret | quote }}
+          key: {{ $oidc.clientSecretKey | quote }}
+    - name: OAUTH2_PROXY_COOKIE_SECRET
+      valueFrom:
+        secretKeyRef:
+          name: {{ $oidc.existingSecret | quote }}
+          key: {{ $oidc.cookieSecretKey | quote }}
+  ports:
+    - name: http
+      containerPort: 4180
+      protocol: TCP
+  readinessProbe:
+    httpGet:
+      path: /ping
+      port: 4180
+    periodSeconds: 10
+  resources:
+    {{- toYaml $oidc.resources | nindent 4 }}
+{{- end }}

@@ -145,3 +145,38 @@ func TestOpenCostURLFollowsUpstreamTransportRules(t *testing.T) {
 		t.Fatalf("explicit in-cluster OpenCost: err=%v costConfigured=%v", err, cfg.CostConfigured())
 	}
 }
+
+func TestOIDCModeRequiresALoopbackListener(t *testing.T) {
+	cfg := validConfig()
+	cfg.AuthMode = "oidc"
+	for address, valid := range map[string]bool{":8080": false, "0.0.0.0:8080": false, "10.0.0.5:8080": false, "127.0.0.1:8080": true, "[::1]:8080": true, "localhost:8080": true} {
+		cfg.ListenAddress = address
+		if err := cfg.Validate(); (err == nil) != valid {
+			t.Errorf("%s: err=%v, valid=%v", address, err, valid)
+		}
+	}
+	cfg.ListenAddress, cfg.OperationMode = "127.0.0.1:8080", ModeApply
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("apply mode with OIDC identities: %v", err)
+	}
+}
+
+func TestValidateGitOpsSettings(t *testing.T) {
+	cfg := validConfig()
+	cfg.GitOpsProvider, cfg.GitOpsToken, cfg.GitOpsBaseBranch = "github", "ghp_0123456789", "main"
+	if err := cfg.Validate(); err != nil || cfg.GitOpsAPIURL() != "https://api.github.com" {
+		t.Fatalf("github defaults: err=%v url=%s", err, cfg.GitOpsAPIURL())
+	}
+	for name, mutate := range map[string]func(*Config){
+		"unknown provider":  func(c *Config) { c.GitOpsProvider = "svn" },
+		"missing token":     func(c *Config) { c.GitOpsToken = "" },
+		"gitea without URL": func(c *Config) { c.GitOpsProvider = "gitea" },
+		"plain HTTP":        func(c *Config) { c.GitOpsURL = "http://git.example/api/v1" },
+	} {
+		broken := cfg
+		mutate(&broken)
+		if err := broken.Validate(); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

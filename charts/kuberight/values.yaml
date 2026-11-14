@@ -187,6 +187,42 @@ auth:
   staticToken:
     existingSecret: ""
     key: token
+  # mode: oidc adds an oauth2-proxy sidecar for browser single sign-on with
+  # any OIDC provider (Entra ID, Okta, Google, Keycloak, Dex). KubeRight then
+  # listens on loopback only and trusts the identity the sidecar asserts;
+  # every request is still authorized with SubjectAccessReview, so RBAC binds
+  # "<usernamePrefix><email>" and "<groupsPrefix><group>".
+  oidc:
+    issuerURL: ""
+    clientID: ""
+    # Secret with the OIDC client secret and a 32-byte cookie secret:
+    # kubectl create secret generic kuberight-oidc --from-literal=client-secret=... \
+    #   --from-literal=cookie-secret="$(openssl rand -base64 32 | tr -- '+/' '-_')"
+    existingSecret: ""
+    clientSecretKey: client-secret
+    cookieSecretKey: cookie-secret
+    # The external URL users reach, ending in /oauth2/callback.
+    redirectURL: ""
+    scopes: openid email profile groups
+    groupsClaim: groups
+    emailDomains:
+      - "*"
+    usernamePrefix: "oidc:"
+    groupsPrefix: "oidc:"
+    # Development only: allow an http issuer and cookies without Secure.
+    insecureHTTP: false
+    image:
+      repository: quay.io/oauth2-proxy/oauth2-proxy
+      tag: v7.15.6
+      digest: ""
+      pullPolicy: IfNotPresent
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        memory: 128Mi
+    extraArgs: []
 
 service:
   type: ClusterIP
@@ -292,6 +328,9 @@ topologySpreadConstraints:
 nodeSelector:
   kubernetes.io/os: linux
 tolerations: []
+# Static host entries for the pod, for example an identity provider or Git
+# server name that internal DNS does not resolve.
+hostAliases: []
 affinity: {}
 priorityClassName: ""
 runtimeClassName: ""

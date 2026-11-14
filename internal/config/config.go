@@ -23,9 +23,13 @@ const (
 // Config contains the security- and reliability-relevant API server settings.
 // Secrets are intentionally kept separate from values which are safe to log.
 type Config struct {
-	ListenAddress          string
-	AuthMode               string
-	APIToken               string
+	ListenAddress string
+	AuthMode      string
+	APIToken      string
+	// OIDC mode: an authenticating proxy (oauth2-proxy) in the same pod
+	// sets the identity headers; KubeRight must listen on loopback only.
+	OIDCUsernamePrefix     string
+	OIDCGroupsPrefix       string
 	TokenAudience          string
 	OperationMode          string
 	WebRoot                string
@@ -179,6 +183,8 @@ func Load() (Config, error) {
 		ListenAddress:      envOr("KUBERIGHT_LISTEN_ADDR", ":8080"),
 		AuthMode:           strings.ToLower(envOr("KUBERIGHT_AUTH_MODE", "kubernetes")),
 		APIToken:           os.Getenv("KUBERIGHT_API_TOKEN"),
+		OIDCUsernamePrefix: envOr("KUBERIGHT_OIDC_USERNAME_PREFIX", "oidc:"),
+		OIDCGroupsPrefix:   envOr("KUBERIGHT_OIDC_GROUPS_PREFIX", "oidc:"),
 		TokenAudience:      os.Getenv("KUBERIGHT_TOKEN_AUDIENCE"),
 		OperationMode:      strings.ToLower(envOr("KUBERIGHT_OPERATION_MODE", ModeRecommend)),
 		WebRoot:            os.Getenv("KUBERIGHT_WEB_ROOT"),
@@ -220,7 +226,7 @@ func Load() (Config, error) {
 	}
 	// Static mode has a single shared identity, so separation of duties is
 	// only meaningful, and therefore only on by default, with Kubernetes auth.
-	if cfg.RequireDistinctApprover, err = parseBool("KUBERIGHT_REQUIRE_DISTINCT_APPROVER", cfg.AuthMode == "kubernetes"); err != nil {
+	if cfg.RequireDistinctApprover, err = parseBool("KUBERIGHT_REQUIRE_DISTINCT_APPROVER", cfg.AuthMode == "kubernetes" || cfg.AuthMode == "oidc"); err != nil {
 		return Config{}, err
 	}
 	if cfg.DatabaseMaxConns, err = parseInt("KUBERIGHT_DATABASE_MAX_CONNS", 10, 1, 100); err != nil {
@@ -303,13 +309,20 @@ func (c Config) Validate() error {
 		if len(c.APIToken) < 32 {
 			return errors.New("KUBERIGHT_API_TOKEN must contain at least 32 characters in static auth mode")
 		}
+	case "oidc":
+		// Identity headers are trusted only because nothing but the
+		// authenticating proxy in the same pod can reach the listener.
+		host, _, _ := net.SplitHostPort(c.ListenAddress)
+		if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+			return errors.New("KUBERIGHT_AUTH_MODE=oidc requires KUBERIGHT_LISTEN_ADDR on a loopback address, such as 127.0.0.1:8080, behind the authenticating proxy")
+		}
 	default:
-		return errors.New("KUBERIGHT_AUTH_MODE must be either kubernetes or static")
+		return errors.New("KUBERIGHT_AUTH_MODE must be kubernetes, oidc, or static")
 	}
 	switch c.OperationMode {
 	case ModeObserve, ModeRecommend:
 	case ModeApply:
-		if c.AuthMode != "kubernetes" {
+		if c.AuthMode != "kubernetes" && c.AuthMode != "oidc" {
 			return errors.New("apply mode requires Kubernetes authentication so every change has an audited identity")
 		}
 	default:

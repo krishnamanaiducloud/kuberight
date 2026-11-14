@@ -173,7 +173,9 @@ func configuredAccess(cfg config.Config) (AccessController, error) {
 	switch cfg.AuthMode {
 	case "static":
 		return newStaticAccess(cfg.APIToken)
-	case "kubernetes":
+	case "kubernetes", "oidc":
+		// In oidc mode authentication comes from the proxy's headers, and
+		// Kubernetes RBAC still authorizes every request.
 		restConfig, err := rest.InClusterConfig()
 		if err != nil {
 			return nil, err
@@ -206,4 +208,34 @@ func contains(values []string, expected string) bool {
 		}
 	}
 	return false
+}
+
+// Headers set by oauth2-proxy (--pass-user-headers) after an OIDC login.
+const (
+	proxyEmailHeader  = "X-Forwarded-Email"
+	proxyUserHeader   = "X-Forwarded-User"
+	proxyGroupsHeader = "X-Forwarded-Groups"
+)
+
+// proxyPrincipal builds the identity an authenticating proxy asserted. The
+// e-mail address is preferred as the stable user name; prefixes keep OIDC
+// identities apart from Kubernetes users and groups in RBAC bindings, as the
+// API server's --oidc-username-prefix does.
+func proxyPrincipal(header http.Header, usernamePrefix, groupsPrefix string) (Principal, bool) {
+	user := strings.TrimSpace(header.Get(proxyEmailHeader))
+	if user == "" {
+		user = strings.TrimSpace(header.Get(proxyUserHeader))
+	}
+	if user == "" || len(user) > 512 || strings.ContainsAny(user, "\r\n") {
+		return Principal{}, false
+	}
+	principal := Principal{Username: usernamePrefix + user, Groups: []string{"system:authenticated"}}
+	for _, value := range header.Values(proxyGroupsHeader) {
+		for _, group := range strings.Split(value, ",") {
+			if group = strings.TrimSpace(group); group != "" && len(principal.Groups) < 128 {
+				principal.Groups = append(principal.Groups, groupsPrefix+group)
+			}
+		}
+	}
+	return principal, true
 }
