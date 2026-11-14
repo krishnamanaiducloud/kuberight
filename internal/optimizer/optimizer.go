@@ -992,10 +992,16 @@ func Recommend(input Input) (Recommendation, error) {
 		memoryLimit = max(memoryLimit, reductionFloor(input.MemoryLimitBytes, memoryMaximumReduction))
 		memoryLimit = max(memoryLimit, memoryRequest)
 		// A memory limit below an observed peak would have OOM-killed the
-		// container, so the limit always keeps headroom above the peak.
-		if peakFloor := int64(math.Ceil(memoryStats.Max * (1 + memoryLimitPeakHeadroom))); memoryLimit < peakFloor {
-			memoryLimit = min(peakFloor, policy.MaximumMemoryBytes)
-			warnings = append(warnings, "memory limit was raised to keep 10% headroom above the observed peak")
+		// container, and later peaks can exceed it, so the limit keeps
+		// headroom above the peak that grows with the peak's variation.
+		headroom := memoryPeakHeadroom(input.MemorySamplesBytes, input.SampleIntervalSeconds)
+		if peakFloor := int64(math.Ceil(memoryStats.Max * (1 + headroom))); memoryLimit < peakFloor {
+			// Never raise the limit only to add headroom the current limit lacks.
+			peakFloor = min(peakFloor, max(memoryLimit, input.MemoryLimitBytes, int64(math.Ceil(memoryStats.Max*(1+memoryLimitPeakHeadroom)))))
+			if memoryLimit < peakFloor {
+				memoryLimit = min(peakFloor, policy.MaximumMemoryBytes)
+				warnings = append(warnings, fmt.Sprintf("memory limit keeps %.0f%% headroom above the observed peak, because the peak varies between periods", headroom*100))
+			}
 		}
 	} else {
 		warnings = append(warnings, "memory limit is absent and no new limit was introduced")

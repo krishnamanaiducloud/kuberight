@@ -120,3 +120,64 @@ func TestTrendHorizonIsValidated(t *testing.T) {
 		t.Fatal("a 31-day trend horizon was accepted")
 	}
 }
+
+func dailyMemory(days int, peak func(day int) float64) []float64 {
+	samples := make([]float64, 0, days*288)
+	for day := range days {
+		for step := range 288 {
+			value := 0.5 * peak(day)
+			if step == 200 {
+				value = peak(day)
+			}
+			samples = append(samples, value)
+		}
+	}
+	return samples
+}
+
+func TestMemoryPeakHeadroomGrowsWithPeakVariation(t *testing.T) {
+	steady := dailyMemory(7, func(int) float64 { return 1 << 30 })
+	if got := memoryPeakHeadroom(steady, 300); got != memoryLimitPeakHeadroom {
+		t.Fatalf("steady peaks: headroom %.3f, want the 10%% minimum", got)
+	}
+	// Daily peaks of 1.0, 1.2, 1.0, 1.2 … GiB vary by about 9.6%, so the
+	// headroom is three times that.
+	alternating := dailyMemory(7, func(day int) float64 { return float64(1<<30) * (1 + 0.2*float64(day%2)) })
+	if got := memoryPeakHeadroom(alternating, 300); got < 0.25 || got > 0.32 {
+		t.Fatalf("varying peaks: headroom %.3f, want about 0.29", got)
+	}
+	wild := dailyMemory(7, func(day int) float64 { return float64(1<<30) * float64(1+3*(day%2)) })
+	if got := memoryPeakHeadroom(wild, 300); got != maximumMemoryLimitPeakHeadroom {
+		t.Fatalf("wild peaks: headroom %.3f, want the 50%% maximum", got)
+	}
+	// Shorter than two days: quarters of the history are compared.
+	if got := memoryPeakHeadroom(alternating[:288], 300); got < memoryLimitPeakHeadroom || got > maximumMemoryLimitPeakHeadroom {
+		t.Fatalf("one day: headroom %.3f outside the bounds", got)
+	}
+	if got := memoryPeakHeadroom([]float64{1, 2}, 300); got != memoryLimitPeakHeadroom {
+		t.Fatalf("too few samples: headroom %.3f", got)
+	}
+}
+
+func TestMemoryLimitKeepsHeadroomAboveVaryingPeaks(t *testing.T) {
+	memory := dailyMemory(7, func(day int) float64 { return float64(1<<30) * (1 + 0.2*float64(day%2)) })
+	cpu := make([]float64, len(memory))
+	for index := range cpu {
+		cpu[index] = 200
+	}
+	recommendation, err := Recommend(Input{
+		Namespace: "shop", Workload: "api", Container: "app",
+		CPURequestsMilli: 1000, CPULimitMilli: 2000, MemoryRequestsBytes: 1717986918, MemoryLimitBytes: 1717986918,
+		CPUSamplesMilli: cpu, MemorySamplesBytes: memory, SampleIntervalSeconds: 300,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	peak := 1.2 * float64(1<<30)
+	if limit := float64(recommendation.MemoryLimitBytes); limit < peak*1.25 {
+		t.Fatalf("memory limit %.0f leaves less than 25%% headroom above a %.0f peak that varies daily", limit, peak)
+	}
+	if recommendation.MemoryLimitBytes >= 1717986918 {
+		t.Fatalf("the limit was not reduced at all: %d", recommendation.MemoryLimitBytes)
+	}
+}
