@@ -383,7 +383,11 @@ func resourceName(resource string) string {
 func (server *apiServer) prometheusMetrics(w http.ResponseWriter, r *http.Request) {
 	server.metrics.render(w)
 	server.renderVerificationMetrics(r.Context(), w)
-	renderAutomationMetrics(w)
+	interval := time.Duration(0)
+	if server.config.OperationMode == config.ModeApply {
+		interval = server.config.Normalized().AutomationInterval
+	}
+	renderAutomationMetrics(w, interval)
 	server.renderIntegrationMetrics(r.Context(), w)
 }
 

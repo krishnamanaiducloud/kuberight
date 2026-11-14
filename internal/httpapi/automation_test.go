@@ -318,7 +318,7 @@ func TestAutomationRunsAreSingletonsAndExportMetrics(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	harness.api.handler.ServeHTTP(recorder, request)
 	metrics := recorder.Body.String()
-	for _, required := range []string{`kuberight_automation_changes_total{action="apply",outcome="applied"}`, "kuberight_automation_busy_total", "kuberight_automation_last_pass_timestamp_seconds"} {
+	for _, required := range []string{`kuberight_automation_changes_total{action="apply",outcome="applied"}`, "kuberight_automation_busy_total", "kuberight_automation_last_pass_timestamp_seconds", "kuberight_automation_interval_seconds 900\n"} {
 		if !strings.Contains(metrics, required) {
 			t.Fatalf("metrics lack %q:\n%s", required, metrics)
 		}

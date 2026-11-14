@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -103,7 +104,15 @@ func recordAutomationPass(report AutomationReport) {
 	}
 }
 
-func renderAutomationMetrics(w http.ResponseWriter) {
+// renderAutomationMetrics writes the automation metrics. interval is the
+// configured pass interval in apply mode and zero otherwise; dashboards divide
+// the time since the last pass by it.
+func renderAutomationMetrics(w http.ResponseWriter, interval time.Duration) {
+	if interval > 0 {
+		_, _ = fmt.Fprintln(w, "# HELP kuberight_automation_interval_seconds Configured interval between applying passes.")
+		_, _ = fmt.Fprintln(w, "# TYPE kuberight_automation_interval_seconds gauge")
+		_, _ = fmt.Fprintf(w, "kuberight_automation_interval_seconds %s\n", strconv.FormatFloat(interval.Seconds(), 'f', -1, 64))
+	}
 	automationMetrics.Lock()
 	defer automationMetrics.Unlock()
 	_, _ = fmt.Fprintln(w, "# HELP kuberight_automation_changes_total Automated changes attempted by this process, by action and outcome.")

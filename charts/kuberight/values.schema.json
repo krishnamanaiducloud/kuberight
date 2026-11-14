@@ -361,7 +361,7 @@
     "metrics": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "path", "serviceMonitor", "prometheusRule"],
+      "required": ["enabled", "path", "serviceMonitor", "prometheusRule", "grafanaDashboard"],
       "properties": {
         "enabled": { "type": "boolean" },
         "path": { "type": "string", "pattern": "^/" },
@@ -385,6 +385,17 @@
           "properties": {
             "enabled": { "type": "boolean" },
             "labels": { "$ref": "#/definitions/stringMap" }
+          }
+        },
+        "grafanaDashboard": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "namespace", "labels", "annotations"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "namespace": { "type": "string", "pattern": "^([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)?$" },
+            "labels": { "$ref": "#/definitions/stringMap" },
+            "annotations": { "$ref": "#/definitions/stringMap" }
           }
         }
       }

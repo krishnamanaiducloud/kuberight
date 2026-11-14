@@ -308,6 +308,15 @@ metrics:
   prometheusRule:
     enabled: false
     labels: {}
+  # A ConfigMap holding the KubeRight Grafana dashboard
+  # (dashboards/kuberight.json), labeled for the Grafana dashboard sidecar.
+  # Set namespace when the sidecar only watches Grafana's namespace.
+  grafanaDashboard:
+    enabled: false
+    namespace: ""
+    labels:
+      grafana_dashboard: "1"
+    annotations: {}
 
 ml:
   enabled: false
