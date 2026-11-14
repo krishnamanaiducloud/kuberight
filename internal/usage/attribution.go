@@ -33,7 +33,11 @@ const (
 	// shares are reported; larger shares make the evidence incomplete.
 	maximumAmbiguousShare    = 0.05
 	maximumUnattributedShare = 0.05
-	maximumLivePods          = 10_000
+	// recentOwnership covers Prometheus's default 5-minute lookback plus
+	// scrape delay for series that linger after their pod is deleted.
+	recentOwnership           = 10 * time.Minute
+	recentOwnershipResolution = time.Minute
+	maximumLivePods           = 10_000
 	// LivePodsOnly queries embed every live UID, so they keep the previous
 	// exact-query population bound.
 	maximumLivePodsOnly    = 256
@@ -528,7 +532,12 @@ func (plan attributionPlan) historyRequests() historyRequests {
 		memoryCount:  plan.rangeRequest("count(" + plan.memoryPod + ")"),
 		runningCount: plan.rangeRequest("count(" + plan.running + ")"),
 		ambiguous:    plan.rangeRequest("count(count by (namespace, pod) (" + plan.owned + ") > 1)"),
-		unattributed: plan.rangeRequest("count(max by (namespace, pod) (container_memory_working_set_bytes{" + plan.selector + "}) unless on (namespace, pod) " + plan.owned + ")"),
+		// cAdvisor exposes samples with explicit timestamps, so Prometheus
+		// writes no staleness markers for them: a deleted container's series
+		// stays visible for the lookback delta after kube-state-metrics has
+		// dropped the pod. Pods owned within the recent past are therefore not
+		// unattributable; their trailing samples are simply not joined.
+		unattributed: plan.rangeRequest("count(max by (namespace, pod) (container_memory_working_set_bytes{" + plan.selector + "}) unless on (namespace, pod) max_over_time((max by (namespace, pod) (" + plan.owned + "))[" + promDuration(recentOwnership) + ":" + promDuration(recentOwnershipResolution) + "]))"),
 		podRunning:   plan.instantRequest("count_over_time((max by (pod, uid, created_by_name) (" + plan.running + "))" + rng + ")"),
 		podCPU:       plan.instantRequest("count_over_time((" + plan.cpuPerPod + ")" + rng + ")"),
 		podMemory:    plan.instantRequest("count_over_time((" + plan.memoryPod + ")" + rng + ")"),

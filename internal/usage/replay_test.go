@@ -169,6 +169,11 @@ func buildReplayFixture() *replayFixture {
 		scaled[index].to = replayMiddle.Add(-time.Minute)
 	}
 	scaled[5].cpuMilli = constant(1200)
+	// cAdvisor series carry explicit timestamps and linger after deletion
+	// while kube-state-metrics drops the pod at once.
+	for index := 2; index < 6; index++ {
+		scaled[index].reportTo = replayMiddle.Add(4 * time.Minute)
+	}
 	all(scaled)
 
 	// partial: three running replicas, only one exports cAdvisor metrics.
@@ -381,7 +386,7 @@ func TestAttributionReplayAgainstPrometheus(t *testing.T) {
 	t.Run("scale-down keeps removed replica peak", func(t *testing.T) {
 		result := history(t, "Deployment", "scaledown", replayIdentity(replayCreated, 2, livePod("scaledown-aaaa1-p0000", "scaledown-aaaa1-0", replayOrigin), livePod("scaledown-aaaa1-p0001", "scaledown-aaaa1-1", replayOrigin)))
 		coverage := result.ReplicaCoverage
-		if !coverage.Complete || coverage.PeakExpectedReplicas != 6 || coverage.MinimumExpectedReplicas != 2 || coverage.ScalingEvents != 1 || coverage.DiscoveredReplicas != 6 || math.Abs(maxValue(result.CPU)-1200) > 1 {
+		if !coverage.Complete || coverage.UnattributedSteps != 0 || coverage.PeakExpectedReplicas != 6 || coverage.MinimumExpectedReplicas != 2 || coverage.ScalingEvents != 1 || coverage.DiscoveredReplicas != 6 || math.Abs(maxValue(result.CPU)-1200) > 1 {
 			t.Fatalf("coverage=%+v cpuMax=%v", coverage, maxValue(result.CPU))
 		}
 	})
