@@ -501,3 +501,11 @@ func TestSpecContextHelpers(t *testing.T) {
 		t.Fatal("run-to-completion init containers are not sizable containers")
 	}
 }
+
+func TestPercentTextKeepsSmallValuesVisible(t *testing.T) {
+	for ratio, want := range map[float64]string{0: "0%", 0.0004: "<0.1%", 0.0028: "0.3%", 0.095: "9.5%", 0.5: "50%", 0.954: "95%", 1.2: "120%"} {
+		if got := percentText(ratio); got != want {
+			t.Errorf("percentText(%v) = %q, want %q", ratio, got, want)
+		}
+	}
+}

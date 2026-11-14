@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/http"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/kuberight/kuberight/internal/config"
@@ -402,16 +403,29 @@ func postChangeChecks(record repository.RecommendationRecord, history usage.Hist
 	}
 	checks = append(checks, repository.VerificationCheck{
 		Name: "Peak memory vs request", After: ratioPointer(requestRatio),
-		Detail: fmt.Sprintf("peak memory reached %.0f%% of the approved request", requestRatio*100),
+		Detail: "peak memory reached " + percentText(requestRatio) + " of the approved request",
 	})
 	if record.MemoryLimitBytes > 0 {
 		limitRatio := peakMemory / float64(record.MemoryLimitBytes)
 		checks = append(checks, repository.VerificationCheck{
 			Name: "Peak memory vs limit", After: ratioPointer(limitRatio), Regressed: limitRatio >= 0.95,
-			Detail: fmt.Sprintf("peak memory reached %.0f%% of the approved limit", limitRatio*100),
+			Detail: "peak memory reached " + percentText(limitRatio) + " of the approved limit",
 		})
 	}
 	return checks
+}
+
+// percentText formats a ratio as a percentage, keeping one decimal below 10%
+// so a small but nonzero value is not shown as 0%.
+func percentText(ratio float64) string {
+	percent := ratio * 100
+	if percent > 0 && percent < 0.1 {
+		return "<0.1%"
+	}
+	if percent > 0 && percent < 10 {
+		return strconv.FormatFloat(percent, 'f', 1, 64) + "%"
+	}
+	return strconv.FormatFloat(percent, 'f', 0, 64) + "%"
 }
 
 // renderVerificationMetrics derives gauges from durable outcomes, so restarts
