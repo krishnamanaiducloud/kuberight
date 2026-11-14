@@ -29,11 +29,22 @@ KubeRight is a Kubernetes resource-inventory and right-sizing project. It combin
 - Forecasts from the forecasting service using Prometheus history, with confidence intervals and model diagnostics.
 - Request-based monthly cost estimates priced per namespace from [OpenCost](#cost-and-opencost) when configured, or from operator-configured unit prices. Every savings item names its price source.
 - Persistent scoped policies (global, namespace, workload, container) with deterministic precedence. A cluster-specific scope wins over an all-clusters scope at the same level, then higher priority wins. Duplicate enabled scopes with equal priority are rejected, and resolution lists every applicable policy in order.
-- Bearer authentication using Kubernetes `TokenReview` plus per-request `SubjectAccessReview`, or a development-only static token mode.
-- A dashboard backed by the versioned Go API. Views whose integrations are unavailable display that state instead of fabricated data.
+- Authentication:
+  - Bearer tokens checked with Kubernetes `TokenReview`.
+  - [Browser single sign-on](#single-sign-on) with any OIDC provider.
+  - A development-only static token.
+- Every request is authorized with `SubjectAccessReview`. Verified identities and decisions are cached briefly; see [Single sign-on](#single-sign-on).
+- [GitOps pull requests](#gitops-pull-requests): an approved recommendation can be proposed as a pull request that edits the workload's manifest on GitHub or Gitea/Forgejo.
+- A dashboard backed by the versioned Go API. It passes an automated WCAG 2.1 AA audit on every view. Views whose integrations are unavailable display that state instead of fabricated data.
 - Secure-by-default workload settings in a Helm chart, plus development, production-shaped, OpenShift, and cluster-wide rendering profiles.
 
-KubeRight does **not** ingest cloud billing, provide a complete FinOps ledger, register remote clusters, or create GitOps pull requests. It never changes workloads unless `operationMode=apply` is set and a namespace opts in. ML model files and the webhook delivery queue are pod/process-local. See [known limitations](docs/known-limitations.md) before evaluating it for production.
+KubeRight does **not**:
+
+- ingest cloud billing or provide a complete FinOps ledger;
+- register remote clusters;
+- open GitLab merge requests.
+
+It never changes workloads unless `operationMode=apply` is set and a namespace opts in. The webhook delivery queue is process-local. Persisted ML models are signed, and the forecasting service refuses any model file whose signature does not verify. See [known limitations](docs/known-limitations.md) before evaluating it for production.
 
 ## Quick start from source
 
@@ -297,6 +308,70 @@ Applying passes are singletons across API replicas. A PostgreSQL advisory lock (
 
 Apply mode requires `auth.mode=kubernetes` and `rbac.scope=cluster`. It adds only `patch` on those three kinds.
 
+## GitOps pull requests
+
+When Argo CD or Flux owns a workload, changing it in the cluster would be reverted, so KubeRight proposes the change in Git instead. Configure a provider:
+
+```sh
+kubectl -n kuberight create secret generic kuberight-gitops --from-literal=token=<token with contents and pull-request write>
+helm upgrade --install kuberight charts/kuberight --namespace kuberight \
+  --set gitops.provider=github --set gitops.repository=acme/deploy --set gitops.token.existingSecret=kuberight-gitops
+```
+
+For GitHub Enterprise, set `gitops.apiURL` to `https://<host>/api/v3`. For Gitea or Forgejo, use `gitops.provider=gitea` and set `gitops.apiURL` to `https://<host>/api/v1`.
+
+Then annotate each workload with the file that defines it:
+
+```sh
+kubectl -n shop annotate deploy checkout kuberight.io/gitops-path=apps/shop/checkout.yaml
+# optional: kuberight.io/gitops-repository=acme/deploy kuberight.io/gitops-base-branch=main
+```
+
+For an approved recommendation, the drawer's **Open pull request** button (or `POST /api/v1/recommendations/{id}/pull-request`) does the following:
+
+1. Reads the file from the base branch.
+2. Changes only the container's requests and limits, at their exact positions. Comments, quoting, ordering, and other documents in the file are kept. Missing keys are inserted with matching indentation.
+3. Commits the change to the branch `kuberight/<id>`.
+4. Opens a pull request with a current-versus-recommended table.
+
+Opening it again returns the same pull request. The request is refused when:
+
+- the recommendation is not approved, or the workload has changed since;
+- the workload has no annotation;
+- the manifest already has the values;
+- the YAML layout cannot be edited in place.
+
+Every attempt is audited.
+
+The permission is `create` on `recommendations/pullrequest` in the `kuberight.io` group.
+
+## Single sign-on
+
+`auth.mode=oidc` adds an [oauth2-proxy](https://oauth2-proxy.github.io/oauth2-proxy/) sidecar for browser sign-in with Entra ID, Okta, Google, Keycloak, Dex, or any other OIDC provider:
+
+```sh
+kubectl -n kuberight create secret generic kuberight-oidc \
+  --from-literal=client-secret=<client secret> \
+  --from-literal=cookie-secret="$(openssl rand -base64 32 | tr -- '+/' '-_')"
+helm upgrade --install kuberight charts/kuberight --namespace kuberight \
+  --set auth.mode=oidc --set auth.oidc.issuerURL=https://login.example.com \
+  --set auth.oidc.clientID=kuberight --set auth.oidc.existingSecret=kuberight-oidc \
+  --set auth.oidc.redirectURL=https://kuberight.example.com/oauth2/callback
+```
+
+- **Trust boundary:** the API listens on loopback only, so the identity headers can come only from the sidecar.
+- **Authorization:** every request is still checked with `SubjectAccessReview`. Bind users and groups with the `oidc:` prefixes, for example `--user=oidc:alice@example.com`.
+- **Apply mode** accepts OIDC identities, and the creator of a recommendation still cannot approve it.
+- **Session cookie:** `HttpOnly`, `Secure`, and `SameSite=Lax`. API calls without a session get `401` instead of a redirect.
+
+In token mode, verified identities are cached for up to 2 minutes (never past the token's expiry), allow decisions for 30 seconds, and denials for 10 seconds. A revoked RoleBinding therefore takes effect within 30 seconds. Under load, three replicas served about 520 requests per second; without the cache, client-side rate limiting had capped them at about 5.
+
+## Data safety
+
+- **Upgrades:** every schema version since the first is upgraded to the current one with data in place, and every down migration is applied in reverse and re-applied, in the PostgreSQL test suite.
+- **Backups:** back up the database with `pg_dump -Fc`. A live restore with `pg_restore` into a new database reproduced every table byte for byte (row counts and content hashes). A second KubeRight release pointed at the restore served the same recommendations and audit trail, and the audit log stayed append-only.
+- **ML models:** set `ml.persistence.signingKey.existingSecret`, which the chart requires with `ml.persistence.enabled`. Each model file is signed with HMAC-SHA256 and verified before it is loaded. A file that does not verify is never deserialized, and the model is retrained.
+
 ## Cost and OpenCost
 
 Set `cost.opencost.url` (for example `http://opencost.opencost.svc:9003` with `cost.opencost.allowHTTP=true`) to price each namespace from the OpenCost allocation API. KubeRight takes the effective unit prices from the last 7 days: `cpuCost / cpuCoreHours` and `ramCost / ramGiBHours`. These reflect the cluster's cloud or custom pricing.
@@ -344,9 +419,16 @@ The chart was installed in apply mode on a two-node kind cluster running Kuberne
 | Approval and automation | The creator could not approve their own recommendation. A second identity approved it. The background pass patched the Deployment under the `kuberight-automation` field manager with exactly the recommended values and did not reapply. On PostgreSQL, two approved changes were applied in one pass under the advisory lock. |
 | Verification | The applied change was `verified` from exact pod-UID evidence over 3h20m: no OOM kills, restarts, or throttling. A follow-up reduction for the same workload was held by the 24-hour cooldown, detected from Prometheus resource history. |
 | Cost | Savings were priced from OpenCost's per-namespace allocation (`priceSource: opencost`). |
-| Dashboards | The web UI at 1440 and 390 px wide showed no horizontal overflow and no console errors. The Grafana dashboard loaded from the chart ConfigMap with no panel errors. |
+| Dashboards | Grafana loaded the chart's dashboard ConfigMap with no panel errors. |
+| Load and concurrency | Three replicas on PostgreSQL were driven by fortio inside the cluster at 24 connections: 224 requests per second on the recommendations list, with a 93 ms median and 352 ms p99. Twelve concurrent creates with one Idempotency-Key produced one record. Eight concurrent automation runs applied a change once, and the other seven were refused by the lock. |
+| Accessibility | axe-core (WCAG 2.0/2.1 A and AA) on all 20 views against live data, at 1440 and 390 px: no violations, no horizontal overflow, no console errors. |
+| Backup and restore | The `pg_dump`/`pg_restore` restore was identical to the source on every table. A second release served the same recommendations and audit trail from it. |
+| GitOps | Against a real Gitea, an approved recommendation opened a mergeable pull request. The diff changed only the four resource values and kept the comments and the second document. A repeated request returned the same pull request. |
+| Single sign-on | Through Dex and the chart's oauth2-proxy sidecar, a browser signed in and used the API under `oidc:alice@example.com`. A write sent with forged `X-Forwarded-*` headers for another user and `system:masters` was still recorded as alice's. Requests without a session got 401. |
+| ML models | A persisted model was reused after its pod was replaced. After one byte was appended to the file on the volume, it was refused before unpickling ("signature does not match") and retrained. |
+| OpenShift conditions | Under Pod Security `restricted`, with arbitrary UIDs (1000680000 and 1000680001, GID 0), read-only root filesystems, and OpenShift's Route CRD: both pods ran, the Route validated, and the ML service wrote signed models. |
 
-Real infrastructure found six defects that unit tests had not caught, and all are fixed:
+Real infrastructure found 13 defects that unit tests had not caught, and all are fixed:
 
 - Deleted pods' cAdvisor series lingered and were flagged as foreign usage.
 - A failed OpenCost query was cached for 15 minutes and shown as $0.00.
@@ -354,8 +436,15 @@ Real infrastructure found six defects that unit tests had not caught, and all ar
 - A one-step CPU gap after node restarts blocked every recommendation.
 - Counters that first appeared at 1 hid the first failure from alerts.
 - The dashboard's savings panels assumed one scrape label layout.
+- Uncached authentication capped the API at 5 requests per second.
+- A cooldown was missed when the analysis window was shorter than the cooldown.
+- Empty PostgreSQL pages were returned as `null` and broke the Fleet view.
+- Serious WCAG violations appeared on 19 of 20 views.
+- The memory-limit headroom was too small for real week-to-week memory growth. The [real-trace benchmark](#benchmarks) found this.
+- OIDC mode lacked the RBAC for `SubjectAccessReview`.
+- Policy bounds that a browser cannot represent made every dashboard policy edit fail.
 
-This was a functional run on a small cluster, not an accuracy evaluation on production traces.
+These were functional runs on a small cluster. Accuracy is evaluated separately, on [public production traces](#benchmarks).
 
 ## Repository map
 
@@ -366,6 +455,8 @@ This was a functional run on a small cluster, not an accuracy evaluation on prod
 | `internal/optimizer/stability.go`, `runtime.go` | Hysteresis, cooldown, oscillation, and confirmation controls; JVM memory rules |
 | `internal/automation/`, `internal/httpapi/automation.go` | Opt-in continuous rightsizing and rollback |
 | `scripts/attribution-replay.sh` | Real-Prometheus replay of the attribution queries |
+| `internal/gitops/` | In-place manifest editing and the GitHub and Gitea/Forgejo pull-request providers |
+| `internal/benchmark/traces.go`, `scripts/convert-bitbrains-trace.py` | Real-trace evaluation with rolling-origin folds and bootstrap intervals |
 | `scripts/verify-monitoring.sh`, `charts/kuberight/dashboards/` | promtool tests for the alerts and dashboard queries; the Grafana dashboard |
 | `internal/repository/postgres/migrations/` | Embedded, checksummed PostgreSQL schema migrations |
 | `web/` | React and TypeScript dashboard |
