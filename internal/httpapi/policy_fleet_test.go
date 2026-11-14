@@ -153,3 +153,23 @@ func TestPolicyAmbiguityIsRejectedAndResolutionExplainsCandidates(t *testing.T) 
 		t.Fatalf("candidates = %v", candidates)
 	}
 }
+
+func TestPolicyBoundsRoundedByABrowserAreAccepted(t *testing.T) {
+	api := newTestAPI(t, nil, Dependencies{})
+	// 2^61 read as a double and written back, as a browser does with the
+	// earlier default maximum.
+	body := `{"name":"from-dashboard","scope":{"level":"namespace","namespace":"shop"},"priority":1,"enabled":true,` +
+		`"policy":{"cpuPercentile":0.95,"memoryPercentile":0.99,"cpuSafetyMargin":0.3,"memorySafetyMargin":0.25,"limitSafetyMargin":0.5,` +
+		`"minimumCpuMilli":50,"minimumMemoryBytes":67108864,"maximumCpuMilli":1000000000,"maximumMemoryBytes":2305843009213694000,` +
+		`"maximumReduction":0.2,"minimumSamples":30,"highConfidenceSamples":500}}`
+	response, decoded := api.do(t, http.MethodPost, "/api/v1/policies", "alice", body)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%v", response.Code, decoded)
+	}
+	if got := decoded["policy"].(map[string]any)["maximumMemoryBytes"].(float64); got != float64(optimizer.MaxPolicyMemoryBytes) {
+		t.Fatalf("maximumMemoryBytes = %.0f, want the 1 PiB bound", got)
+	}
+	if maximum := optimizer.DefaultPolicy().MaximumMemoryBytes; float64(maximum) != float64(int64(float64(maximum))) || maximum > 1<<53 {
+		t.Fatalf("the default maximum %d is not exact in a JSON double", maximum)
+	}
+}

@@ -18,6 +18,10 @@ const (
 	maxSamples     = 100_000
 	maxCPUMilli    = int64(1_000_000_000)
 	maxMemoryBytes = int64(math.MaxInt64 / 4)
+	// MaxPolicyMemoryBytes (1 PiB) is the largest policy memory bound. It is
+	// exact in a JSON number read by a browser, unlike maxMemoryBytes, so a
+	// policy edited in the dashboard keeps its value.
+	MaxPolicyMemoryBytes = int64(1 << 50)
 )
 
 // AlgorithmVersion changes whenever recommendation semantics change in a way
@@ -100,7 +104,7 @@ func DefaultPolicy() Policy {
 		MinimumCPUMilli:       50,
 		MinimumMemoryBytes:    64 * 1024 * 1024,
 		MaximumCPUMilli:       maxCPUMilli,
-		MaximumMemoryBytes:    maxMemoryBytes,
+		MaximumMemoryBytes:    MaxPolicyMemoryBytes,
 		MaximumReduction:      0.20,
 		MinimumSamples:        30,
 		HighConfidenceSamples: 500,

@@ -78,6 +78,7 @@ func (server *apiServer) createPolicy(w http.ResponseWriter, r *http.Request) {
 		writeDecodeError(w, r, err)
 		return
 	}
+	request.Policy = clampPolicyBounds(request.Policy)
 	if !server.authorize(w, r, AccessAttributes{Verb: "create", Resource: "policies", Namespace: request.Scope.Namespace}) {
 		return
 	}
@@ -129,6 +130,7 @@ func (server *apiServer) updatePolicy(w http.ResponseWriter, r *http.Request) {
 		writeDecodeError(w, r, err)
 		return
 	}
+	request.Policy = clampPolicyBounds(request.Policy)
 	existing, err := server.repository.GetPolicy(r.Context(), id)
 	if server.policyError(w, r, "get policy", err) {
 		return
@@ -251,4 +253,13 @@ func (server *apiServer) policyError(w http.ResponseWriter, r *http.Request, ope
 		server.repositoryFailure(w, r, operation, err)
 	}
 	return true
+}
+
+// clampPolicyBounds treats maximums above the supported bounds as no bound.
+// Browsers read JSON numbers as doubles, so a large stored maximum can come
+// back from the dashboard rounded just above the bound.
+func clampPolicyBounds(policy optimizer.Policy) optimizer.Policy {
+	policy.MaximumCPUMilli = min(policy.MaximumCPUMilli, 1_000_000_000)
+	policy.MaximumMemoryBytes = min(policy.MaximumMemoryBytes, optimizer.MaxPolicyMemoryBytes)
+	return policy
 }
