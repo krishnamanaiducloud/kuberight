@@ -191,10 +191,12 @@ func (opencost *OpenCost) fetch(ctx context.Context) (map[string]Prices, Prices,
 				// __idle__, __unallocated__, and similar are not namespaces.
 				continue
 			}
-			total.CPUCoreHours += item.CPUCoreHours
-			total.CPUCost += item.CPUCost
-			total.RAMByteHours += item.RAMByteHours
-			total.RAMCost += item.RAMCost
+			// OpenCost reports small negative hours and costs for pods that
+			// started inside the window; they carry no pricing information.
+			total.CPUCoreHours += math.Max(0, item.CPUCoreHours)
+			total.CPUCost += math.Max(0, item.CPUCost)
+			total.RAMByteHours += math.Max(0, item.RAMByteHours)
+			total.RAMCost += math.Max(0, item.RAMCost)
 			if value, ok := item.prices(SourceOpenCost); ok {
 				prices[namespace] = value
 			}

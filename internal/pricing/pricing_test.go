@@ -94,3 +94,34 @@ func TestOpenCostEndpointValidation(t *testing.T) {
 		t.Fatalf("static prices = %+v", prices)
 	}
 }
+
+// liveAllocation is a trimmed OpenCost 1.121.4 response from a kind cluster
+// with default on-prem pricing, including the negative values OpenCost
+// reports for a namespace whose pods had just started.
+const liveAllocation = `{"code":200,"data":[{
+  "shop": {"name":"shop","cpuCoreHours":1.738,"cpuCost":0.05493,"ramByteHours":618200000,"ramCost":0.00244},
+  "opencost": {"name":"opencost","cpuCoreHours":-0.00184,"cpuCost":-0.00006,"ramByteHours":-4929000,"ramCost":-0.00002},
+  "monitoring": {"name":"monitoring","cpuCoreHours":0,"cpuCost":0,"ramByteHours":0,"ramCost":0}
+}]}`
+
+func TestOpenCostLiveResponseShape(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(liveAllocation)) }))
+	defer server.Close()
+	opencost, err := NewOpenCost(OpenCostOptions{Endpoint: server.URL, AllowHTTP: true, Fallback: Static{CPUCoreHour: 1, MemoryGiBHour: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shop := opencost.Prices(context.Background(), "shop")
+	// OpenCost's default on-prem prices: about 0.0316 per core-hour and
+	// 0.0042 per GiB-hour.
+	if shop.Source != SourceOpenCost || math.Abs(shop.CPUCoreHour-0.0316) > 0.0001 || math.Abs(shop.MemoryGiBHour-0.00424) > 0.00002 {
+		t.Fatalf("shop = %+v", shop)
+	}
+	// Negative and zero allocations get the cluster blend, which is not
+	// distorted by the negative values.
+	for _, namespace := range []string{"opencost", "monitoring"} {
+		if prices := opencost.Prices(context.Background(), namespace); prices.Source != SourceOpenCostCluster || math.Abs(prices.CPUCoreHour-shop.CPUCoreHour) > 1e-9 {
+			t.Fatalf("%s = %+v", namespace, prices)
+		}
+	}
+}
