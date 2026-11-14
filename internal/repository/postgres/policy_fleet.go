@@ -117,7 +117,7 @@ ORDER BY updated_at DESC, id DESC LIMIT $5 OFFSET $6`, options.Cluster, options.
 		return repository.PolicyListResult{}, err
 	}
 	defer rows.Close()
-	result := repository.PolicyListResult{Page: options.Page, PageSize: options.PageSize}
+	result := repository.PolicyListResult{Items: []repository.PolicyRecord{}, Page: options.Page, PageSize: options.PageSize}
 	for rows.Next() {
 		var record repository.PolicyRecord
 		var payload []byte
@@ -292,7 +292,7 @@ func listSchedules(ctx context.Context, db queryer, o repository.FleetListOption
 		return repository.FleetScheduleListResult{}, err
 	}
 	defer rows.Close()
-	result := repository.FleetScheduleListResult{Page: o.Page, PageSize: o.PageSize}
+	result := repository.FleetScheduleListResult{Items: []repository.FleetSchedule{}, Page: o.Page, PageSize: o.PageSize}
 	for rows.Next() {
 		var record repository.FleetSchedule
 		var payload []byte
@@ -415,7 +415,7 @@ func listScans(ctx context.Context, db queryer, o repository.FleetListOptions) (
 		return repository.FleetScanListResult{}, err
 	}
 	defer rows.Close()
-	result := repository.FleetScanListResult{Page: o.Page, PageSize: o.PageSize}
+	result := repository.FleetScanListResult{Items: []repository.FleetScan{}, Page: o.Page, PageSize: o.PageSize}
 	for rows.Next() {
 		var record repository.FleetScan
 		var payload, failurePayload []byte

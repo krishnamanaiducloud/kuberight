@@ -120,7 +120,7 @@ func (memory *Memory) ListPolicies(ctx context.Context, options PolicyListOption
 	total := len(items)
 	start := min((options.Page-1)*options.PageSize, total)
 	end := min(start+options.PageSize, total)
-	return PolicyListResult{Items: append([]PolicyRecord(nil), items[start:end]...), Page: options.Page, PageSize: options.PageSize, Total: total}, nil
+	return PolicyListResult{Items: append([]PolicyRecord{}, items[start:end]...), Page: options.Page, PageSize: options.PageSize, Total: total}, nil
 }
 
 func (memory *Memory) UpdatePolicy(ctx context.Context, id string, expectedVersion int64, mutation PolicyMutation) (PolicyRecord, error) {

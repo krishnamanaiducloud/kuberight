@@ -41,6 +41,36 @@ func Run(t *testing.T, newStore func(*testing.T) repository.Store) {
 	t.Helper()
 	ctx := context.Background()
 
+	t.Run("empty stores list empty, non-nil pages", func(t *testing.T) {
+		// API responses encode these pages directly; a nil slice becomes
+		// JSON null, which clients cannot iterate.
+		store := newStore(t)
+		recommendations, err := store.ListRecommendations(ctx, repository.ListOptions{Page: 1, PageSize: 10})
+		if err != nil || recommendations.Items == nil {
+			t.Fatalf("recommendations: %#v err=%v", recommendations.Items, err)
+		}
+		audit, err := store.ListAuditEvents(ctx, 1, 10)
+		if err != nil || audit.Items == nil {
+			t.Fatalf("audit: %#v err=%v", audit.Items, err)
+		}
+		policies, err := store.ListPolicies(ctx, repository.PolicyListOptions{Page: 1, PageSize: 10})
+		if err != nil || policies.Items == nil {
+			t.Fatalf("policies: %#v err=%v", policies.Items, err)
+		}
+		schedules, err := store.ListFleetSchedules(ctx, repository.FleetListOptions{Page: 1, PageSize: 10})
+		if err != nil || schedules.Items == nil {
+			t.Fatalf("fleet schedules: %#v err=%v", schedules.Items, err)
+		}
+		scans, err := store.ListFleetScans(ctx, repository.FleetListOptions{Page: 1, PageSize: 10})
+		if err != nil || scans.Items == nil {
+			t.Fatalf("fleet scans: %#v err=%v", scans.Items, err)
+		}
+		outcomes, err := store.ListVerificationOutcomes(ctx, 1, 10)
+		if err != nil || outcomes.Items == nil {
+			t.Fatalf("verification outcomes: %#v err=%v", outcomes.Items, err)
+		}
+	})
+
 	t.Run("nil lists are stored as empty lists", func(t *testing.T) {
 		store := newStore(t)
 		now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
