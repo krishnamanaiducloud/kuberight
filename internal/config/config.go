@@ -107,7 +107,7 @@ type Config struct {
 	OpenCostURL   string
 	WebhookSecret string
 	WebhookFormat string
-	// GitOps pull requests: provider is "", "github", or "gitea". The
+	// GitOps pull requests: provider is "", "github", "gitlab", or "gitea". The
 	// repository and base branch are defaults that workload annotations
 	// override.
 	GitOpsProvider   string
@@ -428,12 +428,12 @@ func (c Config) validateGitOps() error {
 	switch c.GitOpsProvider {
 	case "":
 		return nil
-	case "github", "gitea":
+	case "github", "gitea", "gitlab":
 	default:
-		return errors.New("KUBERIGHT_GITOPS_PROVIDER must be github or gitea")
+		return errors.New("KUBERIGHT_GITOPS_PROVIDER must be github, gitlab, or gitea")
 	}
 	if c.GitOpsURL == "" {
-		if c.GitOpsProvider != "github" {
+		if c.GitOpsProvider == "gitea" {
 			return errors.New("KUBERIGHT_GITOPS_URL is required for gitea, for example https://git.example.com/api/v1")
 		}
 	} else if err := validateUpstream("KUBERIGHT_GITOPS_URL", c.GitOpsURL, c.AllowInsecureUpstreams, "KUBERIGHT_ALLOW_INSECURE_UPSTREAMS=true"); err != nil {
@@ -450,6 +450,9 @@ func (c Config) validateGitOps() error {
 
 // GitOpsAPIURL is the provider API base, defaulting to github.com.
 func (c Config) GitOpsAPIURL() string {
+	if c.GitOpsURL == "" && c.GitOpsProvider == "gitlab" {
+		return "https://gitlab.com/api/v4"
+	}
 	if c.GitOpsURL == "" && c.GitOpsProvider == "github" {
 		return "https://api.github.com"
 	}

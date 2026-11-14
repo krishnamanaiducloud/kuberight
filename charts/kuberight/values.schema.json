@@ -157,10 +157,10 @@
       "additionalProperties": false,
       "required": ["provider", "apiURL", "allowHTTP", "repository", "baseBranch", "token"],
       "properties": {
-        "provider": { "type": "string", "enum": ["", "github", "gitea"] },
+        "provider": { "type": "string", "enum": ["", "github", "gitlab", "gitea"] },
         "apiURL": { "type": "string", "maxLength": 2048, "pattern": "^(|https?://[^\\s]+)$" },
         "allowHTTP": { "type": "boolean" },
-        "repository": { "type": "string", "pattern": "^(|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)$" },
+        "repository": { "type": "string", "pattern": "^(|[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+){1,8})$" },
         "baseBranch": { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "^[A-Za-z0-9._/-]+$" },
         "token": {
           "type": "object",

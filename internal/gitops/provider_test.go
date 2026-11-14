@@ -188,7 +188,7 @@ func TestValidateTargetRejectsEscapes(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, bad := range [][3]string{
-		{"acme", "a.yaml", "main"}, {"acme/deploy/extra", "a.yaml", "main"}, {"acme/..", "a.yaml", "main"},
+		{"acme", "a.yaml", "main"}, {"acme/..", "a.yaml", "main"}, {"acme//deploy", "a.yaml", "main"},
 		{"acme/deploy", "/etc/passwd", "main"}, {"acme/deploy", "apps/../secrets.yaml", "main"}, {"acme/deploy", "apps//a.yaml", "main"},
 		{"acme/deploy", `apps\a.yaml`, "main"}, {"acme/deploy", "a.yaml", "feature/../main"}, {"acme/deploy", "a.yaml", "bad branch"},
 	} {
@@ -196,7 +196,7 @@ func TestValidateTargetRejectsEscapes(t *testing.T) {
 			t.Errorf("accepted %v", bad)
 		}
 	}
-	if _, err := NewProvider("gitlab", "https://gitlab.example", "x"); err == nil {
+	if _, err := NewProvider("bitbucket", "https://bitbucket.example", "x"); err == nil {
 		t.Error("an unsupported provider was accepted")
 	}
 	if _, err := NewGitHub("ftp://example", "x"); err == nil {

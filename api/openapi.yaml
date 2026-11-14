@@ -3693,7 +3693,7 @@ components:
         repository: { type: string, examples: ["acme/deploy"] }
         path: { type: string, examples: ["apps/shop/checkout.yaml"] }
         baseBranch: { type: string }
-        provider: { type: string, enum: [github, gitea] }
+        provider: { type: string, enum: [github, gitlab, gitea] }
     ErrorResponse:
       type: object
       additionalProperties: false

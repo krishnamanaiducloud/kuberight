@@ -147,9 +147,11 @@ webhook:
 # from kuberight.io/gitops-repository and kuberight.io/gitops-base-branch or
 # the defaults below). The token needs contents and pull-request write access.
 gitops:
-  # "", github (github.com or GitHub Enterprise), or gitea (Gitea or Forgejo).
+  # "", github (github.com or GitHub Enterprise), gitlab (gitlab.com or
+  # self-managed; merge requests), or gitea (Gitea or Forgejo).
   provider: ""
-  # API base. Empty is https://api.github.com for github; required for gitea,
+  # API base. Empty is https://api.github.com for github and
+  # https://gitlab.com/api/v4 for gitlab; required for gitea,
   # for example https://git.example.com/api/v1.
   apiURL: ""
   allowHTTP: false

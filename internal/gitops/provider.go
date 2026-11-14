@@ -53,7 +53,8 @@ func (err *ProviderError) Error() string {
 }
 
 var (
-	repositoryPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
+	// owner/name, or group/subgroup/name on GitLab.
+	repositoryPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+){1,8}$`)
 	branchPattern     = regexp.MustCompile(`^[A-Za-z0-9._/-]{1,200}$`)
 )
 
@@ -85,21 +86,29 @@ const (
 // client is the HTTP plumbing shared by the providers.
 type client struct {
 	base          *url.URL
+	authHeader    string
 	authorization string
 	http          *http.Client
 }
 
-func newClient(apiURL, authorization string) (*client, error) {
+func newClient(apiURL, authHeader, authorization string) (*client, error) {
 	base, err := url.Parse(strings.TrimRight(apiURL, "/"))
 	if err != nil || base.Host == "" || (base.Scheme != "https" && base.Scheme != "http") {
 		return nil, fmt.Errorf("the Git provider URL %q is invalid", apiURL)
 	}
-	return &client{base: base, authorization: authorization, http: &http.Client{Timeout: 20 * time.Second}}, nil
+	return &client{base: base, authHeader: authHeader, authorization: authorization, http: &http.Client{Timeout: 20 * time.Second}}, nil
 }
 
 func (c *client) do(ctx context.Context, operation, method, path string, query url.Values, body, out any, accepted ...int) (int, error) {
 	target := *c.base
-	target.Path = c.base.Path + path
+	// path is already escaped segment by segment; keep it as the raw path so
+	// an escaped slash (GitLab project IDs) or space is not escaped again.
+	target.RawPath = c.base.EscapedPath() + path
+	unescaped, err := url.PathUnescape(target.RawPath)
+	if err != nil {
+		return 0, fmt.Errorf("%s: invalid path: %w", operation, err)
+	}
+	target.Path = unescaped
 	target.RawQuery = query.Encode()
 	var reader io.Reader
 	if body != nil {
@@ -114,7 +123,7 @@ func (c *client) do(ctx context.Context, operation, method, path string, query u
 		return 0, err
 	}
 	request.Header.Set("Accept", "application/json")
-	request.Header.Set("Authorization", c.authorization)
+	request.Header.Set(c.authHeader, c.authorization)
 	request.Header.Set("User-Agent", "kuberight")
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
@@ -191,7 +200,7 @@ type GitHub struct{ client *client }
 // NewGitHub returns a GitHub provider. apiURL is https://api.github.com for
 // github.com.
 func NewGitHub(apiURL, token string) (*GitHub, error) {
-	c, err := newClient(apiURL, "Bearer "+token)
+	c, err := newClient(apiURL, "Authorization", "Bearer "+token)
 	if err != nil {
 		return nil, err
 	}
@@ -266,7 +275,7 @@ type Gitea struct{ client *client }
 
 // NewGitea returns a Gitea or Forgejo provider; apiURL ends in /api/v1.
 func NewGitea(apiURL, token string) (*Gitea, error) {
-	c, err := newClient(apiURL, "token "+token)
+	c, err := newClient(apiURL, "Authorization", "token "+token)
 	if err != nil {
 		return nil, err
 	}
@@ -336,6 +345,8 @@ func NewProvider(kind, apiURL, token string) (Provider, error) {
 		return NewGitHub(apiURL, token)
 	case "gitea":
 		return NewGitea(apiURL, token)
+	case "gitlab":
+		return NewGitLab(apiURL, token)
 	}
 	return nil, fmt.Errorf("unsupported Git provider %q", kind)
 }
