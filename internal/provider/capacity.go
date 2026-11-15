@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/kuberight/kuberight/internal/httpapi"
@@ -94,6 +95,7 @@ func (provider *KubernetesProvider) Capacity(ctx context.Context) (httpapi.Clust
 		return result.Items, result.Continue, nil
 	})
 	capacity.Constraints = map[string]httpapi.SchedulingConstraints{}
+	autoscalerNamespaces := []string{}
 	addConstraints := func(namespace, kind, name string, template corev1.PodTemplateSpec) {
 		if constraints := schedulingConstraints(template); !constraints.Empty() {
 			capacity.Constraints[namespace+"/"+kind+"/"+name] = constraints
@@ -104,6 +106,9 @@ func (provider *KubernetesProvider) Capacity(ctx context.Context) (httpapi.Clust
 			name := deployments[index].Name
 			if strings.Contains(name, "cluster-autoscaler") || deployments[index].Labels["app.kubernetes.io/name"] == "cluster-autoscaler" {
 				capacity.Autoscaling.ClusterAutoscaler = true
+				if !slices.Contains(autoscalerNamespaces, deployments[index].Namespace) {
+					autoscalerNamespaces = append(autoscalerNamespaces, deployments[index].Namespace)
+				}
 			}
 			addConstraints(deployments[index].Namespace, "Deployment", name, deployments[index].Spec.Template)
 		}
@@ -126,6 +131,9 @@ func (provider *KubernetesProvider) Capacity(ctx context.Context) (httpapi.Clust
 	pins, blockers, warnings := provider.disruptionPins(ctx)
 	capacity.Pinned, capacity.EvictionBlockers = pins, blockers
 	capacity.Autoscaling.Warnings = append(capacity.Autoscaling.Warnings, warnings...)
+	limits, limitWarnings := provider.nodeGroupLimits(ctx, autoscalerNamespaces, capacity.Nodes)
+	capacity.GroupLimits = limits
+	capacity.Autoscaling.Warnings = append(capacity.Autoscaling.Warnings, limitWarnings...)
 	return capacity, nil
 }
 

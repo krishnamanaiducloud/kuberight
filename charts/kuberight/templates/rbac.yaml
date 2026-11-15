@@ -58,6 +58,15 @@ rules:
   - apiGroups: ["machine.openshift.io"]
     resources: ["machines"]
     verbs: ["list"]
+  # Node-group size limits: OpenShift MachineAutoscalers and the status that
+  # Cluster Autoscaler writes; absent CRDs and ConfigMaps are ignored.
+  - apiGroups: ["autoscaling.openshift.io"]
+    resources: ["machineautoscalers"]
+    verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["cluster-autoscaler-status"]
+    verbs: ["get"]
   # PodDisruptionBudgets that allow no evictions keep their pods, and so their
   # nodes, in node-impact estimates.
   - apiGroups: ["policy"]

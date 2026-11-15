@@ -999,7 +999,12 @@ paths:
         rules keep off nodes with room. Pods covered by a PodDisruptionBudget
         that allows no voluntary evictions stay on their current nodes
         (`pinnedPods`), and `evictionBlockers` names each such budget.
-        Requires cluster-scoped inventory and the `list` verb on `capacity`.
+        A group's `limit` is its size range from an OpenShift MachineAutoscaler
+        or Cluster Autoscaler's status (`membership` is `inferred` when matched
+        by a cloud naming convention). Its minimum bounds the group's
+        `reclaimableNodes`, and `nodesHeldByMinimumSize` counts the nodes that
+        minimums keep. Requires cluster-scoped inventory and the `list` verb on
+        `capacity`.
       responses:
         "200":
           description: Node counts now and after, autoscaler context, and assumptions.

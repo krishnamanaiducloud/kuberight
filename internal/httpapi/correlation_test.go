@@ -243,7 +243,7 @@ func TestCapacityShowsNodeImpactAndKarpenterRealization(t *testing.T) {
 	current := body["current"].(map[string]any)
 	recommended := body["recommended"].(map[string]any)
 	// Six 1500m pods need three 3500m nodes; six 750m pods fit on two.
-	if current["nodesNeeded"].(float64) != 3 || recommended["nodesNeeded"].(float64) != 2 || body["reclaimableNodes"].(float64) != 1 {
+	if current["nodesNeeded"].(float64) != 3 || recommended["nodesNeeded"].(float64) != 2 || body["reclaimableNodes"].(float64) != 1 || body["nodesHeldByMinimumSize"].(float64) != 0 {
 		t.Fatalf("current=%v recommended=%v", current, recommended)
 	}
 	if !strings.Contains(body["realization"].(string), "Karpenter consolidates") || body["containersWithRecommendations"].(float64) != 1 {

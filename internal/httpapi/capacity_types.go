@@ -62,8 +62,25 @@ type NodeGroupImpact struct {
 	CurrentNodesNeeded     int `json:"currentNodesNeeded"`
 	RecommendedNodesNeeded int `json:"recommendedNodesNeeded"`
 	ReclaimableNodes       int `json:"reclaimableNodes"`
+	// Limit is the group's autoscaling size range, when one was read.
+	// LimitedByMinimum is set when the minimum size keeps nodes the packing
+	// would free, and ExceedsMaximum when the recommended packing needs more
+	// nodes than the group may have.
+	Limit            *NodeGroupLimit `json:"limit,omitempty"`
+	LimitedByMinimum bool            `json:"limitedByMinimum,omitempty"`
+	ExceedsMaximum   bool            `json:"exceedsMaximum,omitempty"`
 	// Realization explains how, or whether, this group shrinks.
 	Realization string `json:"realization"`
+}
+
+// NodeGroupLimit is a node group's autoscaling size range and where it was
+// read. Membership is MembershipVerified for an exact reference and
+// MembershipInferred for a provider naming convention.
+type NodeGroupLimit struct {
+	MinSize    int    `json:"minSize"`
+	MaxSize    int    `json:"maxSize"`
+	Source     string `json:"source"`
+	Membership string `json:"membership"`
 }
 
 // NodePool summarizes a Karpenter NodePool's consolidation behavior.
@@ -97,6 +114,8 @@ type ClusterCapacity struct {
 	Pinned map[string][]string `json:"-"`
 	// EvictionBlockers describes each such PodDisruptionBudget.
 	EvictionBlockers []string `json:"-"`
+	// GroupLimits are node-group size limits by nodeGroupKey.
+	GroupLimits map[string]NodeGroupLimit `json:"-"`
 }
 
 // CapacityReader is implemented by inventory providers that can read nodes.

@@ -641,6 +641,10 @@ export type NodeGroupImpact = {
   currentNodesNeeded: number
   recommendedNodesNeeded: number
   reclaimableNodes: number
+  /** The autoscaling size range, when one was read from a MachineAutoscaler or Cluster Autoscaler status. */
+  limit?: { minSize: number; maxSize: number; source: string; membership: 'verified' | 'inferred' }
+  limitedByMinimum?: boolean
+  exceedsMaximum?: boolean
   realization: string
 }
 
@@ -651,6 +655,8 @@ export type CapacityResponse = {
   current?: PackingResult
   recommended?: PackingResult
   reclaimableNodes?: number
+  /** Nodes that node-group minimum sizes keep. */
+  nodesHeldByMinimumSize?: number
   containersWithRecommendations?: number
   autoscaling?: {
     karpenter: boolean

@@ -36,7 +36,7 @@ func node(name string, ready bool, labels map[string]string) *corev1.Node {
 
 func capacityProvider(client *kubernetesfake.Clientset, objects ...runtime.Object) *KubernetesProvider {
 	provider := testProvider(client)
-	provider.dynamic = fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{nodePoolResource: "NodePoolList", machineResource: "MachineList"}, objects...)
+	provider.dynamic = fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{nodePoolResource: "NodePoolList", machineResource: "MachineList", machineAutoscalerResource: "MachineAutoscalerList"}, objects...)
 	return provider
 }
 

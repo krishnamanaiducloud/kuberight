@@ -25,3 +25,17 @@ describe('NodeGroupTable', () => {
     expect(within(rows[2]).getByLabelText('Machine name ocp-worker-b-q9z4m')).toBeInTheDocument()
   })
 })
+
+describe('NodeGroupTable size limits', () => {
+  it('shows the size range and when the minimum holds nodes', () => {
+    render(<NodeGroupTable groups={[
+      group({ limit: { minSize: 3, maxSize: 6, source: 'Cluster Autoscaler status kube-system/cluster-autoscaler-status: eks-general-1', membership: 'inferred' }, limitedByMinimum: true, currentNodesNeeded: 4, recommendedNodesNeeded: 1, reclaimableNodes: 1 }),
+      group({ name: 'batch', limit: { minSize: 0, maxSize: 2, source: 'MachineAutoscaler openshift-machine-api/batch', membership: 'verified' }, exceedsMaximum: true }),
+    ]} />)
+    const rows = screen.getAllByRole('row')
+    expect(within(rows[1]).getByText('size 3–6 (inferred)')).toHaveAttribute('title', 'Cluster Autoscaler status kube-system/cluster-autoscaler-status: eks-general-1')
+    expect(within(rows[1]).getByText('held by minimum size')).toBeInTheDocument()
+    expect(within(rows[2]).getByText('size 0–2')).toBeInTheDocument()
+    expect(within(rows[2]).getByText('needs more than the maximum size')).toBeInTheDocument()
+  })
+})

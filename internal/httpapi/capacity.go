@@ -90,7 +90,7 @@ func realization(autoscaling NodeAutoscaling) string {
 
 // nodeGroupImpacts summarizes every node group and its share of both
 // packings. A group with any inferred member is reported as inferred.
-func nodeGroupImpacts(nodes []NodeCapacity, autoscaling NodeAutoscaling, current, recommended packingResult) []NodeGroupImpact {
+func nodeGroupImpacts(nodes []NodeCapacity, autoscaling NodeAutoscaling, limits map[string]NodeGroupLimit, current, recommended packingResult) []NodeGroupImpact {
 	policies := map[string]string{}
 	for _, pool := range autoscaling.NodePools {
 		policies[pool.Name] = pool.ConsolidationPolicy
@@ -126,7 +126,15 @@ func nodeGroupImpacts(nodes []NodeCapacity, autoscaling NodeAutoscaling, current
 		group := &groups[index]
 		key := group.Provider + "\x00" + group.Name
 		group.CurrentNodesNeeded, group.RecommendedNodesNeeded = current.nodesByGroup[key], recommended.nodesByGroup[key]
-		group.ReclaimableNodes = max(0, group.CurrentNodesNeeded-group.RecommendedNodesNeeded)
+		kept := group.RecommendedNodesNeeded
+		if limit, found := limits[key]; found {
+			group.Limit = &limit
+			// The autoscaler keeps at least the group's minimum size.
+			group.LimitedByMinimum = limit.MinSize > group.RecommendedNodesNeeded && group.CurrentNodesNeeded > group.RecommendedNodesNeeded
+			group.ExceedsMaximum = group.RecommendedNodesNeeded > limit.MaxSize
+			kept = max(kept, limit.MinSize)
+		}
+		group.ReclaimableNodes = max(0, group.CurrentNodesNeeded-kept)
 		group.Realization = groupRealization(*group, policies[group.Name], autoscaling.ClusterAutoscaler)
 	}
 	sort.SliceStable(groups, func(left, right int) bool {
@@ -149,8 +157,12 @@ func groupRealization(group NodeGroupImpact, consolidationPolicy string, cluster
 		return "Karpenter manages these nodes, but the NodePool could not be read, so its consolidation policy is unknown."
 	case group.Provider == NodeGroupNone:
 		return "No node group was identified for these nodes; drain and remove them manually."
+	case group.Limit != nil && group.Provider == NodeGroupOpenShift && strings.HasPrefix(group.Limit.Source, "MachineAutoscaler"):
+		return fmt.Sprintf("%s scales this MachineSet between %d and %d machines.", group.Limit.Source, group.Limit.MinSize, group.Limit.MaxSize)
+	case group.Limit != nil:
+		return fmt.Sprintf("Cluster Autoscaler can remove underutilized nodes from this group down to its minimum of %d (maximum %d).", group.Limit.MinSize, group.Limit.MaxSize)
 	case clusterAutoscaler:
-		return "Cluster Autoscaler can remove underutilized nodes from this group down to its minimum size, which is not visible from inside the cluster."
+		return "Cluster Autoscaler can remove underutilized nodes from this group down to its minimum size, which was not found in its status."
 	case group.Provider == NodeGroupGKE || group.Provider == NodeGroupAKS:
 		return "The provider's node-pool autoscaler removes underutilized nodes when it is enabled; its settings are not visible from inside the cluster."
 	case group.Provider == NodeGroupOpenShift:
@@ -250,16 +262,23 @@ func (server *apiServer) capacity(w http.ResponseWriter, r *http.Request) {
 	current.MemoryRequests += currentDaemon.memoryBytes * int64(schedulable)
 	recommended.CPURequested += recommendedDaemon.cpuMilli * int64(schedulable)
 	recommended.MemoryRequests += recommendedDaemon.memoryBytes * int64(schedulable)
+	groups := nodeGroupImpacts(cluster.Nodes, cluster.Autoscaling, cluster.GroupLimits, current, recommended)
+	// Nodes a group's minimum size keeps cannot be reclaimed.
+	held := 0
+	for _, group := range groups {
+		held += max(0, group.CurrentNodesNeeded-group.RecommendedNodesNeeded) - group.ReclaimableNodes
+	}
 	body := map[string]any{
 		"status":                        Availability{Available: true, Source: "kubernetes-api"},
 		"nodes":                         map[string]int{"total": len(cluster.Nodes), "schedulable": schedulable},
 		"allocatable":                   map[string]int64{"cpuMilli": allocatableCPU, "memoryBytes": allocatableMemory},
 		"current":                       current,
 		"recommended":                   recommended,
-		"reclaimableNodes":              max(0, current.NodesNeeded-recommended.NodesNeeded),
+		"reclaimableNodes":              max(0, current.NodesNeeded-recommended.NodesNeeded-held),
+		"nodesHeldByMinimumSize":        held,
 		"containersWithRecommendations": applied,
 		"autoscaling":                   cluster.Autoscaling,
-		"nodeGroups":                    nodeGroupImpacts(cluster.Nodes, cluster.Autoscaling, current, recommended),
+		"nodeGroups":                    groups,
 		"realization":                   realization(cluster.Autoscaling),
 		"evictionBlockers":              evictionBlockers(cluster.EvictionBlockers),
 		"assumptions": []string{
@@ -269,6 +288,7 @@ func (server *apiServer) capacity(w http.ResponseWriter, r *http.Request) {
 			"DoNotSchedule topology spread caps each node at maxSkew matching pods on the hostname key, more only when the replicas outnumber maxSkew per eligible node, and keeps other domains, such as zones, within maxSkew of the least-used domain.",
 			"Pods covered by a PodDisruptionBudget that allows no voluntary evictions stay on the nodes they run on now, so those nodes are kept.",
 			"Preferred affinity, ScheduleAnyway spread, and pods not owned by a supported controller are not modeled; this is an estimate, not a scheduler simulation.",
+			"A node group never shrinks below a minimum size read from an OpenShift MachineAutoscaler or Cluster Autoscaler's status; groups without one may also have a minimum that is not visible.",
 			"Per-group node counts come from the same packing, which fills the largest nodes first; an autoscaler that scales each group on its own may remove nodes from different groups.",
 			fmt.Sprintf("Recommended requests use the newest approved, unexpired, live-workload-matched recommendation for %d containers; others keep their current requests.", applied),
 		},

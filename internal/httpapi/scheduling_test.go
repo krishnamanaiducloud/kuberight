@@ -91,7 +91,7 @@ func TestNodeGroupImpactsSplitPackingByGroup(t *testing.T) {
 	}
 	// Eight 1800m pods fill both large nodes; eight 900m pods fit on one.
 	current, recommended := pack(nodes, podDemand{}, demand(1800)), pack(nodes, podDemand{}, demand(900))
-	groups := nodeGroupImpacts(nodes, NodeAutoscaling{}, current, recommended)
+	groups := nodeGroupImpacts(nodes, NodeAutoscaling{}, nil, current, recommended)
 	if len(groups) != 2 {
 		t.Fatalf("groups=%#v", groups)
 	}
@@ -127,5 +127,29 @@ func TestGroupRealizationFollowsTheGroupsAutoscaler(t *testing.T) {
 		if got := groupRealization(test.group, test.policy, test.clusterAutoscaler); !strings.Contains(got, test.want) {
 			t.Errorf("%s/%q: %q does not mention %q", test.group.Provider, test.policy, got, test.want)
 		}
+	}
+}
+
+func TestNodeGroupLimitsBoundTheReclaimableNodes(t *testing.T) {
+	node := func(name string) NodeCapacity {
+		return NodeCapacity{Name: name, CPUMilli: 4000, MemoryBytes: 16 << 30, Schedulable: true, NodeGroup: "general", NodeGroupProvider: NodeGroupEKS, NodeGroupMembership: MembershipVerified}
+	}
+	nodes := []NodeCapacity{node("a"), node("b"), node("c"), node("d")}
+	pods := func(cpu int64) []podDemand {
+		return replicas(4, podDemand{cpuMilli: cpu, memoryBytes: 1 << 30})
+	}
+	// Four 3500m pods need four nodes; four 900m pods fit on one.
+	current, recommended := pack(nodes, podDemand{}, pods(3500)), pack(nodes, podDemand{}, pods(900))
+	limits := map[string]NodeGroupLimit{nodeGroupKey(nodes[0]): {MinSize: 3, MaxSize: 6, Source: "Cluster Autoscaler status kube-system/cluster-autoscaler-status: eks-general-1", Membership: MembershipInferred}}
+	group := nodeGroupImpacts(nodes, NodeAutoscaling{ClusterAutoscaler: true}, limits, current, recommended)[0]
+	if group.CurrentNodesNeeded != 4 || group.RecommendedNodesNeeded != 1 || group.ReclaimableNodes != 1 || !group.LimitedByMinimum || group.ExceedsMaximum {
+		t.Fatalf("the minimum size keeps three nodes: %#v", group)
+	}
+	if group.Limit == nil || !strings.Contains(group.Realization, "down to its minimum of 3 (maximum 6)") {
+		t.Fatalf("realization=%q", group.Realization)
+	}
+	limits[nodeGroupKey(nodes[0])] = NodeGroupLimit{MinSize: 0, MaxSize: 0, Source: "MachineAutoscaler openshift-machine-api/general", Membership: MembershipVerified}
+	if group := nodeGroupImpacts(nodes, NodeAutoscaling{}, limits, current, recommended)[0]; !group.ExceedsMaximum || group.ReclaimableNodes != 3 {
+		t.Fatalf("a recommendation above the maximum is flagged: %#v", group)
 	}
 }

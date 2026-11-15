@@ -43,9 +43,18 @@ export function NodeGroupTable({ groups }: { groups: NodeGroupImpact[] }) {
                   <Chip size="small" variant="outlined" color={group.membership === 'verified' ? 'success' : 'warning'} label={group.membership === 'verified' ? 'Verified' : 'Inferred'} />
                 </Tooltip>
               </TableCell>
-              <TableCell align="right">{group.schedulableNodes} of {group.nodes}</TableCell>
+              <TableCell align="right">
+                {group.schedulableNodes} of {group.nodes}
+                {group.limit && (
+                  <Typography variant="caption" color="text.secondary" component="p" title={group.limit.source}>size {group.limit.minSize}–{group.limit.maxSize}{group.limit.membership === 'inferred' ? ' (inferred)' : ''}</Typography>
+                )}
+              </TableCell>
               <TableCell align="right">{group.currentNodesNeeded} → {group.recommendedNodesNeeded}</TableCell>
-              <TableCell align="right">{group.reclaimableNodes}</TableCell>
+              <TableCell align="right">
+                {group.reclaimableNodes}
+                {group.limitedByMinimum && <Typography variant="caption" color="warning.main" component="p">held by minimum size</Typography>}
+                {group.exceedsMaximum && <Typography variant="caption" color="error.main" component="p">needs more than the maximum size</Typography>}
+              </TableCell>
               <TableCell><Typography variant="caption">{group.realization}</Typography></TableCell>
             </TableRow>
           ))}
