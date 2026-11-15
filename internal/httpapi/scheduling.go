@@ -1,9 +1,10 @@
 package httpapi
 
 // Scheduling constraints that decide which nodes a pod may use. Node-impact
-// estimates honor taints and tolerations, nodeSelector, and required node
-// affinity. Preferred affinity, pod affinity and anti-affinity, topology
-// spread, and PodDisruptionBudgets are not modeled.
+// estimates honor taints and tolerations, nodeSelector, required node
+// affinity, required pod affinity and anti-affinity, DoNotSchedule topology
+// spread, and PodDisruptionBudgets that allow no voluntary evictions.
+// Preferences (preferred affinity and ScheduleAnyway spread) are not modeled.
 
 // NodeTaint is a node taint that can repel pods.
 type NodeTaint struct {
@@ -27,17 +28,88 @@ type NodeRequirement struct {
 	Values   []string `json:"values,omitempty"`
 }
 
-// SchedulingConstraints are a pod template's node placement rules.
-// RequiredTerms are ORed; the requirements inside one term are ANDed.
-type SchedulingConstraints struct {
-	NodeSelector  map[string]string   `json:"nodeSelector,omitempty"`
-	Tolerations   []Toleration        `json:"tolerations,omitempty"`
-	RequiredTerms [][]NodeRequirement `json:"requiredTerms,omitempty"`
+// LabelSelector mirrors a Kubernetes label selector. Its expressions use the
+// In, NotIn, Exists, and DoesNotExist operators.
+type LabelSelector struct {
+	MatchLabels      map[string]string `json:"matchLabels,omitempty"`
+	MatchExpressions []NodeRequirement `json:"matchExpressions,omitempty"`
 }
 
-// Empty reports whether the pod can use any schedulable node.
+// PodAffinityTerm is one required pod affinity or anti-affinity term. A nil
+// Selector matches no pods. Without Namespaces or AllNamespaces the term
+// selects pods in the pod's own namespace.
+type PodAffinityTerm struct {
+	Selector      *LabelSelector `json:"selector,omitempty"`
+	Namespaces    []string       `json:"namespaces,omitempty"`
+	AllNamespaces bool           `json:"allNamespaces,omitempty"`
+	TopologyKey   string         `json:"topologyKey"`
+}
+
+// TopologySpread is a topology spread constraint with whenUnsatisfiable
+// DoNotSchedule. It counts pods in the pod's own namespace.
+type TopologySpread struct {
+	MaxSkew     int            `json:"maxSkew"`
+	TopologyKey string         `json:"topologyKey"`
+	Selector    *LabelSelector `json:"selector,omitempty"`
+}
+
+// SchedulingConstraints are a pod template's placement rules.
+// RequiredTerms are ORed; the requirements inside one term are ANDed.
+type SchedulingConstraints struct {
+	NodeSelector    map[string]string   `json:"nodeSelector,omitempty"`
+	Tolerations     []Toleration        `json:"tolerations,omitempty"`
+	RequiredTerms   [][]NodeRequirement `json:"requiredTerms,omitempty"`
+	PodAffinity     []PodAffinityTerm   `json:"podAffinity,omitempty"`
+	PodAntiAffinity []PodAffinityTerm   `json:"podAntiAffinity,omitempty"`
+	TopologySpread  []TopologySpread    `json:"topologySpread,omitempty"`
+	// Labels are the pod template labels that other pods' rules select.
+	Labels map[string]string `json:"labels,omitempty"`
+}
+
+// Empty reports whether the pod can use any schedulable node and has no
+// labels that another pod's rules could select.
 func (constraints SchedulingConstraints) Empty() bool {
-	return len(constraints.NodeSelector) == 0 && len(constraints.Tolerations) == 0 && len(constraints.RequiredTerms) == 0
+	return len(constraints.NodeSelector) == 0 && len(constraints.Tolerations) == 0 && len(constraints.RequiredTerms) == 0 &&
+		len(constraints.PodAffinity) == 0 && len(constraints.PodAntiAffinity) == 0 && len(constraints.TopologySpread) == 0 && len(constraints.Labels) == 0
+}
+
+// matches reports whether the selector selects a pod with these labels.
+func (selector *LabelSelector) matches(labels map[string]string) bool {
+	if selector == nil {
+		return false
+	}
+	for key, value := range selector.MatchLabels {
+		if current, present := labels[key]; !present || current != value {
+			return false
+		}
+	}
+	for _, requirement := range selector.MatchExpressions {
+		if !requirement.matches(labels) {
+			return false
+		}
+	}
+	return true
+}
+
+// selects reports whether a term owned by a pod in ownerNamespace selects a
+// pod in namespace with these labels.
+func (term PodAffinityTerm) selects(ownerNamespace, namespace string, labels map[string]string) bool {
+	switch {
+	case term.AllNamespaces:
+	case len(term.Namespaces) == 0:
+		if namespace != ownerNamespace {
+			return false
+		}
+	default:
+		found := false
+		for _, candidate := range term.Namespaces {
+			found = found || candidate == namespace
+		}
+		if !found {
+			return false
+		}
+	}
+	return term.Selector.matches(labels)
 }
 
 func (toleration Toleration) tolerates(taint NodeTaint) bool {
@@ -76,8 +148,13 @@ func (requirement NodeRequirement) matches(labels map[string]string) bool {
 	}
 }
 
-// allows reports whether a pod with these constraints may run on the node.
+// allows reports whether a pod with these constraints may run on the node,
+// considering node rules only; pod rules depend on the other pods placed.
 func (constraints SchedulingConstraints) allows(node NodeCapacity) bool {
+	return constraints.tolerates(node) && constraints.selectsNode(node)
+}
+
+func (constraints SchedulingConstraints) tolerates(node NodeCapacity) bool {
 	for _, taint := range node.Taints {
 		if taint.Effect != "NoSchedule" && taint.Effect != "NoExecute" {
 			continue
@@ -93,6 +170,11 @@ func (constraints SchedulingConstraints) allows(node NodeCapacity) bool {
 			return false
 		}
 	}
+	return true
+}
+
+// selectsNode applies nodeSelector and required node affinity.
+func (constraints SchedulingConstraints) selectsNode(node NodeCapacity) bool {
 	for key, value := range constraints.NodeSelector {
 		if node.Labels[key] != value {
 			return false

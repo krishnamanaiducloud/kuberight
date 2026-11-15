@@ -102,12 +102,31 @@ func TestSchedulingConstraintsFromPodSpec(t *testing.T) {
 			NodeSelectorTerms: []corev1.NodeSelectorTerm{{MatchExpressions: []corev1.NodeSelectorRequirement{{Key: "kubernetes.io/arch", Operator: corev1.NodeSelectorOpIn, Values: []string{"amd64"}}}}},
 		}}},
 	}
-	constraints := schedulingConstraints(spec)
+	self := &metav1.LabelSelector{MatchLabels: map[string]string{"app": "web"}}
+	spec.Affinity.PodAntiAffinity = &corev1.PodAntiAffinity{RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+		{LabelSelector: self, TopologyKey: "kubernetes.io/hostname"},
+		{LabelSelector: self, TopologyKey: ""},
+	}}
+	spec.Affinity.PodAffinity = &corev1.PodAffinity{RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+		{LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "app", Operator: metav1.LabelSelectorOpIn, Values: []string{"cache"}}}},
+			NamespaceSelector: &metav1.LabelSelector{}, TopologyKey: "topology.kubernetes.io/zone"},
+	}}
+	spec.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{
+		{MaxSkew: 1, TopologyKey: "topology.kubernetes.io/zone", WhenUnsatisfiable: corev1.DoNotSchedule, LabelSelector: self},
+		{MaxSkew: 1, TopologyKey: "kubernetes.io/hostname", WhenUnsatisfiable: corev1.ScheduleAnyway, LabelSelector: self},
+	}
+	constraints := schedulingConstraints(corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "web"}}, Spec: spec})
 	if constraints.NodeSelector["pool"] != "general" || len(constraints.Tolerations) != 1 || constraints.Tolerations[0].Effect != "NoSchedule" ||
-		len(constraints.RequiredTerms) != 1 || constraints.RequiredTerms[0][0].Values[0] != "amd64" {
+		len(constraints.RequiredTerms) != 1 || constraints.RequiredTerms[0][0].Values[0] != "amd64" || constraints.Labels["app"] != "web" {
 		t.Fatalf("constraints = %+v", constraints)
 	}
-	if !schedulingConstraints(corev1.PodSpec{}).Empty() {
+	// Terms without a topology key and ScheduleAnyway spread are dropped.
+	if len(constraints.PodAntiAffinity) != 1 || constraints.PodAntiAffinity[0].Selector.MatchLabels["app"] != "web" || constraints.PodAntiAffinity[0].AllNamespaces ||
+		len(constraints.PodAffinity) != 1 || !constraints.PodAffinity[0].AllNamespaces || constraints.PodAffinity[0].Selector.MatchExpressions[0].Values[0] != "cache" ||
+		len(constraints.TopologySpread) != 1 || constraints.TopologySpread[0].TopologyKey != "topology.kubernetes.io/zone" || constraints.TopologySpread[0].MaxSkew != 1 {
+		t.Fatalf("pod rules = %+v", constraints)
+	}
+	if !schedulingConstraints(corev1.PodTemplateSpec{}).Empty() {
 		t.Fatal("a plain pod spec must have no constraints")
 	}
 }

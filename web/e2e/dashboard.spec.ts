@@ -117,7 +117,7 @@ async function mockControlPlane(page: Page) {
           status: { available: true, source: 'kubernetes-api' },
           nodes: { total: 6, schedulable: 6 },
           allocatable: { cpuMilli: 23_520, memoryBytes: 90_194_313_216 },
-          current: { nodesNeeded: 6, unplacedPods: 0, cpuRequestedMilli: 18_400, memoryRequestedBytes: 38_654_705_664, noEligibleNodePods: 0, unplacedWorkloads: [] },
+          current: { nodesNeeded: 6, unplacedPods: 0, cpuRequestedMilli: 18_400, memoryRequestedBytes: 38_654_705_664, noEligibleNodePods: 0, podRulePods: 0, pinnedPods: 2, unplacedWorkloads: [] },
           recommended: { nodesNeeded: 4, unplacedPods: 0, cpuRequestedMilli: 11_200, memoryRequestedBytes: 27_917_287_424, noEligibleNodePods: 0, unplacedWorkloads: [] },
           reclaimableNodes: 2,
           containersWithRecommendations: 22,
@@ -127,6 +127,7 @@ async function mockControlPlane(page: Page) {
             { name: 'shape:3920m-15360Mi', provider: 'none', membership: 'inferred', evidence: 'no node-group label; grouped by node shape', nodes: 2, schedulableNodes: 2, instanceTypes: [], capacityTypes: [], cpuMilli: 7_840, memoryBytes: 30_064_771_072, currentNodesNeeded: 2, recommendedNodesNeeded: 2, reclaimableNodes: 0, realization: 'No node group was identified for these nodes; drain and remove them manually.' },
           ],
           realization: 'Karpenter consolidates underutilized nodes automatically once the lower requests are applied.',
+          evictionBlockers: ['PodDisruptionBudget payments/ledger allows no voluntary evictions; 2 pods stay on their nodes'],
           assumptions: ['Pods are packed by requests with first-fit-decreasing onto existing node shapes, largest first.'],
         }
         break
@@ -208,6 +209,8 @@ test('shows node impact per node group with membership evidence', async ({ page 
   await expect(groups.getByText('Karpenter NodePool · m6i.xlarge · spot')).toBeVisible()
   await expect(groups.getByText('4 → 2')).toBeVisible()
   await expect(groups.getByText('Inferred')).toBeVisible()
+  await expect(page.getByText('2 pods stay on their nodes because a PodDisruptionBudget allows no evictions', { exact: false })).toBeVisible()
+  await expect(page.getByText('PodDisruptionBudget payments/ledger allows no voluntary evictions; 2 pods stay on their nodes.')).toBeVisible()
   await expectNoSeriousAccessibilityViolations(page)
   await attachScreenshot(page, testInfo, 'node-groups')
   expect(failures).toEqual([])

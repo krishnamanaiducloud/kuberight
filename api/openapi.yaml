@@ -993,8 +993,13 @@ paths:
         `verified` when it comes from the platform's own node-group label or
         annotation, or from the node's Machine object, and `inferred` when it
         comes from a Machine name or the node's shape; `evidence` names the
-        source. Requires cluster-scoped inventory and the `list` verb on
-        `capacity`.
+        source. Placement honors taints, nodeSelector, required node and pod
+        affinity, required pod anti-affinity in both directions, and
+        DoNotSchedule topology spread; `podRulePods` counts pods those pod
+        rules keep off nodes with room. Pods covered by a PodDisruptionBudget
+        that allows no voluntary evictions stay on their current nodes
+        (`pinnedPods`), and `evictionBlockers` names each such budget.
+        Requires cluster-scoped inventory and the `list` verb on `capacity`.
       responses:
         "200":
           description: Node counts now and after, autoscaler context, and assumptions.

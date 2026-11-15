@@ -92,6 +92,11 @@ type ClusterCapacity struct {
 	// Constraints are pod-template placement rules by "namespace/kind/name".
 	// A workload without an entry can use any schedulable node.
 	Constraints map[string]SchedulingConstraints `json:"-"`
+	// Pinned lists, by "namespace/kind/name", the nodes of pods that a
+	// PodDisruptionBudget allowing no voluntary evictions keeps in place.
+	Pinned map[string][]string `json:"-"`
+	// EvictionBlockers describes each such PodDisruptionBudget.
+	EvictionBlockers []string `json:"-"`
 }
 
 // CapacityReader is implemented by inventory providers that can read nodes.

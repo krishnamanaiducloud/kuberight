@@ -101,6 +101,8 @@ export function CapacityCard() {
               {data.nodes?.schedulable} of {data.nodes?.total} nodes schedulable · requested CPU {formatMillicores(data.current?.cpuRequestedMilli ?? 0)} → {formatMillicores(data.recommended?.cpuRequestedMilli ?? 0)} · memory {formatBytes(data.current?.memoryRequestedBytes ?? 0)} → {formatBytes(data.recommended?.memoryRequestedBytes ?? 0)}
               {(data.current?.unplacedPods ?? 0) > 0 && ` · ${data.current?.unplacedPods} pods do not fit current nodes by requests`}
               {(data.current?.noEligibleNodePods ?? 0) > 0 && `, ${data.current?.noEligibleNodePods} of them because no node matches their taints, nodeSelector, or required affinity`}
+              {(data.current?.podRulePods ?? 0) > 0 && `, ${data.current?.podRulePods} because pod affinity, anti-affinity, or topology spread rules them out`}
+              {(data.current?.pinnedPods ?? 0) > 0 && ` · ${data.current?.pinnedPods} pods stay on their nodes because a PodDisruptionBudget allows no evictions`}
             </Typography>
             {(data.current?.unplacedWorkloads?.length ?? 0) > 0 && (
               <Typography variant="caption" color="text.secondary" component="p" sx={{ overflowWrap: 'anywhere' }}>
@@ -117,6 +119,9 @@ export function CapacityCard() {
               ))}
             </Stack>
             <Typography variant="body2">{data.realization}</Typography>
+            {(data.evictionBlockers?.length ?? 0) > 0 && (
+              <Typography variant="body2" color="warning.main" sx={{ mt: 1, overflowWrap: 'anywhere' }}>{data.evictionBlockers?.join('. ')}.</Typography>
+            )}
             <Typography variant="caption" color="text.secondary" component="p" sx={{ mt: 1 }}>{data.assumptions?.join(' ')}</Typography>
           </Box>
         </Stack>

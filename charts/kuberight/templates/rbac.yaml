@@ -58,6 +58,11 @@ rules:
   - apiGroups: ["machine.openshift.io"]
     resources: ["machines"]
     verbs: ["list"]
+  # PodDisruptionBudgets that allow no evictions keep their pods, and so their
+  # nodes, in node-impact estimates.
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["list"]
   {{- end }}
   # Pod ownerReferences attribute container metrics to exact controllers;
   # pod names are never used as an ownership heuristic.

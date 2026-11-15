@@ -656,6 +656,8 @@ export type CapacityResponse = {
   }
   nodeGroups?: NodeGroupImpact[]
   realization?: string
+  /** PodDisruptionBudgets that allow no voluntary evictions. */
+  evictionBlockers?: string[]
   assumptions?: string[]
 }
 
@@ -697,7 +699,7 @@ export type HotspotRow = {
   advice: string
 }
 
-/** A requests-based node packing estimate that honors taints, nodeSelector, and required node affinity. */
+/** A requests-based node packing estimate that honors taints, nodeSelector, required node and pod affinity, anti-affinity, topology spread, and blocking PodDisruptionBudgets. */
 export type PackingResult = {
   nodesNeeded: number
   unplacedPods: number
@@ -705,6 +707,10 @@ export type PackingResult = {
   memoryRequestedBytes: number
   /** Pods that no schedulable node accepts because of taints or placement rules. */
   noEligibleNodePods?: number
+  /** Pods with room on an eligible node that pod affinity, anti-affinity, or topology spread keep off it. */
+  podRulePods?: number
+  /** Pods kept on their current nodes because a PodDisruptionBudget allows no voluntary evictions. */
+  pinnedPods?: number
   unplacedWorkloads?: string[]
 }
 

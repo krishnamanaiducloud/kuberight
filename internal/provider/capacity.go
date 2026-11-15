@@ -94,8 +94,8 @@ func (provider *KubernetesProvider) Capacity(ctx context.Context) (httpapi.Clust
 		return result.Items, result.Continue, nil
 	})
 	capacity.Constraints = map[string]httpapi.SchedulingConstraints{}
-	addConstraints := func(namespace, kind, name string, spec corev1.PodSpec) {
-		if constraints := schedulingConstraints(spec); !constraints.Empty() {
+	addConstraints := func(namespace, kind, name string, template corev1.PodTemplateSpec) {
+		if constraints := schedulingConstraints(template); !constraints.Empty() {
 			capacity.Constraints[namespace+"/"+kind+"/"+name] = constraints
 		}
 	}
@@ -105,7 +105,7 @@ func (provider *KubernetesProvider) Capacity(ctx context.Context) (httpapi.Clust
 			if strings.Contains(name, "cluster-autoscaler") || deployments[index].Labels["app.kubernetes.io/name"] == "cluster-autoscaler" {
 				capacity.Autoscaling.ClusterAutoscaler = true
 			}
-			addConstraints(deployments[index].Namespace, "Deployment", name, deployments[index].Spec.Template.Spec)
+			addConstraints(deployments[index].Namespace, "Deployment", name, deployments[index].Spec.Template)
 		}
 	} else {
 		capacity.Autoscaling.Warnings = append(capacity.Autoscaling.Warnings, "Cluster Autoscaler detection was unavailable: "+safeKubernetesError(err))
@@ -118,11 +118,14 @@ func (provider *KubernetesProvider) Capacity(ctx context.Context) (httpapi.Clust
 		return result.Items, result.Continue, nil
 	}); listErr == nil {
 		for index := range statefulSets {
-			addConstraints(statefulSets[index].Namespace, "StatefulSet", statefulSets[index].Name, statefulSets[index].Spec.Template.Spec)
+			addConstraints(statefulSets[index].Namespace, "StatefulSet", statefulSets[index].Name, statefulSets[index].Spec.Template)
 		}
 	} else {
 		capacity.Autoscaling.Warnings = append(capacity.Autoscaling.Warnings, "StatefulSet placement rules could not be read; their pods are assumed to fit any node: "+safeKubernetesError(listErr))
 	}
+	pins, blockers, warnings := provider.disruptionPins(ctx)
+	capacity.Pinned, capacity.EvictionBlockers = pins, blockers
+	capacity.Autoscaling.Warnings = append(capacity.Autoscaling.Warnings, warnings...)
 	return capacity, nil
 }
 
@@ -154,9 +157,15 @@ func nodePoolSummary(pool unstructured.Unstructured) httpapi.NodePool {
 }
 
 // schedulingConstraints extracts the placement rules node-impact estimates
-// honor: tolerations, nodeSelector, and required node affinity.
-func schedulingConstraints(spec corev1.PodSpec) httpapi.SchedulingConstraints {
+// honor: tolerations, nodeSelector, required node affinity, required pod
+// affinity and anti-affinity, and DoNotSchedule topology spread, plus the
+// template labels other pods' rules select.
+func schedulingConstraints(template corev1.PodTemplateSpec) httpapi.SchedulingConstraints {
+	spec := template.Spec
 	constraints := httpapi.SchedulingConstraints{}
+	if len(template.Labels) > 0 {
+		constraints.Labels = template.Labels
+	}
 	if len(spec.NodeSelector) > 0 {
 		constraints.NodeSelector = spec.NodeSelector
 	}
@@ -176,5 +185,56 @@ func schedulingConstraints(spec corev1.PodSpec) httpapi.SchedulingConstraints {
 			}
 		}
 	}
+	constraints.PodAffinity, constraints.PodAntiAffinity, constraints.TopologySpread = podRules(spec)
 	return constraints
+}
+
+func podRules(spec corev1.PodSpec) (affinity, antiAffinity []httpapi.PodAffinityTerm, spread []httpapi.TopologySpread) {
+	convert := func(terms []corev1.PodAffinityTerm) []httpapi.PodAffinityTerm {
+		converted := make([]httpapi.PodAffinityTerm, 0, len(terms))
+		for _, term := range terms {
+			if term.TopologyKey == "" {
+				continue
+			}
+			// A namespace selector is treated as selecting every namespace:
+			// namespace labels are not read. This makes anti-affinity
+			// stricter and affinity looser than the scheduler.
+			converted = append(converted, httpapi.PodAffinityTerm{
+				Selector: labelSelector(term.LabelSelector), Namespaces: term.Namespaces,
+				AllNamespaces: term.NamespaceSelector != nil, TopologyKey: term.TopologyKey,
+			})
+		}
+		if len(converted) == 0 {
+			return nil
+		}
+		return converted
+	}
+	if rules := spec.Affinity; rules != nil {
+		if rules.PodAffinity != nil {
+			affinity = convert(rules.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution)
+		}
+		if rules.PodAntiAffinity != nil {
+			antiAffinity = convert(rules.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution)
+		}
+	}
+	for _, constraint := range spec.TopologySpreadConstraints {
+		if constraint.WhenUnsatisfiable != corev1.DoNotSchedule || constraint.TopologyKey == "" || constraint.MaxSkew < 1 {
+			continue
+		}
+		spread = append(spread, httpapi.TopologySpread{MaxSkew: int(constraint.MaxSkew), TopologyKey: constraint.TopologyKey, Selector: labelSelector(constraint.LabelSelector)})
+	}
+	return affinity, antiAffinity, spread
+}
+
+// labelSelector converts a Kubernetes selector; nil stays nil and selects
+// nothing.
+func labelSelector(selector *metav1.LabelSelector) *httpapi.LabelSelector {
+	if selector == nil {
+		return nil
+	}
+	converted := &httpapi.LabelSelector{MatchLabels: selector.MatchLabels}
+	for _, expression := range selector.MatchExpressions {
+		converted.MatchExpressions = append(converted.MatchExpressions, httpapi.NodeRequirement{Key: expression.Key, Operator: string(expression.Operator), Values: expression.Values})
+	}
+	return converted
 }
