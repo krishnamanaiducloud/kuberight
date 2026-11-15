@@ -49,7 +49,7 @@ This list describes the current implementation, not planned behavior. KubeRight 
 - Kubernetes authentication requires users to have RBAC for the virtual `kuberight.io` resources. The chart does not grant these to human users.
 - `/healthz`, `/readyz`, and `/metrics` are unauthenticated and should not be exposed publicly. Optional per-recommendation metrics reveal workload labels and are disabled by default.
 - Static-token mode has one credential with no expiry and no per-user audit identity. Apply mode rejects it.
-- The default NetworkPolicy isolates ingress but not egress. Egress isolation needs explicit rules for DNS, the Kubernetes API, PostgreSQL, Prometheus, forecasting, and webhooks.
+- The default NetworkPolicy isolates ingress but not egress. With `networkPolicy.egressIsolation`, DNS and the release's forecasting service are allowed automatically, and the chart refuses to render without the Kubernetes API server addresses in `networkPolicy.kubernetesAPI.cidrs` or an explicit rule for them. PostgreSQL, Prometheus, OpenCost, OIDC, Git hosts, and webhooks still need explicit rules. Egress isolation has been rendered and schema-checked but not tested on a live cluster.
 - No external penetration test has been performed.
 
 ## Packaging and compatibility

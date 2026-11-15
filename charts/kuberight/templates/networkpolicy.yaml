@@ -44,11 +44,46 @@ spec:
   ingress: []
   {{- end }}
   {{- if .Values.networkPolicy.egressIsolation }}
+  {{- if not (or .Values.networkPolicy.kubernetesAPI.cidrs .Values.networkPolicy.egress) }}
+  {{- fail "networkPolicy.egressIsolation needs the Kubernetes API server: set networkPolicy.kubernetesAPI.cidrs or add an egress rule for it" }}
+  {{- end }}
   egress:
+    # DNS resolution.
+    - to:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.dns.namespaceSelector | nindent 12 }}
+          podSelector:
+            {{- toYaml .Values.networkPolicy.dns.podSelector | nindent 12 }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- with .Values.networkPolicy.kubernetesAPI.cidrs }}
+    # The Kubernetes API server, for inventory, reviews, and apply mode.
+    - to:
+        {{- range . }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        {{- range $.Values.networkPolicy.kubernetesAPI.ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+    {{- end }}
+    {{- if .Values.ml.enabled }}
+    # The forecasting service in this release.
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "kuberight.mlSelectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 8081
+    {{- end }}
     {{- with .Values.networkPolicy.egress }}
     {{- toYaml . | nindent 4 }}
-    {{- else }}
-    []
     {{- end }}
   {{- end }}
 {{- end }}

@@ -355,9 +355,24 @@ networkPolicy:
       matchLabels:
         kubernetes.io/metadata.name: monitoring
     podSelector: {}
-  # Enabling egress isolation requires explicit rules for Kubernetes API, DNS,
-  # Prometheus/OpenCost, and registered cluster endpoints.
+  # Egress isolation. When enabled, DNS (the pods selected by dns) and, with
+  # ml.enabled, this release's forecasting service are allowed automatically.
+  # The Kubernetes API server must be listed in kubernetesAPI.cidrs (its
+  # endpoint addresses, for example from
+  # `kubectl get endpointslices -n default -l kubernetes.io/service-name=kubernetes`),
+  # or the chart refuses to render. Prometheus, PostgreSQL, OpenCost, OIDC,
+  # Git hosts, and webhooks need rules in egress.
   egressIsolation: false
+  dns:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: kube-system
+    podSelector:
+      matchLabels:
+        k8s-app: kube-dns
+  kubernetesAPI:
+    cidrs: []
+    ports: [443, 6443]
   egress: []
 
 metrics:
