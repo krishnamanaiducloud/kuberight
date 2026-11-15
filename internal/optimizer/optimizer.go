@@ -285,6 +285,8 @@ type Input struct {
 	PriorRecommendations []PriorRecommendation `json:"priorRecommendations,omitempty"`
 	// skipAssessment avoids recursion when the held-back test re-sizes.
 	skipAssessment bool
+	// skipCandidates avoids recursion when a candidate profile re-sizes.
+	skipCandidates bool
 }
 
 // Provenance makes a recommendation reproducible and allows consumers to
@@ -430,6 +432,9 @@ type Recommendation struct {
 	// Stability records hysteresis, cooldown, oscillation, and confirmation
 	// decisions.
 	Stability *Stability `json:"stability,omitempty"`
+	// Candidates are the conservative, balanced, and aggressive
+	// configurations for the same observations. They are for comparison only.
+	Candidates []Candidate `json:"candidates,omitempty"`
 }
 
 // Approvable reports whether the recommendation may be approved. Legacy
@@ -1148,6 +1153,9 @@ func Recommend(input Input) (Recommendation, error) {
 			cpuMargin: cpuMargin, memoryMargin: memoryMargin, qos: qos, limitRangeChecks: limitRangeChecks,
 			forecastUsed: forecastUsed, confidenceScore: confidenceScore, risk: risk, stability: stability,
 		})
+	}
+	if !input.skipAssessment && !input.skipCandidates {
+		recommendation.Candidates = candidates(input, policy)
 	}
 	return recommendation, nil
 }

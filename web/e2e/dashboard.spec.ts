@@ -77,6 +77,11 @@ const recommendation = {
     observationEnd: '2026-11-03T14:00:00Z',
     expiresAt: '2030-11-04T14:00:00Z',
   },
+  candidates: [
+    { profile: 'conservative', selected: false, cpuRequestMilli: 720, memoryRequestBytes: 536_870_912, cpuLimitMilli: 1_000, memoryLimitBytes: 805_306_368, estimatedCpuChangePercent: -10, estimatedMemoryChangePercent: -33, status: 'recommend', backtest: { cpuCurrent: {}, cpuRecommended: { overRequest: 0 }, memoryCurrent: {}, memoryRecommended: { overRequest: 0 } }, outOfSample: { performed: true, trainSamples: 1_386, testSamples: 594, cpuOverRequest: 0, memoryOverLimit: 0, passed: true, detail: '' } },
+    { profile: 'balanced', selected: true, cpuRequestMilli: 360, memoryRequestBytes: 402_653_184, cpuLimitMilli: 700, memoryLimitBytes: 536_870_912, estimatedCpuChangePercent: -55, estimatedMemoryChangePercent: -50, status: 'recommend', backtest: { cpuCurrent: {}, cpuRecommended: { overRequest: 0.01 }, memoryCurrent: {}, memoryRecommended: { overRequest: 0 } }, outOfSample: { performed: true, trainSamples: 1_386, testSamples: 594, cpuOverRequest: 0.012, memoryOverLimit: 0, passed: true, detail: '' } },
+    { profile: 'aggressive', selected: false, cpuRequestMilli: 330, memoryRequestBytes: 402_653_184, cpuLimitMilli: 600, memoryLimitBytes: 469_762_048, estimatedCpuChangePercent: -59, estimatedMemoryChangePercent: -50, status: 'hold', backtest: { cpuCurrent: {}, cpuRecommended: { overRequest: 0.06 }, memoryCurrent: {}, memoryRecommended: { overRequest: 0 } }, outOfSample: { performed: true, trainSamples: 1_386, testSamples: 594, cpuOverRequest: 0.071, memoryOverLimit: 0, passed: false, detail: '' } },
+  ],
   reviewStatus: 'pending',
 } as const
 
@@ -186,6 +191,9 @@ test('opens a recommendation and exposes provenance and uncertainty evidence', a
   await expect(page.getByText('CPU throttled 2.0% · peak 8.0%')).toBeVisible()
   await expect(page.getByText('CPU waiting 1.0% · peak 3.0%')).toBeVisible()
   await expect(page.getByText('Memory stalled peak 0.2%')).toBeVisible()
+  const alternatives = page.getByRole('table', { name: 'Alternative configurations by profile' })
+  await expect(alternatives.getByText('Recommended')).toBeVisible()
+  await expect(alternatives.getByText('7.1%')).toBeVisible()
   await expect(page.getByText('Rare spikes')).toBeVisible()
   await expectNoSeriousAccessibilityViolations(page)
   await attachScreenshot(page, testInfo, 'recommendation-evidence')

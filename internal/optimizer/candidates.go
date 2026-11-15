@@ -1,0 +1,59 @@
+package optimizer
+
+// Candidate is the configuration a stock profile would produce from the same
+// observations, for comparing savings against risk. Candidates are
+// informational: only the recommendation itself can be approved or applied.
+type Candidate struct {
+	Profile string `json:"profile"`
+	// Selected marks the profile whose policy produced the recommendation.
+	// A recommendation from a custom policy selects none.
+	Selected                     bool    `json:"selected"`
+	CPURequestMilli              int64   `json:"cpuRequestMilli"`
+	MemoryRequestBytes           int64   `json:"memoryRequestBytes"`
+	CPULimitMilli                int64   `json:"cpuLimitMilli"`
+	MemoryLimitBytes             int64   `json:"memoryLimitBytes"`
+	EstimatedCPUChangePercent    float64 `json:"estimatedCpuChangePercent"`
+	EstimatedMemoryChangePercent float64 `json:"estimatedMemoryChangePercent"`
+	// Status is the candidate's assessment verdict, such as "recommend" or
+	// "hold".
+	Status string `json:"status,omitempty"`
+	// Backtest replays every observed sample against the candidate;
+	// OutOfSample sizes it from the first 70% of samples and measures the
+	// rest.
+	Backtest    Backtest    `json:"backtest"`
+	OutOfSample OutOfSample `json:"outOfSample"`
+}
+
+// candidates sizes the input with every stock profile. Each profile keeps the
+// effective policy's resource bounds and CPU-limit strategy, so a candidate
+// never leaves the range an operator allowed.
+func candidates(input Input, effective Policy) []Candidate {
+	selected := policyFingerprint(effective)
+	result := make([]Candidate, 0, 3)
+	for _, profile := range Profiles() {
+		policy := profile.Policy
+		policy.MinimumCPUMilli, policy.MaximumCPUMilli = effective.MinimumCPUMilli, effective.MaximumCPUMilli
+		policy.MinimumMemoryBytes, policy.MaximumMemoryBytes = effective.MinimumMemoryBytes, effective.MaximumMemoryBytes
+		policy.CPULimitStrategy = effective.CPULimitStrategy
+		policy = normalizePolicy(policy)
+		alternative := input
+		alternative.Policy = &policy
+		alternative.skipCandidates = true
+		recommendation, err := Recommend(alternative)
+		if err != nil {
+			continue
+		}
+		candidate := Candidate{
+			Profile: profile.Name, Selected: policyFingerprint(policy) == selected,
+			CPURequestMilli: recommendation.CPURequestMilli, MemoryRequestBytes: recommendation.MemoryRequestBytes,
+			CPULimitMilli: recommendation.CPULimitMilli, MemoryLimitBytes: recommendation.MemoryLimitBytes,
+			EstimatedCPUChangePercent: recommendation.EstimatedCPUChangePercent, EstimatedMemoryChangePercent: recommendation.EstimatedMemoryChangePct,
+			Backtest: recommendation.Backtest,
+		}
+		if recommendation.Assessment != nil {
+			candidate.Status, candidate.OutOfSample = recommendation.Assessment.Status, recommendation.Assessment.OutOfSample
+		}
+		result = append(result, candidate)
+	}
+	return result
+}

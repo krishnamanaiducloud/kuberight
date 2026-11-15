@@ -2628,6 +2628,32 @@ components:
           $ref: "#/components/schemas/Assessment"
         stability:
           $ref: "#/components/schemas/Stability"
+        candidates:
+          type: array
+          maxItems: 3
+          description: The conservative, balanced, and aggressive configurations for the same observations, within the effective policy's resource bounds. For comparison only; only the recommendation can be approved.
+          items: { $ref: "#/components/schemas/Candidate" }
+
+    Candidate:
+      type: object
+      additionalProperties: false
+      required: [profile, selected, cpuRequestMilli, memoryRequestBytes, cpuLimitMilli, memoryLimitBytes, estimatedCpuChangePercent, estimatedMemoryChangePercent, backtest, outOfSample]
+      properties:
+        profile: { type: string, enum: [conservative, balanced, aggressive] }
+        selected:
+          type: boolean
+          description: True for the profile whose policy produced the recommendation.
+        cpuRequestMilli: { type: integer, minimum: 0 }
+        memoryRequestBytes: { type: integer, minimum: 0 }
+        cpuLimitMilli: { type: integer, minimum: 0 }
+        memoryLimitBytes: { type: integer, minimum: 0 }
+        estimatedCpuChangePercent: { type: number }
+        estimatedMemoryChangePercent: { type: number }
+        status: { type: string, description: The candidate's assessment verdict. }
+        backtest:
+          $ref: "#/components/schemas/Backtest"
+        outOfSample:
+          $ref: "#/components/schemas/OutOfSample"
 
     ReviewStatus:
       type: string

@@ -10,6 +10,7 @@ import { api, ApiError, type RecommendationRecord } from '../api'
 import { formatBytes, formatDate, formatMillicores, kubectlCommand, yamlPatch } from '../format'
 import { ResourceTable } from './ResourceTable'
 import { BacktestTable, CpuBehaviorChips, TrendChips } from './Backtest'
+import { CandidatesTable } from './Candidates'
 import { RecommendationEvidence } from './RecommendationEvidence'
 import { AssessmentPanel, AssessmentStatusChip } from './AssessmentPanel'
 import { StabilityPanel } from './StabilityPanel'
@@ -121,6 +122,7 @@ export function RecommendationDrawer({ id, onClose }: { id: string | undefined; 
             <CpuBehaviorChips throttling={record.cpuThrottlingRatio} throttlingPeak={record.cpuThrottlingPeakRatio} pinned={record.cpuLimitPinned} spikes={record.spikes} cpuPressure={record.cpuPressureRatio} cpuPressurePeak={record.cpuPressurePeakRatio} memoryPressurePeak={record.memoryPressurePeakRatio} />
             <TrendChips trends={record.trends} />
             {record.backtest && <BacktestTable backtest={record.backtest} />}
+            {record.candidates && <CandidatesTable candidates={record.candidates} />}
             <Box>
               <Typography variant="subtitle2">Why these values</Typography>
               <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>{record.reason}</Typography>

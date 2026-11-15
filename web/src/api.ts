@@ -196,6 +196,7 @@ export type RecommendationRecord = {
   spikes?: SpikeProfile
   trends?: Trends
   backtest?: Backtest
+  candidates?: Candidate[]
   dataQuality: { cpuSampleCount: number; memorySampleCount: number; minimumRequired: number; sufficient: boolean; issues: string[]; replicaCoverage?: ReplicaCoverage }
   estimatedCpuChangePercent?: number
   estimatedMemoryChangePercent?: number
@@ -293,7 +294,7 @@ export type Assessment = {
   safetyMargins: { cpu: MarginBreakdown; memory: MarginBreakdown }
   seasonality?: { periodSteps: number; strength: number; detected: boolean }
   validation: WindowCheck[]
-  outOfSample: { performed: boolean; trainSamples: number; testSamples: number; cpuOverRequest?: number; cpuOverLimit?: number; memoryOverRequest?: number; memoryOverLimit?: number; passed: boolean; detail: string }
+  outOfSample: OutOfSample
   qos: { current: string; recommended: string; protected: boolean; approximate?: boolean }
   checks: Array<{ name: string; status: CheckStatus; detail: string }>
   autoscaling: { hpa?: HPAImpact; keda?: string; vpa?: string }
@@ -574,6 +575,22 @@ export type EfficiencyResponse = {
     window: string
     basis: string
   }
+}
+
+export type OutOfSample = { performed: boolean; trainSamples: number; testSamples: number; cpuOverRequest?: number; cpuOverLimit?: number; memoryOverRequest?: number; memoryOverLimit?: number; passed: boolean; detail: string }
+
+export type Candidate = {
+  profile: 'conservative' | 'balanced' | 'aggressive'
+  selected: boolean
+  cpuRequestMilli: number
+  memoryRequestBytes: number
+  cpuLimitMilli: number
+  memoryLimitBytes: number
+  estimatedCpuChangePercent: number
+  estimatedMemoryChangePercent: number
+  status?: string
+  backtest: Backtest
+  outOfSample: OutOfSample
 }
 
 export type Exceedance = { overRequest?: number; overLimit?: number; nearLimit?: number }
