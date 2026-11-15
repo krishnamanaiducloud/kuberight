@@ -7,8 +7,10 @@ import (
 	"time"
 
 	"github.com/kuberight/kuberight/internal/httpapi"
+	"github.com/kuberight/kuberight/internal/usage"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	kubernetesfake "k8s.io/client-go/kubernetes/fake"
@@ -85,5 +87,35 @@ func TestWorkloadPopulatesMetricIdentity(t *testing.T) {
 	}
 	if spec.MetricIdentity == nil || spec.MetricIdentity.UID != "deployment-current" || len(spec.MetricIdentity.Pods) != 1 {
 		t.Fatalf("metric identity = %#v", spec.MetricIdentity)
+	}
+}
+
+func TestPodIdentityReportsPodResourcesAndUnfinishedResizes(t *testing.T) {
+	always := corev1.ContainerRestartPolicyAlways
+	list := func(cpu, memory string) corev1.ResourceList {
+		return corev1.ResourceList{corev1.ResourceCPU: resource.MustParse(cpu), corev1.ResourceMemory: resource.MustParse(memory)}
+	}
+	pod := workloadPod("database-0", "pod-current", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), controlledBy("apps/v1", "StatefulSet", "database", "stateful-current"))
+	pod.Spec.Containers[0].Resources = corev1.ResourceRequirements{Requests: list("250m", "512Mi"), Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")}}
+	pod.Spec.InitContainers = []corev1.Container{
+		{Name: "proxy", RestartPolicy: &always, Resources: corev1.ResourceRequirements{Requests: list("50m", "64Mi")}},
+		{Name: "migrate", Resources: corev1.ResourceRequirements{Requests: list("1", "1Gi")}},
+	}
+	identity := podIdentity(*pod)
+	if got := identity.Resources["api"]; got != (usage.ContainerResources{CPURequestMilli: 250, MemoryRequestBytes: 512 << 20, MemoryLimitBytes: 1 << 30}) {
+		t.Fatalf("api resources = %+v", got)
+	}
+	if _, found := identity.Resources["migrate"]; found || identity.Resources["proxy"].CPURequestMilli != 50 || identity.Resizing {
+		t.Fatalf("identity = %+v", identity)
+	}
+	for _, condition := range []corev1.PodConditionType{corev1.PodResizePending, corev1.PodResizeInProgress} {
+		pod.Status.Conditions = []corev1.PodCondition{{Type: condition, Status: corev1.ConditionTrue}}
+		if !podIdentity(*pod).Resizing {
+			t.Fatalf("%s was not reported as an unfinished resize", condition)
+		}
+	}
+	pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+	if podIdentity(*pod).Resizing {
+		t.Fatal("a ready pod was reported as resizing")
 	}
 }

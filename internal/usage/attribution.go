@@ -75,6 +75,23 @@ type PodIdentity struct {
 	DeletedAt  *time.Time `json:"deletedAt,omitempty"`
 	Phase      string     `json:"phase,omitempty"`
 	Containers []string   `json:"containers,omitempty"`
+	// Resources are the requests and limits in the pod's own spec, by
+	// container. They can differ from the workload template: a pod keeps
+	// the values it was created with until it is recreated or resized in
+	// place. Nil means the inventory did not report them.
+	Resources map[string]ContainerResources `json:"-"`
+	// Resizing is set while the kubelet has not finished an in-place
+	// resize, so the pod does not run its spec values yet.
+	Resizing bool `json:"-"`
+}
+
+// ContainerResources are one container's requests and limits in a pod spec.
+// Zero means unset.
+type ContainerResources struct {
+	CPURequestMilli    int64
+	CPULimitMilli      int64
+	MemoryRequestBytes int64
+	MemoryLimitBytes   int64
 }
 
 // Active reports whether Kubernetes still considers the pod a possible

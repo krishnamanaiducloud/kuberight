@@ -21,12 +21,28 @@ func exactController(references []metav1.OwnerReference, kind, name string, uid 
 
 func podIdentity(pod corev1.Pod) usage.PodIdentity {
 	containers := make([]string, 0, len(pod.Spec.Containers)+len(pod.Spec.InitContainers))
-	for _, container := range pod.Spec.Containers {
+	resources := make(map[string]usage.ContainerResources, cap(containers))
+	record := func(container corev1.Container) {
 		containers = append(containers, container.Name)
+		resources[container.Name] = usage.ContainerResources{
+			CPURequestMilli:    container.Resources.Requests.Cpu().MilliValue(),
+			CPULimitMilli:      container.Resources.Limits.Cpu().MilliValue(),
+			MemoryRequestBytes: container.Resources.Requests.Memory().Value(),
+			MemoryLimitBytes:   container.Resources.Limits.Memory().Value(),
+		}
+	}
+	for _, container := range pod.Spec.Containers {
+		record(container)
 	}
 	for _, container := range pod.Spec.InitContainers {
 		if container.RestartPolicy != nil && *container.RestartPolicy == corev1.ContainerRestartPolicyAlways {
-			containers = append(containers, container.Name)
+			record(container)
+		}
+	}
+	resizing := false
+	for _, condition := range pod.Status.Conditions {
+		if (condition.Type == corev1.PodResizePending || condition.Type == corev1.PodResizeInProgress) && condition.Status == corev1.ConditionTrue {
+			resizing = true
 		}
 	}
 	sort.Strings(containers)
@@ -37,6 +53,7 @@ func podIdentity(pod corev1.Pod) usage.PodIdentity {
 	}
 	identity := usage.PodIdentity{
 		Name: pod.Name, UID: string(pod.UID), CreatedAt: pod.CreationTimestamp.Time.UTC(), Phase: string(pod.Status.Phase), Containers: containers,
+		Resources: resources, Resizing: resizing,
 	}
 	if deletedAt != nil {
 		at := deletedAt.Time.UTC()

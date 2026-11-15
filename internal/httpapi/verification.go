@@ -256,6 +256,16 @@ func (server *apiServer) verify(ctx context.Context, record repository.Recommend
 		return server.inconclusive(&run, "the exact metric identity does not cover the live desired replica count")
 	}
 
+	// The template can carry the target while pods still run the previous
+	// values: during a rollout, in an OnDelete workload, or while an
+	// in-place resize is pending. Evidence from those pods says nothing
+	// about the change, so the post-change window does not start yet.
+	if behind, reported := podsBehindTarget(identity, record); behind > 0 {
+		run.Status = VerificationNotApplied
+		run.Reasons = append(run.Reasons, fmt.Sprintf("the workload template carries the approved values, but %d of %d live pods do not run them yet; pods take them when they are recreated or resized in place", behind, reported))
+		return run
+	}
+
 	run.ConfigurationObserved = true
 	run.Attribution = repository.VerificationAttributionExactPodUID
 	if run.FirstObservedAt == nil {
@@ -367,6 +377,24 @@ func sortedUnique(values []string) []string {
 		}
 	}
 	return result
+}
+
+// podsBehindTarget counts the live pods whose own spec does not carry the
+// approved resources, or whose in-place resize the kubelet has not finished.
+// Pods whose resources the inventory did not report are not counted.
+func podsBehindTarget(identity usage.WorkloadIdentity, record repository.RecommendationRecord) (behind, reported int) {
+	for _, pod := range identity.Pods {
+		if !pod.Active() || pod.Resources == nil {
+			continue
+		}
+		reported++
+		live := pod.Resources[record.Container]
+		if pod.Resizing || !matches(live.CPURequestMilli, record.CPURequestMilli) || !matches(live.MemoryRequestBytes, record.MemoryRequestBytes) ||
+			!matches(live.CPULimitMilli, record.CPULimitMilli) || !matches(live.MemoryLimitBytes, record.MemoryLimitBytes) {
+			behind++
+		}
+	}
+	return behind, reported
 }
 
 func matches(live, approved int64) bool {
