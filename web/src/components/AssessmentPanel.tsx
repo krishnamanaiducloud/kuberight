@@ -86,7 +86,7 @@ export function AssessmentPanel({ assessment }: { assessment: Assessment }) {
           </Table>
         </Box>
         <Stack direction="row" gap={1} flexWrap="wrap" sx={{ mt: 1 }}>
-          <Chip size="small" variant="outlined" label={`Saves ${formatMillicores(savings.cpuMilli)} CPU and ${formatBytes(savings.memoryBytes)} memory across replicas`} color={savings.cpuMilli < 0 || savings.memoryBytes < 0 ? 'warning' : 'default'} sx={wrappingChip} />
+          <Chip size="small" variant="outlined" label={`Requested CPU ${savings.cpuMilli >= 0 ? 'down' : 'up'} ${formatMillicores(Math.abs(savings.cpuMilli))}, memory ${savings.memoryBytes >= 0 ? 'down' : 'up'} ${formatBytes(Math.abs(savings.memoryBytes))} across replicas; billing changes only when nodes are removed`} color={savings.cpuMilli < 0 || savings.memoryBytes < 0 ? 'warning' : 'default'} sx={wrappingChip} />
           <Chip size="small" variant="outlined" label={`QoS ${assessment.qos.current} → ${assessment.qos.recommended}${assessment.qos.protected ? ' (protected)' : ''}`} />
           {assessment.workload && (
             <Tooltip title="Effective pod requests: init containers by their maximum, sidecars and application containers summed, overhead added, times replicas.">
