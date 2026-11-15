@@ -138,6 +138,9 @@ automation:
   interval: 15m
   maxChangesPerRun: 5
   window: ""
+  # Resize the running pods of OnDelete StatefulSets and DaemonSets in place
+  # (Kubernetes 1.33+) after patching the template. Grants pods/resize.
+  inPlaceResize: false
 
 # Recommendation lifecycle events for Slack, Teams, PagerDuty, Argo Events,
 # or CI. The Secret holds the URL and an optional HMAC signing secret.

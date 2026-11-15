@@ -187,3 +187,43 @@ func (window Window) String() string {
 	}
 	return format(window.Start) + "-" + format(window.End) + " UTC"
 }
+
+// ResizeResult reports what happened to the running pods of a workload after
+// its template was patched. Pods that were not resized keep their resources
+// until they are recreated.
+type ResizeResult struct {
+	// Attempted is false when in-place resize does not apply; Reason says why.
+	Attempted bool   `json:"attempted"`
+	Reason    string `json:"reason,omitempty"`
+	Pods      int    `json:"pods"`
+	Resized   int    `json:"resized"`
+	Failed    int    `json:"failed"`
+	// Error is the first pod failure.
+	Error string `json:"error,omitempty"`
+}
+
+// ResizeBody renders the patch for the resize subresource of a pod. In-place
+// resize cannot add or remove a request or limit, so only set quantities are
+// sent; the API server rejects a resize that would change the QoS class.
+func ResizeBody(change Change) ([]byte, error) {
+	if change.Container == "" || change.Desired.CPURequestMilli <= 0 || change.Desired.MemoryRequestBytes <= 0 {
+		return nil, errors.New("an in-place resize needs a container with CPU and memory requests")
+	}
+	set := func(cpu, memory int64) map[string]any {
+		values := map[string]any{}
+		if cpu > 0 {
+			values["cpu"] = cpuQuantity(cpu)
+		}
+		if memory > 0 {
+			values["memory"] = memoryQuantity(memory)
+		}
+		return values
+	}
+	resources := map[string]any{"requests": set(change.Desired.CPURequestMilli, change.Desired.MemoryRequestBytes)}
+	if limits := set(change.Desired.CPULimitMilli, change.Desired.MemoryLimitBytes); len(limits) > 0 {
+		resources["limits"] = limits
+	}
+	return json.Marshal(map[string]any{"spec": map[string]any{
+		"containers": []any{map[string]any{"name": change.Container, "resources": resources}},
+	}})
+}

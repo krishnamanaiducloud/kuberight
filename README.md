@@ -330,6 +330,19 @@ Applying passes are singletons across API replicas. A PostgreSQL advisory lock (
 
 Apply mode requires `auth.mode=kubernetes` and `rbac.scope=cluster`. It adds only `patch` on those three kinds.
 
+#### In-place resize for OnDelete workloads
+
+A StatefulSet or DaemonSet with the `OnDelete` update strategy does not roll out a template change, so its running pods keep their old resources until someone deletes them. With `automation.inPlaceResize=true` (off by default), KubeRight patches the template as usual and then resizes the running pods through the `pods/resize` subresource, without restarting them. This needs Kubernetes 1.33 or later, and the chart then also grants `patch` on `pods/resize`.
+
+KubeRight never deletes or restarts a pod to apply a change. It leaves the pods alone, and they take the new resources when recreated, when:
+
+- the workload rolls out changes itself (Deployments and `RollingUpdate` workloads);
+- the container's `resizePolicy` restarts it for a resource the change touches;
+- the change would add or remove a limit, which in-place resize cannot do;
+- the cluster does not serve `pods/resize`, or rejects the resize (for example, a QoS class change).
+
+Each decision in the automation report carries an `inPlace` object with the pods found, resized, and failed. A failed resize does not fail the change. Rollbacks use the same path. The kubelet applies a resize asynchronously and can defer it on a full node; KubeRight does not wait for that, and post-change verification judges the result.
+
 ## GitOps pull requests
 
 When Argo CD or Flux owns a workload, changing it in the cluster would be reverted, so KubeRight proposes the change in Git instead. Configure a provider:

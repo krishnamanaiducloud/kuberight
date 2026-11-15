@@ -173,6 +173,10 @@ spec:
             - name: KUBERIGHT_AUTOMATION_WINDOW
               value: {{ . | quote }}
             {{- end }}
+            {{- if .Values.automation.inPlaceResize }}
+            - name: KUBERIGHT_AUTOMATION_IN_PLACE_RESIZE
+              value: "true"
+            {{- end }}
             {{- end }}
             {{- if .Values.exportRecommendationMetrics }}
             - name: KUBERIGHT_EXPORT_RECOMMENDATION_METRICS

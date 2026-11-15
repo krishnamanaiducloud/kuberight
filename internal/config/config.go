@@ -100,6 +100,10 @@ type Config struct {
 	AutomationInterval   time.Duration
 	AutomationMaxChanges int
 	AutomationWindow     string
+	// AutomationInPlaceResize lets apply mode resize the running pods of
+	// OnDelete StatefulSets and DaemonSets through pods/resize. Off by
+	// default; it needs the pods/resize patch permission.
+	AutomationInPlaceResize bool
 
 	// WebhookURL receives recommendation lifecycle events. WebhookSecret,
 	// when set, signs each body with HMAC-SHA256. WebhookFormat is json or
@@ -243,6 +247,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	cfg.AutomationWindow = strings.TrimSpace(os.Getenv("KUBERIGHT_AUTOMATION_WINDOW"))
+	if cfg.AutomationInPlaceResize, err = parseBool("KUBERIGHT_AUTOMATION_IN_PLACE_RESIZE", false); err != nil {
+		return Config{}, err
+	}
 	if cfg.CostCPUCoreHour, err = parseFloat("KUBERIGHT_COST_CPU_CORE_HOUR", 0, 0, 1000); err != nil {
 		return Config{}, err
 	}

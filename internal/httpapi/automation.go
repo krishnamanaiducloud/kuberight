@@ -25,6 +25,13 @@ type ResourcePatcher interface {
 	PatchResources(ctx context.Context, change automation.Change) error
 }
 
+// InPlaceResizer resizes the running pods of a workload whose update
+// strategy leaves them alone after a template change. It is only used when
+// automation.inPlaceResize is enabled, where the chart grants pods/resize.
+type InPlaceResizer interface {
+	ResizeInPlace(ctx context.Context, change automation.Change) (automation.ResizeResult, error)
+}
+
 // Automation actions and outcomes.
 const (
 	AutomationApply    = "apply"
@@ -55,7 +62,9 @@ type AutomationDecision struct {
 	Desired          automation.Resources `json:"desired"`
 	Outcome          string               `json:"outcome,omitempty"`
 	Error            string               `json:"error,omitempty"`
-	change           *automation.Change
+	// InPlace reports the in-place resize of running pods, when enabled.
+	InPlace *automation.ResizeResult `json:"inPlace,omitempty"`
+	change  *automation.Change
 }
 
 // AutomationReport summarizes one evaluation pass.
@@ -414,6 +423,7 @@ func (server *apiServer) executeAutomation(ctx context.Context, decision *Automa
 			report.Applied++
 		}
 		server.logger.Info("automated change applied", "recommendation_id", decision.RecommendationID, "action", decision.Action, "namespace", decision.Namespace, "workload", decision.Workload, "container", decision.Container)
+		server.resizeInPlace(ctx, decision, patcher)
 	}
 	if auditErr := server.repository.AppendAuditEvent(ctx, audit); auditErr != nil {
 		server.logger.Error("automation audit event could not be stored", "recommendation_id", decision.RecommendationID, "error", auditErr)
@@ -422,6 +432,28 @@ func (server *apiServer) executeAutomation(ctx context.Context, decision *Automa
 		if record, getErr := server.repository.GetRecommendation(ctx, decision.RecommendationID); getErr == nil {
 			server.notify(event, record, automationActor, joinLimited(decision.Reasons, 2))
 		}
+	}
+}
+
+// resizeInPlace follows a successful template patch. A resize that fails or
+// does not apply never fails the change: the template already carries the
+// new resources, and the pods take them when their owner recreates them.
+func (server *apiServer) resizeInPlace(ctx context.Context, decision *AutomationDecision, patcher ResourcePatcher) {
+	resizer, ok := patcher.(InPlaceResizer)
+	if !ok || !server.config.AutomationInPlaceResize {
+		return
+	}
+	result, err := resizer.ResizeInPlace(ctx, *decision.change)
+	if err != nil {
+		result = automation.ResizeResult{Failed: 1, Error: err.Error()}
+	}
+	decision.InPlace = &result
+	switch {
+	case result.Failed > 0:
+		decision.Reasons = append(decision.Reasons, fmt.Sprintf("in-place resize reached %d of %d running pods; the rest take the new resources when recreated", result.Resized, result.Pods))
+		server.logger.Warn("in-place resize incomplete", "recommendation_id", decision.RecommendationID, "pods", result.Pods, "resized", result.Resized, "error", result.Error)
+	case result.Attempted:
+		decision.Reasons = append(decision.Reasons, fmt.Sprintf("resized %d running pods in place", result.Resized))
 	}
 }
 

@@ -1991,6 +1991,24 @@ components:
         desired: { $ref: "#/components/schemas/AutomationResources" }
         outcome: { type: string, enum: [planned, applied, rolled_back, deferred, failed] }
         error: { type: string }
+        inPlace: { $ref: "#/components/schemas/InPlaceResize" }
+
+    InPlaceResize:
+      type: object
+      additionalProperties: false
+      description: >-
+        In-place resize of the running pods of an OnDelete StatefulSet or
+        DaemonSet after its template was patched. Present only when
+        automation.inPlaceResize is enabled. Pods that were not resized keep
+        their resources until they are recreated.
+      required: [attempted, pods, resized, failed]
+      properties:
+        attempted: { type: boolean, description: False when in-place resize does not apply; `reason` says why. }
+        reason: { type: string }
+        pods: { type: integer, minimum: 0 }
+        resized: { type: integer, minimum: 0 }
+        failed: { type: integer, minimum: 0 }
+        error: { type: string, description: The first pod failure. }
 
     AutomationReport:
       type: object
