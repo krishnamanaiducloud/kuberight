@@ -130,6 +130,32 @@ func TestAutomationFinishesARollbackOutsideTheChangeWindow(t *testing.T) {
 	}
 }
 
+func TestResizeRetryBackoffDoublesIsCappedAndResets(t *testing.T) {
+	id := "rec_backoff_test"
+	if _, due := resizeRetryDue(id, fixedNow); !due {
+		t.Fatal("a recommendation without failures must be due")
+	}
+	for failure, want := range []time.Duration{15 * time.Minute, 30 * time.Minute, time.Hour, 2 * time.Hour, 4 * time.Hour, 6 * time.Hour, 6 * time.Hour} {
+		recordResizeRetry(id, true, fixedNow, 15*time.Minute)
+		next, due := resizeRetryDue(id, fixedNow.Add(want-time.Second))
+		if due || !next.Equal(fixedNow.Add(want)) {
+			t.Fatalf("failure %d: next=%s due=%v, want a delay of %s", failure+1, next.Sub(fixedNow), due, want)
+		}
+		if _, due := resizeRetryDue(id, fixedNow.Add(want)); !due {
+			t.Fatalf("failure %d: not due after %s", failure+1, want)
+		}
+	}
+	recordResizeRetry(id, false, fixedNow, 15*time.Minute)
+	if _, due := resizeRetryDue(id, fixedNow); !due {
+		t.Fatal("a success must clear the delay")
+	}
+	recordResizeRetry(id, true, fixedNow, 0)
+	if next, _ := resizeRetryDue(id, fixedNow); !next.Equal(fixedNow.Add(config.DefaultAutomationInterval)) {
+		t.Fatalf("zero interval: next=%s", next.Sub(fixedNow))
+	}
+	recordResizeRetry(id, false, fixedNow, 0)
+}
+
 func TestAutomationDoesNotRetryWithoutCause(t *testing.T) {
 	for name, test := range map[string]retryCase{
 		"every pod runs the template":       {stale: 0},
@@ -161,6 +187,20 @@ func TestAutomationReportsAFailedOrInapplicableRetry(t *testing.T) {
 	}
 
 	body, _, resizes, api, _ := runRetry(t, retryCase{stale: 1, mutate: func(_ *WorkloadSpec, inventory *resizingInventory) {
+		inventory.result = automation.ResizeResult{Attempted: true, Pods: 2, Resized: 1, Failed: 1, Error: "pod db-1: rejected"}
+	}})
+	if decision := decisionFor(t, body); decision["outcome"] != AutomationFailed || len(*resizes) != 1 {
+		t.Fatalf("first attempt: %v", decision)
+	}
+	// The next pass does not hammer a pod that just rejected the resize.
+	_, body = api.do(t, http.MethodPost, "/api/v1/automation:run", "alice", "")
+	decision = decisionFor(t, body)
+	if decision["action"] != AutomationSkip || body["failed"].(float64) != 0 || len(*resizes) != 1 ||
+		!strings.Contains(strings.Join(stringsOf(decision["reasons"]), "; "), "is retried after "+fixedNow.Add(config.DefaultAutomationInterval).UTC().Format(time.RFC3339)) {
+		t.Fatalf("a failed retry was repeated at once: decision=%v resizes=%d", decision, len(*resizes))
+	}
+
+	body, _, resizes, api, _ = runRetry(t, retryCase{stale: 1, mutate: func(_ *WorkloadSpec, inventory *resizingInventory) {
 		inventory.result = automation.ResizeResult{Reason: "the container resize policy restarts it"}
 	}})
 	decision = decisionFor(t, body)

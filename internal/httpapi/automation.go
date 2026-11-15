@@ -276,6 +276,52 @@ func (server *apiServer) evaluateAutomation(ctx context.Context, record reposito
 	return decision
 }
 
+// resizeRetries spaces out retries of an in-place resize that keeps failing,
+// so a pod the cluster will not resize does not produce a failed change on
+// every pass. The state is per process: it is lost at restart and not
+// shared between replicas, which costs at most one extra attempt each.
+var resizeRetries = struct {
+	sync.Mutex
+	state map[string]resizeRetryState
+}{state: map[string]resizeRetryState{}}
+
+type resizeRetryState struct {
+	failures int
+	next     time.Time
+}
+
+const maxResizeRetryDelay = 6 * time.Hour
+
+// resizeRetryDue reports whether a retry may run now, and otherwise when.
+func resizeRetryDue(recommendationID string, now time.Time) (time.Time, bool) {
+	resizeRetries.Lock()
+	defer resizeRetries.Unlock()
+	state := resizeRetries.state[recommendationID]
+	return state.next, !now.Before(state.next)
+}
+
+// recordResizeRetry doubles the delay after each failure, starting at the
+// automation interval, and forgets the recommendation after a success.
+func recordResizeRetry(recommendationID string, failed bool, now time.Time, interval time.Duration) {
+	resizeRetries.Lock()
+	defer resizeRetries.Unlock()
+	if !failed {
+		delete(resizeRetries.state, recommendationID)
+		return
+	}
+	if interval <= 0 {
+		interval = config.DefaultAutomationInterval
+	}
+	state := resizeRetries.state[recommendationID]
+	state.failures++
+	delay := maxResizeRetryDelay
+	if shift := state.failures - 1; shift < 16 && interval<<shift < maxResizeRetryDelay {
+		delay = interval << shift
+	}
+	state.next = now.Add(delay)
+	resizeRetries.state[recommendationID] = state
+}
+
 // unfinishedResize plans a retry of an in-place resize. After KubeRight
 // patches the template of an OnDelete workload, a pod whose resize failed
 // keeps its old resources and nothing else would ever change it; after a
@@ -315,6 +361,11 @@ func (server *apiServer) unfinishedResize(spec WorkloadSpec, container Container
 	if behind == 0 {
 		decision.Action = AutomationSkip
 		return false
+	}
+	if next, due := resizeRetryDue(record.ID, server.now()); !due {
+		decision.Action = AutomationSkip
+		decision.Reasons = append(decision.Reasons, fmt.Sprintf("%d of %d running pods still run other values than the template; the last in-place resize failed and is retried after %s", behind, running, next.UTC().Format(time.RFC3339)))
+		return true
 	}
 	decision.Desired, decision.change, decision.resizeOnly = template, &change, true
 	decision.Reasons = append(decision.Reasons, fmt.Sprintf("the template already carries these values; %d of %d running pods still run others and are resized in place", behind, running))
@@ -490,6 +541,7 @@ func (server *apiServer) executeAutomation(ctx context.Context, decision *Automa
 			return
 		}
 		action = "automation.resize"
+		recordResizeRetry(decision.RecommendationID, err != nil, server.now(), server.config.AutomationInterval)
 	} else {
 		err = patcher.PatchResources(ctx, *decision.change)
 	}
