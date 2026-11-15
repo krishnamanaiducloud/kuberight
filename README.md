@@ -289,6 +289,18 @@ Results:
 - **Memory:** intervals covered 90.5% (89.0–91.9) of held-out hours against a nominal 90%. The service beat seasonal-naive on 49% of VMs.
 - **CPU:** intervals covered 86%, because the calibration factor was fitted on the last validation fold only. It is now the largest factor any fold needs. Chosen on one set of 100 VMs and confirmed on a different 100, coverage rose to 88.4% (85.0–91.2). The remaining shortfall comes from VMs whose CPU level shifts abruptly; there the service usually selects the seasonal-naive model itself (median skill 0). KubeRight uses a forecast for sizing only when its own calibration check passes.
 
+**Quantile accuracy.** `scripts/benchmark-quantile.py FILE --limit 200` scores quantile forecasts on the same VMs, origins, and horizon. It compares seasonal-naive with empirical quantiles, the forecasting service, and LightGBM quantile regression with and without split-conformal calibration. LightGBM is a benchmark-only dependency. The score is pinball loss scaled by each VM's mean, averaged over 195 VMs with 95% bootstrap intervals.
+
+| P95 forecast | CPU coverage | CPU pinball | Memory coverage | Memory pinball |
+| --- | ---: | ---: | ---: | ---: |
+| Seasonal-naive | 95.1% | 0.132 | 94.6% | 0.086 |
+| Forecasting service (Ridge) | 96.0% | 0.211 (0.131–0.328) | 96.5% | 0.134 |
+| LightGBM, conformal | 91.0% (90.0–92.1) | 0.102 (0.066–0.152) | 91.9% | 0.072 |
+
+- The service's P95 forecast is less accurate than seasonal-naive on most VMs: it wins on 40% for CPU and 37% for memory. Its upper bound covers enough hours, but it is wider or more biased than it needs to be. Its P50 wins on 38% of VMs for CPU and 53% for memory.
+- LightGBM with conformal calibration has the lowest P95 loss and beats seasonal-naive on 73% (CPU) and 72% (memory) of VMs. It under-covers, though: 91–92% at P95 and 96–97% at P99, so it is not yet safe to size from.
+- Seasonal-naive is the best calibrated: 95% at P95 and 98.6–98.7% at P99.
+
 `POST /api/v1/backtest` on the forecasting service runs the same rolling-origin evaluation on your own history. The Correlation analysis page shows its result for the selected container.
 
 ## Continuous rightsizing

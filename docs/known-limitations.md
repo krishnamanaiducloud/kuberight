@@ -40,6 +40,7 @@ This list describes the current implementation, not planned behavior. KubeRight 
 - The ML API key is optional and unset by default. The NetworkPolicy limits ingress when enforced, but operators must still protect the service and rotate the key.
 - The ML compute budget is cooperative: it is checked between forecast phases and cannot interrupt numerical work in progress. A proxy deadline is needed for a hard time limit.
 - CPU forecast intervals cover 88.4% on held-out production VMs, short of the 90% target, on machines with abrupt level shifts.
+- On 195 production VMs, the forecasting service's P95 forecasts, and its CPU P50 forecasts, have higher pinball loss than a seasonal-naive baseline on most VMs. LightGBM quantile regression with conformal calibration is more accurate but covers only 91–92% at P95. Neither replaces observed percentiles for sizing.
 - Webhooks use a process-memory queue of 256 events. Transient failures are retried, but there is no durable outbox, dead-letter queue, or replay. A full queue or a restart can lose notifications.
 
 ## Security and operations
