@@ -144,7 +144,8 @@ func unsettled(pod corev1.Pod, container string, changed time.Time) bool {
 // every replica at once. Each call resizes as many pods as already carry
 // the new resources, and at least one: one pod, then one more, then two,
 // four, and so on. It resizes nothing while a pod that carries them is
-// unsettled. A rollback restores values that ran before and is not staged.
+// unsettled: not ready, not done resizing, or restarted after the change was
+// written. A rollback restores values that ran before and is not staged.
 func (provider *KubernetesProvider) ResizeInPlace(ctx context.Context, change automation.Change) (automation.ResizeResult, error) {
 	skip := func(reason string) (automation.ResizeResult, error) {
 		return automation.ResizeResult{Reason: reason}, nil
@@ -193,7 +194,7 @@ func (provider *KubernetesProvider) ResizeInPlace(ctx context.Context, change au
 		switch {
 		case !carries(pod, change.Container, change.Desired):
 			behind = append(behind, pod.Name)
-		case unsettled(pod, change.Container, target.changed) && unhealthy == "":
+		case podIdentity(pod).Unsettled(change.Container, target.changed) && unhealthy == "":
 			current, unhealthy = current+1, pod.Name
 		default:
 			current++

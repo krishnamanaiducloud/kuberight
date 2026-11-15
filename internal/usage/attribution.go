@@ -83,6 +83,18 @@ type PodIdentity struct {
 	// Resizing is set while the kubelet has not finished an in-place
 	// resize, so the pod does not run its spec values yet.
 	Resizing bool `json:"-"`
+	// Ready is the pod's Ready condition. Restarted holds, by container,
+	// when its previous instance terminated.
+	Ready     bool                 `json:"-"`
+	Restarted map[string]time.Time `json:"-"`
+}
+
+// Unsettled reports whether a running pod is no evidence that the resources
+// in its spec work: it is not ready, the kubelet has not finished (or cannot
+// finish) an in-place resize, or the container restarted after since. A zero
+// since skips the restart check.
+func (pod PodIdentity) Unsettled(container string, since time.Time) bool {
+	return !pod.Ready || pod.Resizing || (!since.IsZero() && pod.Restarted[container].After(since))
 }
 
 // ContainerResources are one container's requests and limits in a pod spec.

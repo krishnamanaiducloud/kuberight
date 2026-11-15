@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/kuberight/kuberight/internal/optimizer"
 	"github.com/kuberight/kuberight/internal/usage"
@@ -65,6 +66,9 @@ type WorkloadSpec struct {
 	// OnDelete is set for a StatefulSet or DaemonSet whose update strategy
 	// leaves running pods alone after a template change.
 	OnDelete bool `json:"-"`
+	// AutomationWrite is when KubeRight last patched the workload, from the
+	// API server's managed fields. Zero means it is not recorded.
+	AutomationWrite time.Time `json:"-"`
 }
 
 // InitContainerSpec is an init container's configured resources.

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kuberight/kuberight/internal/automation"
 	appsv1 "k8s.io/api/apps/v1"
@@ -190,9 +191,18 @@ func TestWorkloadReportsTheOnDeleteStrategy(t *testing.T) {
 	for strategy, want := range map[appsv1.StatefulSetUpdateStrategyType]bool{appsv1.OnDeleteStatefulSetStrategyType: true, appsv1.RollingUpdateStatefulSetStrategyType: false} {
 		client := kubernetesfake.NewSimpleClientset(resizeStatefulSet(strategy))
 		spec, err := testProvider(client).Workload(context.Background(), "shop", "StatefulSet", "db")
-		if err != nil || spec.OnDelete != want {
-			t.Fatalf("%s: onDelete=%v err=%v", strategy, spec.OnDelete, err)
+		if err != nil || spec.OnDelete != want || !spec.AutomationWrite.IsZero() {
+			t.Fatalf("%s: onDelete=%v write=%s err=%v", strategy, spec.OnDelete, spec.AutomationWrite, err)
 		}
+	}
+	// The time of KubeRight's last write comes from its own managed-fields
+	// entry, not from another manager's later one.
+	written := metav1.NewTime(time.Date(2026, 11, 15, 10, 0, 0, 0, time.UTC))
+	later := metav1.NewTime(written.Add(time.Hour))
+	managed := resizeStatefulSet(appsv1.OnDeleteStatefulSetStrategyType)
+	managed.ManagedFields = []metav1.ManagedFieldsEntry{{Manager: "kubectl", Time: &later}, {Manager: automation.FieldManager, Time: &written}}
+	if spec, err := testProvider(kubernetesfake.NewSimpleClientset(managed)).Workload(context.Background(), "shop", "StatefulSet", "db"); err != nil || !spec.AutomationWrite.Equal(written.Time) {
+		t.Fatalf("write=%s err=%v", spec.AutomationWrite, err)
 	}
 	daemon := &appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Name: "agent", Namespace: "shop", UID: "ds-1"},
 		Spec: appsv1.DaemonSetSpec{UpdateStrategy: appsv1.DaemonSetUpdateStrategy{Type: appsv1.OnDeleteDaemonSetStrategyType}, Template: resizeTemplate()}}

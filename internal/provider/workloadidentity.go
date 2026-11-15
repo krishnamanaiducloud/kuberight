@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/kuberight/kuberight/internal/httpapi"
 	"github.com/kuberight/kuberight/internal/usage"
@@ -39,10 +40,24 @@ func podIdentity(pod corev1.Pod) usage.PodIdentity {
 			record(container)
 		}
 	}
-	resizing := false
+	resizing, ready := false, false
 	for _, condition := range pod.Status.Conditions {
 		if (condition.Type == corev1.PodResizePending || condition.Type == corev1.PodResizeInProgress) && condition.Status == corev1.ConditionTrue {
 			resizing = true
+		}
+		if condition.Type == corev1.PodReady && condition.Status == corev1.ConditionTrue {
+			ready = true
+		}
+	}
+	var restarted map[string]time.Time
+	for _, statuses := range [][]corev1.ContainerStatus{pod.Status.ContainerStatuses, pod.Status.InitContainerStatuses} {
+		for _, status := range statuses {
+			if terminated := status.LastTerminationState.Terminated; terminated != nil {
+				if restarted == nil {
+					restarted = map[string]time.Time{}
+				}
+				restarted[status.Name] = terminated.FinishedAt.Time
+			}
 		}
 	}
 	sort.Strings(containers)
@@ -53,7 +68,7 @@ func podIdentity(pod corev1.Pod) usage.PodIdentity {
 	}
 	identity := usage.PodIdentity{
 		Name: pod.Name, UID: string(pod.UID), CreatedAt: pod.CreationTimestamp.Time.UTC(), Phase: string(pod.Status.Phase), Containers: containers,
-		Resources: resources, Resizing: resizing,
+		Resources: resources, Resizing: resizing, Ready: ready, Restarted: restarted,
 	}
 	if deletedAt != nil {
 		at := deletedAt.Time.UTC()

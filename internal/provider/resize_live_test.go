@@ -135,9 +135,15 @@ func TestLiveInPlaceResize(t *testing.T) {
 	if spec.Containers[0].CPURequestMilli != 50 || spec.Annotations[automation.AppliedAnnotation] != "rec_live" {
 		t.Fatalf("template after the patch: %+v annotations=%v", spec.Containers[0], spec.Annotations)
 	}
+	if spec.AutomationWrite.IsZero() || time.Since(spec.AutomationWrite) > 10*time.Minute {
+		t.Fatalf("the workload does not report when KubeRight wrote it: %s", spec.AutomationWrite)
+	}
 	for name, pod := range pods {
 		if pod.Resources["api"] != before {
 			t.Fatalf("pod %s changed without a resize: %+v", name, pod.Resources["api"])
+		}
+		if !pod.Ready || pod.Unsettled("api", spec.AutomationWrite) {
+			t.Fatalf("a healthy pod is reported as unsettled: %+v", pod)
 		}
 	}
 
@@ -201,8 +207,10 @@ func TestLiveInPlaceResize(t *testing.T) {
 	if result, err := provider.ResizeInPlace(ctx, infeasible); err != nil || !result.Halted || result.Resized != 0 || result.Remaining != 1 || !strings.Contains(result.Error, "pod db-1 carries the new resources") {
 		t.Fatalf("an unfinished stage did not halt the next: result=%+v err=%v", result, err)
 	}
-	if _, pods := liveContainerResources(t, provider); pods["db-0"].Resources["api"] != after {
-		t.Fatalf("the halted stage changed db-0: %+v", pods["db-0"].Resources["api"])
+	// The inventory reports the same pod as unsettled, which is what lets
+	// automation roll back a resize that stays halted.
+	if spec, pods := liveContainerResources(t, provider); pods["db-0"].Resources["api"] != after || !pods["db-1"].Unsettled("api", spec.AutomationWrite) || pods["db-0"].Unsettled("api", spec.AutomationWrite) {
+		t.Fatalf("the halted stage changed db-0 or the unsettled pod is not reported: %+v", pods)
 	}
 	if result, err := provider.ResizeInPlace(ctx, change); err != nil || result.Halted || result.Resized != 1 {
 		t.Fatalf("restore: result=%+v err=%v", result, err)

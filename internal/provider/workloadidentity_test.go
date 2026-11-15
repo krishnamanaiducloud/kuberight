@@ -114,8 +114,45 @@ func TestPodIdentityReportsPodResourcesAndUnfinishedResizes(t *testing.T) {
 			t.Fatalf("%s was not reported as an unfinished resize", condition)
 		}
 	}
+	if identity.Ready || identity.Restarted != nil || !identity.Unsettled("api", time.Time{}) {
+		t.Fatalf("a pod without a Ready condition must be unsettled: %+v", identity)
+	}
 	pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
 	if podIdentity(*pod).Resizing {
 		t.Fatal("a ready pod was reported as resizing")
+	}
+
+	// A restart counts only for the named container and only after the
+	// time the caller cares about.
+	finished := time.Date(2026, 11, 15, 10, 0, 0, 0, time.UTC)
+	pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+		{Name: "api", LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{FinishedAt: metav1.NewTime(finished)}}},
+		{Name: "other"},
+	}
+	pod.Status.InitContainerStatuses = []corev1.ContainerStatus{
+		{Name: "proxy", LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{FinishedAt: metav1.NewTime(finished.Add(time.Hour))}}},
+	}
+	identity = podIdentity(*pod)
+	if !identity.Ready || len(identity.Restarted) != 2 || !identity.Restarted["api"].Equal(finished) || !identity.Restarted["proxy"].Equal(finished.Add(time.Hour)) {
+		t.Fatalf("identity = %+v", identity)
+	}
+	for name, test := range map[string]struct {
+		container string
+		since     time.Time
+		unsettled bool
+	}{
+		"restarted after":        {"api", finished.Add(-time.Second), true},
+		"restarted before":       {"api", finished, false},
+		"time not recorded":      {"api", time.Time{}, false},
+		"another container":      {"other", finished.Add(-time.Second), false},
+		"sidecar restarted late": {"proxy", finished, true},
+	} {
+		if got := identity.Unsettled(test.container, test.since); got != test.unsettled {
+			t.Fatalf("%s: unsettled = %v", name, got)
+		}
+	}
+	pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionFalse}}
+	if !podIdentity(*pod).Unsettled("other", time.Time{}) {
+		t.Fatal("an unready pod must be unsettled")
 	}
 }

@@ -288,6 +288,30 @@ var resizeRetries = struct {
 type resizeRetryState struct {
 	failures int
 	next     time.Time
+	// haltedSince is when an unsettled pod was first seen holding up a
+	// staged resize, or zero.
+	haltedSince time.Time
+}
+
+// resizeHaltSince tracks how long a staged resize has been held up by an
+// unsettled pod. It returns when that was first seen; a pass that finds the
+// pods settled forgets it.
+func resizeHaltSince(recommendationID string, unsettled bool, now time.Time) (time.Time, bool) {
+	resizeRetries.Lock()
+	defer resizeRetries.Unlock()
+	state, known := resizeRetries.state[recommendationID]
+	switch {
+	case !unsettled:
+		if known && !state.haltedSince.IsZero() {
+			state.haltedSince = time.Time{}
+			resizeRetries.state[recommendationID] = state
+		}
+		return time.Time{}, false
+	case state.haltedSince.IsZero():
+		state.haltedSince = now
+		resizeRetries.state[recommendationID] = state
+	}
+	return state.haltedSince, true
 }
 
 const maxResizeRetryDelay = 6 * time.Hour
@@ -329,6 +353,11 @@ func recordResizeRetry(recommendationID string, failed bool, now time.Time, inte
 // still carries the change KubeRight made for this recommendation and live
 // pods run something else, the pods are resized again. The template is not
 // touched.
+//
+// The exception is a staged resize that stays halted. When a pod that took
+// the new values is still unsettled one automation interval after that was
+// first seen, while other pods never took them, the change is rolled back:
+// the template and every pod return to the previous values.
 func (server *apiServer) unfinishedResize(spec WorkloadSpec, container ContainerSpec, record repository.RecommendationRecord, previous automation.Resources, decision *AutomationDecision) bool {
 	if !server.config.AutomationInPlaceResize || !spec.OnDelete || spec.MetricIdentity == nil || len(decision.Reasons) > 0 ||
 		spec.Annotations[automation.AppliedAnnotation] != record.ID {
@@ -345,7 +374,7 @@ func (server *apiServer) unfinishedResize(spec WorkloadSpec, container Container
 	default:
 		return false
 	}
-	behind, running := 0, 0
+	behind, running, unsettled := 0, 0, ""
 	for _, pod := range spec.MetricIdentity.Pods {
 		if !pod.Active() || pod.Phase != "Running" || pod.Resources == nil {
 			continue
@@ -356,11 +385,26 @@ func (server *apiServer) unfinishedResize(spec WorkloadSpec, container Container
 		// the right spec and needs no new request.
 		if !resourcesMatch(automation.Resources{CPURequestMilli: live.CPURequestMilli, CPULimitMilli: live.CPULimitMilli, MemoryRequestBytes: live.MemoryRequestBytes, MemoryLimitBytes: live.MemoryLimitBytes}, template) {
 			behind++
+		} else if unsettled == "" && pod.Unsettled(record.Container, spec.AutomationWrite) {
+			unsettled = pod.Name
 		}
 	}
 	if behind == 0 {
 		decision.Action = AutomationSkip
 		return false
+	}
+	if decision.Action == AutomationApply {
+		interval := server.config.AutomationInterval
+		if interval <= 0 {
+			interval = config.DefaultAutomationInterval
+		}
+		if since, halted := resizeHaltSince(record.ID, unsettled != "", server.now()); halted && server.now().Sub(since) >= interval {
+			decision.Action, decision.Desired = AutomationRollback, previous
+			change.Desired, change.Previous, change.Rollback = previous, template, true
+			decision.change = &change
+			decision.Reasons = append(decision.Reasons, fmt.Sprintf("the staged in-place resize stayed halted since %s: pod %s runs the new resources and is not ready, has not finished resizing, or restarted after the change; %d of %d running pods never took them", since.UTC().Format(time.RFC3339), unsettled, behind, running))
+			return true
+		}
 	}
 	if next, due := resizeRetryDue(record.ID, server.now()); !due {
 		decision.Action = AutomationSkip
@@ -546,6 +590,10 @@ func (server *apiServer) executeAutomation(ctx context.Context, decision *Automa
 		recordResizeRetry(decision.RecommendationID, err != nil, server.now(), server.config.AutomationInterval)
 	} else {
 		err = patcher.PatchResources(ctx, *decision.change)
+		if err == nil && decision.Action == AutomationRollback {
+			// The change is gone, and with it any halted or failing resize.
+			recordResizeRetry(decision.RecommendationID, false, server.now(), server.config.AutomationInterval)
+		}
 	}
 	audit := repository.AuditEvent{Timestamp: server.now().UTC(), Actor: automationActor, Action: action, Resource: "recommendations/" + decision.RecommendationID, Namespace: decision.Namespace, Outcome: "success", RequestID: "automation/" + decision.RecommendationID}
 	if err != nil {
