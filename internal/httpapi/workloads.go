@@ -62,6 +62,9 @@ type WorkloadSpec struct {
 	// automation opt-out and GitOps ownership. They are not serialized.
 	Labels      map[string]string `json:"-"`
 	Annotations map[string]string `json:"-"`
+	// OnDelete is set for a StatefulSet or DaemonSet whose update strategy
+	// leaves running pods alone after a template change.
+	OnDelete bool `json:"-"`
 }
 
 // InitContainerSpec is an init container's configured resources.

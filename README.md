@@ -343,7 +343,9 @@ KubeRight never deletes or restarts a pod to apply a change. It leaves the pods 
 - the change would add or remove a limit, which in-place resize cannot do;
 - the cluster does not serve `pods/resize`, or rejects the resize (for example, a QoS class change).
 
-Each decision in the automation report carries an `inPlace` object with the pods found, resized, and failed. A failed resize does not fail the change. Rollbacks use the same path. The kubelet applies a resize asynchronously and can defer it on a full node; KubeRight does not wait for that, and post-change verification judges the result.
+Each decision in the automation report carries an `inPlace` object with the pods found, resized, and failed. A failed resize does not fail the change. Rollbacks use the same path.
+
+A resize that did not reach every pod is retried. On each pass, if the template still carries the change KubeRight made and running pods have other values, those pods are resized again without touching the template. The retry is audited as `automation.resize`, appears in the report as an `apply` or `rollback` decision, and counts as a failed change while pods keep rejecting it. A retry that completes a rollback ignores the change window, like the rollback itself. The kubelet applies a resize asynchronously and can defer it on a full node; KubeRight does not wait for that, and post-change verification judges the result.
 
 ## GitOps pull requests
 

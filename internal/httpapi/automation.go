@@ -65,6 +65,9 @@ type AutomationDecision struct {
 	// InPlace reports the in-place resize of running pods, when enabled.
 	InPlace *automation.ResizeResult `json:"inPlace,omitempty"`
 	change  *automation.Change
+	// resizeOnly marks a retry: the template already carries the change,
+	// and only pods that still run other values are resized.
+	resizeOnly bool
 }
 
 // AutomationReport summarizes one evaluation pass.
@@ -238,6 +241,9 @@ func (server *apiServer) evaluateAutomation(ctx context.Context, record reposito
 		}
 		return decision
 	}
+	if server.unfinishedResize(spec, container, record, previous, &decision) {
+		return decision
+	}
 
 	if record.ReviewStatus != repository.ReviewApproved {
 		reason("the recommendation is not approved")
@@ -268,6 +274,74 @@ func (server *apiServer) evaluateAutomation(ctx context.Context, record reposito
 		decision.change = &automation.Change{Namespace: record.Namespace, Kind: record.Kind, Workload: record.Workload, Container: record.Container, ResourceVersion: spec.ResourceVersion, RecommendationID: record.ID, Desired: decision.Desired, Previous: decision.Current}
 	}
 	return decision
+}
+
+// unfinishedResize plans a retry of an in-place resize. After KubeRight
+// patches the template of an OnDelete workload, a pod whose resize failed
+// keeps its old resources and nothing else would ever change it; after a
+// rollback, that pod would keep the regressed values. When the template
+// still carries the change KubeRight made for this recommendation and live
+// pods run something else, the pods are resized again. The template is not
+// touched.
+func (server *apiServer) unfinishedResize(spec WorkloadSpec, container ContainerSpec, record repository.RecommendationRecord, previous automation.Resources, decision *AutomationDecision) bool {
+	if !server.config.AutomationInPlaceResize || !spec.OnDelete || spec.MetricIdentity == nil || len(decision.Reasons) > 0 ||
+		spec.Annotations[automation.AppliedAnnotation] != record.ID {
+		return false
+	}
+	template := liveResources(container)
+	change := automation.Change{Namespace: record.Namespace, Kind: record.Kind, Workload: record.Workload, Container: record.Container, ResourceVersion: spec.ResourceVersion, RecommendationID: record.ID, Desired: template}
+	switch {
+	case resourcesMatch(template, decision.Desired) && record.ReviewStatus == repository.ReviewApproved:
+		decision.Action, change.Previous = AutomationApply, previous
+	case resourcesMatch(template, previous) && !resourcesMatch(template, decision.Desired):
+		// The change was rolled back: finishing it restores safety.
+		decision.Action, change.Previous, change.Rollback = AutomationRollback, decision.Desired, true
+	default:
+		return false
+	}
+	behind, running := 0, 0
+	for _, pod := range spec.MetricIdentity.Pods {
+		if !pod.Active() || pod.Phase != "Running" || pod.Resources == nil {
+			continue
+		}
+		running++
+		live := pod.Resources[record.Container]
+		// A pod whose resize the kubelet is still working on already has
+		// the right spec and needs no new request.
+		if !resourcesMatch(automation.Resources{CPURequestMilli: live.CPURequestMilli, CPULimitMilli: live.CPULimitMilli, MemoryRequestBytes: live.MemoryRequestBytes, MemoryLimitBytes: live.MemoryLimitBytes}, template) {
+			behind++
+		}
+	}
+	if behind == 0 {
+		decision.Action = AutomationSkip
+		return false
+	}
+	decision.Desired, decision.change, decision.resizeOnly = template, &change, true
+	decision.Reasons = append(decision.Reasons, fmt.Sprintf("the template already carries these values; %d of %d running pods still run others and are resized in place", behind, running))
+	return true
+}
+
+// retryResize runs a planned resize retry. A resize that no longer applies
+// is not a failure: the decision becomes a skip that says why.
+func (server *apiServer) retryResize(ctx context.Context, decision *AutomationDecision, patcher ResourcePatcher) (skipped bool, err error) {
+	resizer, ok := patcher.(InPlaceResizer)
+	if !ok {
+		return false, errors.New("the Kubernetes provider cannot resize pods in place")
+	}
+	result, err := resizer.ResizeInPlace(ctx, *decision.change)
+	if err != nil {
+		return false, err
+	}
+	decision.InPlace = &result
+	switch {
+	case !result.Attempted:
+		decision.Action = AutomationSkip
+		decision.Reasons = append(decision.Reasons, result.Reason)
+		return true, nil
+	case result.Failed > 0:
+		return false, fmt.Errorf("in-place resize reached %d of %d running pods: %s", result.Resized, result.Pods, result.Error)
+	}
+	return false, nil
 }
 
 // automationPass evaluates the latest approved recommendation of every
@@ -408,7 +482,17 @@ func (server *apiServer) executeAutomation(ctx context.Context, decision *Automa
 	if decision.Action == AutomationRollback {
 		action, event, outcome = "automation.rollback", notify.RecommendationRolledBack, AutomationRolledBack
 	}
-	err := patcher.PatchResources(ctx, *decision.change)
+	var err error
+	if decision.resizeOnly {
+		var skipped bool
+		if skipped, err = server.retryResize(ctx, decision, patcher); skipped {
+			report.Eligible--
+			return
+		}
+		action = "automation.resize"
+	} else {
+		err = patcher.PatchResources(ctx, *decision.change)
+	}
 	audit := repository.AuditEvent{Timestamp: server.now().UTC(), Actor: automationActor, Action: action, Resource: "recommendations/" + decision.RecommendationID, Namespace: decision.Namespace, Outcome: "success", RequestID: "automation/" + decision.RecommendationID}
 	if err != nil {
 		decision.Outcome, decision.Error = AutomationFailed, err.Error()
@@ -423,12 +507,15 @@ func (server *apiServer) executeAutomation(ctx context.Context, decision *Automa
 			report.Applied++
 		}
 		server.logger.Info("automated change applied", "recommendation_id", decision.RecommendationID, "action", decision.Action, "namespace", decision.Namespace, "workload", decision.Workload, "container", decision.Container)
-		server.resizeInPlace(ctx, decision, patcher)
+		if !decision.resizeOnly {
+			server.resizeInPlace(ctx, decision, patcher)
+		}
 	}
 	if auditErr := server.repository.AppendAuditEvent(ctx, audit); auditErr != nil {
 		server.logger.Error("automation audit event could not be stored", "recommendation_id", decision.RecommendationID, "error", auditErr)
 	}
-	if err == nil {
+	// A retry completes a change that was already announced.
+	if err == nil && !decision.resizeOnly {
 		if record, getErr := server.repository.GetRecommendation(ctx, decision.RecommendationID); getErr == nil {
 			server.notify(event, record, automationActor, joinLimited(decision.Reasons, 2))
 		}

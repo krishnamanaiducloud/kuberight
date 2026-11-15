@@ -183,3 +183,18 @@ func TestResizeInPlaceCoversOnDeleteDaemonSets(t *testing.T) {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
 }
+
+func TestWorkloadReportsTheOnDeleteStrategy(t *testing.T) {
+	for strategy, want := range map[appsv1.StatefulSetUpdateStrategyType]bool{appsv1.OnDeleteStatefulSetStrategyType: true, appsv1.RollingUpdateStatefulSetStrategyType: false} {
+		client := kubernetesfake.NewSimpleClientset(resizeStatefulSet(strategy))
+		spec, err := testProvider(client).Workload(context.Background(), "shop", "StatefulSet", "db")
+		if err != nil || spec.OnDelete != want {
+			t.Fatalf("%s: onDelete=%v err=%v", strategy, spec.OnDelete, err)
+		}
+	}
+	daemon := &appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Name: "agent", Namespace: "shop", UID: "ds-1"},
+		Spec: appsv1.DaemonSetSpec{UpdateStrategy: appsv1.DaemonSetUpdateStrategy{Type: appsv1.OnDeleteDaemonSetStrategyType}, Template: resizeTemplate()}}
+	if spec, err := testProvider(kubernetesfake.NewSimpleClientset(daemon)).Workload(context.Background(), "shop", "DaemonSet", "agent"); err != nil || !spec.OnDelete {
+		t.Fatalf("daemonset: onDelete=%v err=%v", spec.OnDelete, err)
+	}
+}
