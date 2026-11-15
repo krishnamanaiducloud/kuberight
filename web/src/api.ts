@@ -668,6 +668,16 @@ export type CapacityResponse = {
   realization?: string
   /** PodDisruptionBudgets that allow no voluntary evictions. */
   evictionBlockers?: string[]
+  /** Request reduction, feasible node savings, and billing, which is not measured. */
+  costTiers?: {
+    available: boolean
+    reason?: string
+    currency?: string
+    priceSource?: string
+    requestReduction?: { monthly: number; detail: string }
+    feasibleNodeSavings?: { nodes: number; monthly: number; detail: string }
+    billing: { measured: boolean; detail: string }
+  }
   assumptions?: string[]
 }
 

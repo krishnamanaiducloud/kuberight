@@ -128,6 +128,12 @@ async function mockControlPlane(page: Page) {
           ],
           realization: 'Karpenter consolidates underutilized nodes automatically once the lower requests are applied.',
           evictionBlockers: ['PodDisruptionBudget payments/ledger allows no voluntary evictions; 2 pods stay on their nodes'],
+          costTiers: {
+            available: true, currency: 'USD', priceSource: 'configured',
+            requestReduction: { monthly: 524.6, detail: 'Lower requests across every replica, priced at unit prices for 730 hours. Requests alone do not change the bill.' },
+            feasibleNodeSavings: { nodes: 2, monthly: 321.2, detail: 'The allocatable CPU and memory of the nodes the packing frees, after node-group minimums.' },
+            billing: { measured: false, detail: 'Cloud billing is not ingested.' },
+          },
           assumptions: ['Pods are packed by requests with first-fit-decreasing onto existing node shapes, largest first.'],
         }
         break
@@ -211,6 +217,10 @@ test('shows node impact per node group with membership evidence', async ({ page 
   await expect(groups.getByText('Inferred')).toBeVisible()
   await expect(page.getByText('2 pods stay on their nodes because a PodDisruptionBudget allows no evictions', { exact: false })).toBeVisible()
   await expect(page.getByText('PodDisruptionBudget payments/ledger allows no voluntary evictions; 2 pods stay on their nodes.')).toBeVisible()
+  const tiers = page.getByLabel('Savings by evidence')
+  await expect(tiers.getByText('Feasible from removing 2 nodes')).toBeVisible()
+  await expect(tiers.getByText('$321.20/month')).toBeVisible()
+  await expect(tiers.getByText('Not measured')).toBeVisible()
   await expectNoSeriousAccessibilityViolations(page)
   await attachScreenshot(page, testInfo, 'node-groups')
   expect(failures).toEqual([])

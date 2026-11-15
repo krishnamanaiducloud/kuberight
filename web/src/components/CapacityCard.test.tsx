@@ -1,6 +1,6 @@
 import { render, screen, within } from '@testing-library/react'
 import type { NodeGroupImpact } from '../api'
-import { NodeGroupTable } from './CapacityCard'
+import { CostTiers, NodeGroupTable } from './CapacityCard'
 
 const group = (overrides: Partial<NodeGroupImpact>): NodeGroupImpact => ({
   name: 'general', provider: 'eks', membership: 'verified', evidence: 'label eks.amazonaws.com/nodegroup',
@@ -37,5 +37,28 @@ describe('NodeGroupTable size limits', () => {
     expect(within(rows[1]).getByText('held by minimum size')).toBeInTheDocument()
     expect(within(rows[2]).getByText('size 0–2')).toBeInTheDocument()
     expect(within(rows[2]).getByText('needs more than the maximum size')).toBeInTheDocument()
+  })
+})
+
+describe('CostTiers', () => {
+  const billing = { measured: false, detail: 'Cloud billing is not ingested.' }
+  it('separates request reduction, node savings, and the unmeasured bill', () => {
+    render(<CostTiers tiers={{
+      available: true, currency: 'USD', priceSource: 'configured',
+      requestReduction: { monthly: 131.4, detail: 'Requests alone do not change the bill.' },
+      feasibleNodeSavings: { nodes: 1, monthly: 160.6, detail: 'An estimate, not a quote.' },
+      billing,
+    }} />)
+    const list = screen.getByLabelText('Savings by evidence')
+    expect(within(list).getByText('Request reduction')).toBeInTheDocument()
+    expect(within(list).getByText('$131.40/month')).toBeInTheDocument()
+    expect(within(list).getByText('Feasible from removing 1 node')).toBeInTheDocument()
+    expect(within(list).getByText('$160.60/month')).toBeInTheDocument()
+    expect(within(list).getByText('Not measured')).toBeInTheDocument()
+  })
+
+  it('explains that estimates need prices', () => {
+    render(<CostTiers tiers={{ available: false, billing }} />)
+    expect(screen.getByText(/Cost estimates need unit prices/)).toBeInTheDocument()
   })
 })

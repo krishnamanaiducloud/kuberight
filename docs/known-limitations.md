@@ -22,7 +22,7 @@ This list describes the current implementation, not planned behavior. KubeRight 
 
 ## Cost and FinOps
 
-- Savings are estimates of requested CPU and memory over 730 hours, priced from configured unit prices or OpenCost. A lower request is not a lower bill until nodes are removed. They are not invoices or realized savings.
+- Savings are estimates of requested CPU and memory over 730 hours, priced from configured unit prices or OpenCost. A lower request is not a lower bill until nodes are removed. They are not invoices or realized savings. Node impact reports three amounts separately: the request reduction; feasible savings from the nodes the packing frees within node-group minimums, priced at unit prices for their allocatable CPU and memory rather than instance prices; and billing, which is not measured.
 - There is no cloud-billing ingestion, shared-cost allocation, discount, reservation, or spot-rate accounting, chargeback ledger, budget enforcement, or carbon model.
 
 ## Persistence and high availability

@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Box, Card, CardContent, Chip, Skeleton, Stack, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Tooltip, Typography } from '@mui/material'
 import ArrowForward from '@mui/icons-material/ArrowForward'
 import { api, type CapacityResponse, type NodeGroupImpact } from '../api'
-import { formatBytes, formatMillicores } from '../format'
+import { formatBytes, formatCurrency, formatMillicores } from '../format'
 
 const providerName: Record<NodeGroupImpact['provider'], string> = {
   karpenter: 'Karpenter NodePool',
@@ -64,6 +64,34 @@ export function NodeGroupTable({ groups }: { groups: NodeGroupImpact[] }) {
   )
 }
 
+type Tiers = NonNullable<CapacityResponse['costTiers']>
+
+/**
+ * Three amounts that are easy to conflate: the value of lower requests, the
+ * cost of the nodes the packing frees, and the bill, which is not measured.
+ */
+export function CostTiers({ tiers }: { tiers: Tiers }) {
+  if (!tiers.available) {
+    return <Typography variant="caption" color="text.secondary" component="p" sx={{ mt: 1 }}>Cost estimates need unit prices. {tiers.billing.detail}</Typography>
+  }
+  const tier = (label: string, value: string, detail: string) => (
+    <Box>
+      <Typography component="dt" variant="caption" color="text.secondary">{label}</Typography>
+      <Typography component="dd" sx={{ m: 0 }}>
+        <Typography component="span" variant="h6" sx={{ display: 'block' }}>{value}</Typography>
+        <Typography component="span" variant="caption" color="text.secondary">{detail}</Typography>
+      </Typography>
+    </Box>
+  )
+  return (
+    <Box component="dl" aria-label="Savings by evidence" sx={{ mt: 2, mb: 0, display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(3, 1fr)' }, gap: 2 }}>
+      {tier('Request reduction', `${formatCurrency(tiers.requestReduction?.monthly ?? 0, tiers.currency)}/month`, tiers.requestReduction?.detail ?? '')}
+      {tier(`Feasible from removing ${tiers.feasibleNodeSavings?.nodes ?? 0} node${tiers.feasibleNodeSavings?.nodes === 1 ? '' : 's'}`, `${formatCurrency(tiers.feasibleNodeSavings?.monthly ?? 0, tiers.currency)}/month`, tiers.feasibleNodeSavings?.detail ?? '')}
+      {tier('Billing', 'Not measured', tiers.billing.detail)}
+    </Box>
+  )
+}
+
 /** Node impact of applying the current recommendations. */
 export function CapacityCard() {
   const query = useQuery({
@@ -113,6 +141,7 @@ export function CapacityCard() {
               {(data.current?.podRulePods ?? 0) > 0 && `, ${data.current?.podRulePods} because pod affinity, anti-affinity, or topology spread rules them out`}
               {(data.current?.pinnedPods ?? 0) > 0 && ` · ${data.current?.pinnedPods} pods stay on their nodes because a PodDisruptionBudget allows no evictions`}
             </Typography>
+            {data.costTiers && <CostTiers tiers={data.costTiers} />}
             {(data.current?.unplacedWorkloads?.length ?? 0) > 0 && (
               <Typography variant="caption" color="text.secondary" component="p" sx={{ overflowWrap: 'anywhere' }}>
                 Unplaced: {data.current?.unplacedWorkloads?.join(', ')}

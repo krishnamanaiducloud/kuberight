@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/http"
 	"slices"
 	"sort"
@@ -276,6 +277,7 @@ func (server *apiServer) capacity(w http.ResponseWriter, r *http.Request) {
 		"recommended":                   recommended,
 		"reclaimableNodes":              max(0, current.NodesNeeded-recommended.NodesNeeded-held),
 		"nodesHeldByMinimumSize":        held,
+		"costTiers":                     server.costTiers(r.Context(), current, recommended, groups),
 		"containersWithRecommendations": applied,
 		"autoscaling":                   cluster.Autoscaling,
 		"nodeGroups":                    groups,
@@ -297,6 +299,46 @@ func (server *apiServer) capacity(w http.ResponseWriter, r *http.Request) {
 		body["nodeList"] = cluster.Nodes
 	}
 	respondJSON(w, http.StatusOK, body)
+}
+
+// costTiers separates three amounts that are easy to conflate: the value of
+// lower requests, which changes no bill by itself; the cost of the nodes the
+// packing frees within node-group minimums, which is what removing them could
+// save; and the realized bill, which KubeRight does not measure.
+func (server *apiServer) costTiers(ctx context.Context, current, recommended packingResult, groups []NodeGroupImpact) map[string]any {
+	billing := map[string]any{"measured": false, "detail": "Cloud billing is not ingested. Realized savings appear on the bill only after the nodes are removed, and depend on discounts, reservations, and spot prices."}
+	if !server.config.CostConfigured() {
+		return map[string]any{"available": false, "reason": "unit prices are not configured; set KUBERIGHT_COST_CPU_CORE_HOUR and KUBERIGHT_COST_MEMORY_GIB_HOUR", "billing": billing}
+	}
+	prices := server.pricer.Prices(ctx, "")
+	monthly := func(cpuMilli, memoryBytes float64) float64 {
+		value := (cpuMilli/1000*prices.CPUCoreHour + memoryBytes/(1<<30)*prices.MemoryGiBHour) * hoursPerMonth
+		return math.Round(value*100) / 100
+	}
+	nodes, nodeCPU, nodeMemory := 0, 0.0, 0.0
+	for _, group := range groups {
+		if group.ReclaimableNodes == 0 || group.SchedulableNodes == 0 {
+			continue
+		}
+		// A freed node is priced as the group's average schedulable node.
+		share := float64(group.ReclaimableNodes) / float64(group.SchedulableNodes)
+		nodes += group.ReclaimableNodes
+		nodeCPU += float64(group.CPUMilli) * share
+		nodeMemory += float64(group.MemoryBytes) * share
+	}
+	return map[string]any{
+		"available": true, "currency": server.config.CostCurrency, "priceSource": prices.Source,
+		"requestReduction": map[string]any{
+			"monthly": monthly(float64(current.CPURequested-recommended.CPURequested), float64(current.MemoryRequests-recommended.MemoryRequests)),
+			"detail":  "Lower requests across every replica, priced at unit prices for 730 hours. Requests alone do not change the bill.",
+		},
+		"feasibleNodeSavings": map[string]any{
+			"nodes":   nodes,
+			"monthly": monthly(nodeCPU, nodeMemory),
+			"detail":  "The allocatable CPU and memory of the nodes the packing frees, after node-group minimums, priced at unit prices for 730 hours. An estimate of what removing those nodes could save, not a quote.",
+		},
+		"billing": billing,
+	}
 }
 
 func evictionBlockers(blockers []string) []string {
