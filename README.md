@@ -348,6 +348,15 @@ kubectl -n shop annotate deploy checkout kuberight.io/gitops-path=apps/shop/chec
 # optional: kuberight.io/gitops-repository=acme/deploy kuberight.io/gitops-base-branch=main
 ```
 
+For a workload deployed from a Helm chart, point the path at the values file and name the key that holds the container's resources:
+
+```sh
+kubectl -n shop annotate deploy checkout kuberight.io/gitops-path=charts/shop/values-prod.yaml \
+  kuberight.io/gitops-values-key=api.resources
+```
+
+The mapping that holds the key must exist. A missing, null, or empty (`{}`) resources value is replaced with a block, and an existing block is edited in place.
+
 For an approved recommendation, the drawer's **Open pull request** button (or `POST /api/v1/recommendations/{id}/pull-request`) does the following:
 
 1. Reads the file from the base branch.

@@ -17,6 +17,8 @@ type fakeGitOps struct {
 	requests []gitops.Request
 	edited   []byte
 	err      error
+	// content replaces the default manifest in Git.
+	content []byte
 }
 
 func (*fakeGitOps) Name() string { return "fake" }
@@ -26,7 +28,9 @@ func (provider *fakeGitOps) OpenPullRequest(_ context.Context, request gitops.Re
 	if provider.err != nil {
 		return gitops.Result{}, provider.err
 	}
-	edited, err := request.Update([]byte(`apiVersion: apps/v1
+	content := provider.content
+	if content == nil {
+		content = []byte(`apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: checkout
@@ -42,7 +46,9 @@ spec:
             limits:
               cpu: "2"
               memory: 2Gi
-`))
+`)
+	}
+	edited, err := request.Update(content)
 	if err != nil {
 		return gitops.Result{}, err
 	}
@@ -154,5 +160,37 @@ func TestPullRequestMapsProviderOutcomes(t *testing.T) {
 		if audit.Items[0].Outcome != "failure" {
 			t.Errorf("%s: audit outcome %s", name, audit.Items[0].Outcome)
 		}
+	}
+}
+
+func TestPullRequestEditsAnAnnotatedHelmValuesKey(t *testing.T) {
+	provider := &fakeGitOps{content: []byte("api:\n  image: ghcr.io/acme/api:1\n  resources: {}\n")}
+	api := newTestAPI(t, nil, Dependencies{GitOps: provider, Provider: fakeInventory{spec: gitopsSpec(map[string]string{
+		GitOpsPathAnnotation: "charts/shop/values-prod.yaml", GitOpsRepositoryAnnotation: "acme/deploy", GitOpsValuesKeyAnnotation: "api.resources",
+	})}})
+	record := approvedCheckout(t, api.store)
+	response, body := api.do(t, http.MethodPost, "/api/v1/recommendations/"+record.ID+"/pull-request", "carol", "")
+	if response.Code != http.StatusCreated || body["valuesKey"] != "api.resources" {
+		t.Fatalf("status=%d body=%v", response.Code, body)
+	}
+	want := "api:\n  image: ghcr.io/acme/api:1\n  resources:\n    requests:\n      cpu: 800m\n      memory: 820Mi\n    limits:\n      cpu: 1600m\n      memory: 1640Mi\n"
+	if string(provider.edited) != want {
+		t.Fatalf("edited values:\n%s", provider.edited)
+	}
+	missing := &fakeGitOps{content: []byte("worker:\n  replicas: 2\n")}
+	api = newTestAPI(t, nil, Dependencies{GitOps: missing, Provider: fakeInventory{spec: gitopsSpec(map[string]string{
+		GitOpsPathAnnotation: "values.yaml", GitOpsRepositoryAnnotation: "acme/deploy", GitOpsValuesKeyAnnotation: "api.resources",
+	})}})
+	record = approvedCheckout(t, api.store)
+	if response, body := api.do(t, http.MethodPost, "/api/v1/recommendations/"+record.ID+"/pull-request", "carol", ""); response.Code != http.StatusUnprocessableEntity ||
+		!strings.Contains(body["error"].(map[string]any)["message"].(string), "no mapping for values key api.resources") {
+		t.Fatalf("missing parent: status=%d body=%v", response.Code, body)
+	}
+	invalid := newTestAPI(t, nil, Dependencies{GitOps: &fakeGitOps{}, Provider: fakeInventory{spec: gitopsSpec(map[string]string{
+		GitOpsPathAnnotation: "values.yaml", GitOpsRepositoryAnnotation: "acme/deploy", GitOpsValuesKeyAnnotation: "api.containers[0]",
+	})}})
+	record = approvedCheckout(t, invalid.store)
+	if response, _ := invalid.do(t, http.MethodPost, "/api/v1/recommendations/"+record.ID+"/pull-request", "carol", ""); response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid key: status=%d", response.Code)
 	}
 }

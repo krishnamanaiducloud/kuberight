@@ -327,8 +327,10 @@ paths:
         workloads a GitOps controller owns. The file is named by the
         workload annotation `kuberight.io/gitops-path`; the repository and
         base branch come from `kuberight.io/gitops-repository` and
-        `kuberight.io/gitops-base-branch` or the configured defaults. Only the
-        resource values change; comments and formatting are kept. Idempotent
+        `kuberight.io/gitops-base-branch` or the configured defaults. With
+        `kuberight.io/gitops-values-key` (such as `api.resources`), the file
+        is a Helm values file and that key's resources are edited instead.
+        Only the resource values change; comments and formatting are kept. Idempotent
         per recommendation: the branch is `kuberight/<id>` and an open pull
         request for it is returned with 200. Authorized with verb `create`,
         resource `recommendations`, subresource `pullrequest`.
@@ -3791,6 +3793,10 @@ components:
         existing: { type: boolean, description: True when an open pull request for the branch was returned. }
         repository: { type: string, examples: ["acme/deploy"] }
         path: { type: string, examples: ["apps/shop/checkout.yaml"] }
+        valuesKey:
+          type: string
+          description: The Helm values key that was edited; empty for a manifest.
+          examples: ["api.resources"]
         baseBranch: { type: string }
         provider: { type: string, enum: [github, gitlab, gitea] }
     ErrorResponse:

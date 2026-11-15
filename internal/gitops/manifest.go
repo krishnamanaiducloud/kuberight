@@ -204,8 +204,10 @@ func quoted(node *yaml.Node, value string) string {
 	return value
 }
 
-func resourceEdits(lines []string, container *yaml.Node, desired Resources) ([]edit, error) {
-	type value struct{ section, key, text string }
+// value is one resource quantity to write.
+type value struct{ section, key, text string }
+
+func desiredValues(desired Resources) []value {
 	values := []value{{"requests", "cpu", FormatCPU(desired.CPURequestMilli)}, {"requests", "memory", FormatMemory(desired.MemoryRequestBytes)}}
 	if desired.CPULimitMilli > 0 {
 		values = append(values, value{"limits", "cpu", FormatCPU(desired.CPULimitMilli)})
@@ -213,6 +215,29 @@ func resourceEdits(lines []string, container *yaml.Node, desired Resources) ([]e
 	if desired.MemoryLimitBytes > 0 {
 		values = append(values, value{"limits", "memory", FormatMemory(desired.MemoryLimitBytes)})
 	}
+	return values
+}
+
+// resourceBlock renders a complete resources mapping body, each line
+// starting with indent.
+func resourceBlock(indent string, values []value) string {
+	block := ""
+	for _, section := range []string{"requests", "limits"} {
+		entries := ""
+		for _, item := range values {
+			if item.section == section {
+				entries += indent + "  " + item.key + ": " + item.text + "\n"
+			}
+		}
+		if entries != "" {
+			block += indent + section + ":\n" + entries
+		}
+	}
+	return block
+}
+
+func resourceEdits(lines []string, container *yaml.Node, desired Resources) ([]edit, error) {
+	values := desiredValues(desired)
 	edits := []edit{}
 	resourcesKey, resources := mappingValue(container, "resources")
 	if resources != nil && resources.Kind != yaml.MappingNode {
@@ -228,18 +253,7 @@ func resourceEdits(lines []string, container *yaml.Node, desired Resources) ([]e
 			return nil, ErrUnsupportedLayout
 		}
 		indent := strings.Repeat(" ", nameKey.Column-1)
-		block := indent + "resources:\n"
-		for _, section := range []string{"requests", "limits"} {
-			entries := ""
-			for _, item := range values {
-				if item.section == section {
-					entries += indent + "    " + item.key + ": " + item.text + "\n"
-				}
-			}
-			if entries != "" {
-				block += indent + "  " + section + ":\n" + entries
-			}
-		}
+		block := indent + "resources:\n" + resourceBlock(indent+"  ", values)
 		return []edit{{line: lastLine(container) + 1, column: 1, text: block}}, nil
 	}
 	for _, section := range []string{"requests", "limits"} {

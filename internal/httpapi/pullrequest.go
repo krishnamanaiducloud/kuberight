@@ -17,6 +17,10 @@ const (
 	GitOpsPathAnnotation       = "kuberight.io/gitops-path"
 	GitOpsRepositoryAnnotation = "kuberight.io/gitops-repository"
 	GitOpsBranchAnnotation     = "kuberight.io/gitops-base-branch"
+	// GitOpsValuesKeyAnnotation makes the path a Helm values file and names
+	// the dotted key of the container's resources in it, such as
+	// "api.resources".
+	GitOpsValuesKeyAnnotation = "kuberight.io/gitops-values-key"
 )
 
 // openPullRequest proposes an approved recommendation as a pull request
@@ -83,6 +87,13 @@ func (server *apiServer) openPullRequest(w http.ResponseWriter, r *http.Request)
 		respondError(w, r, http.StatusBadRequest, "invalid_gitops_target", err.Error())
 		return
 	}
+	valuesKey := strings.TrimSpace(spec.Annotations[GitOpsValuesKeyAnnotation])
+	if valuesKey != "" {
+		if err := gitops.ValidateValuesKey(valuesKey); err != nil {
+			respondError(w, r, http.StatusBadRequest, "invalid_gitops_target", err.Error())
+			return
+		}
+	}
 	target := gitops.Target{Namespace: record.Namespace, Kind: record.Kind, Workload: record.Workload, Container: record.Container}
 	desired := gitops.Resources{
 		CPURequestMilli: record.CPURequestMilli, CPULimitMilli: record.CPULimitMilli,
@@ -97,7 +108,12 @@ func (server *apiServer) openPullRequest(w http.ResponseWriter, r *http.Request)
 		Title:         fmt.Sprintf("Rightsize %s/%s container %s", record.Kind, record.Workload, record.Container),
 		Body:          pullRequestBody(record, principal.Username),
 		CommitMessage: fmt.Sprintf("Rightsize %s/%s %s\n\nKubeRight recommendation %s, approved by %s.", record.Kind, record.Workload, record.Container, record.ID, record.ReviewedBy),
-		Update:        func(content []byte) ([]byte, error) { return gitops.UpdateManifest(content, target, desired) },
+		Update: func(content []byte) ([]byte, error) {
+			if valuesKey != "" {
+				return gitops.UpdateValues(content, valuesKey, desired)
+			}
+			return gitops.UpdateManifest(content, target, desired)
+		},
 	})
 	audit := server.auditEvent(r, principal, "gitops.pull_request", "recommendations/"+id, record.Namespace)
 	if err != nil {
@@ -115,10 +131,13 @@ func (server *apiServer) openPullRequest(w http.ResponseWriter, r *http.Request)
 		}
 		respondJSON(w, status, map[string]any{
 			"url": result.URL, "number": result.Number, "branch": result.Branch, "existing": result.Existing,
-			"repository": repositoryName, "path": path, "baseBranch": baseBranch, "provider": server.gitops.Name(),
+			"repository": repositoryName, "path": path, "valuesKey": valuesKey, "baseBranch": baseBranch, "provider": server.gitops.Name(),
 		})
 	case errors.Is(err, gitops.ErrNoChange):
 		respondError(w, r, http.StatusConflict, "manifest_current", "the manifest in Git already has the recommended resources")
+	case errors.Is(err, gitops.ErrTargetNotFound) && valuesKey != "":
+		respondError(w, r, http.StatusUnprocessableEntity, "manifest_target_missing",
+			fmt.Sprintf("%s in %s has no mapping for values key %s", path, repositoryName, valuesKey))
 	case errors.Is(err, gitops.ErrTargetNotFound):
 		respondError(w, r, http.StatusUnprocessableEntity, "manifest_target_missing",
 			fmt.Sprintf("%s in %s does not define %s/%s container %s", path, repositoryName, record.Kind, record.Workload, record.Container))
