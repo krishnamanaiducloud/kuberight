@@ -762,6 +762,64 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "503": { $ref: "#/components/responses/AccessUnavailable" }
 
+  /api/v1/notifications:
+    get:
+      tags: [Configuration]
+      operationId: listNotifications
+      summary: List durable webhook deliveries
+      description: |
+        Pages the webhook outbox, newest first. With the PostgreSQL store and a
+        webhook URL, every event is stored before delivery, retried with
+        exponential backoff from 30 seconds up to one hour, and dead-lettered
+        when the receiver rejects it (a 4xx other than 429) or after ten
+        attempts. Delivered entries are kept for seven days. Without durable
+        delivery, `status.available` is false. Authorized with verb `list`
+        on `notifications`.
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - name: status
+          in: query
+          schema: { type: string, enum: [pending, delivered, dead] }
+      responses:
+        "200":
+          description: A page of outbox entries.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationCollection"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/AccessUnavailable" }
+
+  /api/v1/notifications/{id}/replay:
+    post:
+      tags: [Configuration]
+      operationId: replayNotification
+      summary: Queue a dead-lettered webhook event again
+      description: |
+        Returns a dead entry to pending with its attempts reset; the next
+        delivery uses the same delivery ID, so receivers can deduplicate.
+        Audited. Authorized with verb `update` on `notifications/replay`.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^ntf_[0-9a-f]{32}$" }
+      responses:
+        "200":
+          description: The entry, pending again.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationEntry"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/DependencyUnavailable" }
+
   /api/v1/settings/integrations:
     get:
       tags: [Configuration]
@@ -3753,6 +3811,33 @@ components:
         outcome: { type: string }
         requestId: { type: string }
 
+    NotificationEntry:
+      type: object
+      additionalProperties: false
+      required: [id, eventType, payload, status, attempts, nextAttemptAt, createdAt]
+      properties:
+        id: { type: string, pattern: "^ntf_[0-9a-f]{32}$", description: Also the X-KubeRight-Delivery header value. }
+        eventType: { type: string }
+        payload: { type: object, additionalProperties: true, description: The event as delivered in JSON format. }
+        status: { type: string, enum: [pending, delivered, dead] }
+        attempts: { type: integer, minimum: 0 }
+        nextAttemptAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+        deliveredAt: { type: string, format: date-time }
+        lastError: { type: string, maxLength: 1024 }
+    NotificationCollection:
+      type: object
+      additionalProperties: false
+      required: [items, pagination, status]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/NotificationEntry"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+        status:
+          $ref: "#/components/schemas/Availability"
     AuditCollection:
       type: object
       additionalProperties: false

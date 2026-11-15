@@ -46,7 +46,7 @@ KubeRight does **not**:
 - ingest cloud billing or provide a complete FinOps ledger;
 - register remote clusters.
 
-It never changes workloads unless `operationMode=apply` is set and a namespace opts in. The webhook delivery queue is process-local. Persisted ML models are signed, and the forecasting service refuses any model file whose signature does not verify. See [known limitations](docs/known-limitations.md) before evaluating it for production.
+It never changes workloads unless `operationMode=apply` is set and a namespace opts in. With the PostgreSQL store, webhook delivery is durable; without it, the delivery queue is process-local. Persisted ML models are signed, and the forecasting service refuses any model file whose signature does not verify. See [known limitations](docs/known-limitations.md) before evaluating it for production.
 
 ## Quick start from source
 
@@ -85,7 +85,7 @@ Each integration is independent. An unconfigured or unreachable one is reported 
 | `KUBERIGHT_LATENCY_QUERY` | One-line PromQL template in seconds, using `$namespace`, `$workload`, or `$container`, for example a p95 from an HTTP server or service-mesh histogram. Enables latency correlation. |
 | `KUBERIGHT_REQUEST_RATE_QUERY` | One-line PromQL template in requests per second, with the same placeholders, for example `sum(rate(http_requests_total{namespace="$namespace",service="$workload"}[5m]))`. Enables traffic correlation. |
 | `KUBERIGHT_VERIFICATION_INTERVAL` | How often each API pod verifies applied recommendations (default `15m`, between `1m` and `24h`). `0` disables the background check; the verification endpoint still works on demand. Needs Prometheus and the in-cluster inventory. |
-| `KUBERIGHT_WEBHOOK_URL`, `KUBERIGHT_WEBHOOK_SECRET`, `KUBERIGHT_WEBHOOK_FORMAT` | Sends `recommendation.created`, `.approved`, `.rejected`, and `.regressed` events as JSON or Slack messages. With a secret, each request carries `X-KubeRight-Signature: sha256=HMAC(secret, timestamp + "." + body)` and `X-KubeRight-Timestamp`. |
+| `KUBERIGHT_WEBHOOK_URL`, `KUBERIGHT_WEBHOOK_SECRET`, `KUBERIGHT_WEBHOOK_FORMAT` | Sends `recommendation.created`, `.approved`, `.rejected`, and `.regressed` events as JSON or Slack messages. With a secret, each request carries `X-KubeRight-Signature: sha256=HMAC(secret, timestamp + "." + body)` and `X-KubeRight-Timestamp`. With `database.enabled`, events are stored in a PostgreSQL outbox before delivery, retried with backoff for about four hours, and dead-lettered when rejected. `GET /api/v1/notifications?status=dead` lists them and `POST /api/v1/notifications/{id}/replay` queues one again; `X-KubeRight-Delivery` stays the same across retries. |
 | `KUBERIGHT_EXPORT_RECOMMENDATION_METRICS` | Adds per-container current and recommended request and limit gauges, review status, and savings to `/metrics`. Off by default because `/metrics` is unauthenticated. |
 
 ### Integrations and platforms
@@ -98,7 +98,7 @@ Each integration is independent. An unconfigured or unreachable one is reported 
 
 Generating recommendations from Prometheus requires the in-cluster inventory, which provides each container's current identity, requests, and limits. The Helm chart exposes these settings as `database`, `prometheus`, `recommendations`, `forecasting`, `cost`, `approvals`, `latencyQuery`, `requestRateQuery`, `verification.interval`, and `ml.apiKey` values. It never deploys PostgreSQL or Prometheus. It refuses `replicaCount > 1` or API autoscaling unless `database.enabled=true`, and rejects ML scaling while model storage remains local. The production-shaped profile enables two API replicas and an HPA, so it requires a pre-created external PostgreSQL Secret, a safe migration credential, and environment-specific topology, network, TLS, backup, and monitoring configuration.
 
-For Kubernetes installation, required RBAC, immutable-image guidance, and platform notes, use the [installation guide](docs/installation.md). In Kubernetes authentication mode, users also need RBAC for the virtual `kuberight.io` resources. Reviewing requires `update` on `recommendations/approval`, generating forecasts requires `create` on `forecasts`, the efficiency views require `list` on `efficiency`, and node impact requires `list` on `capacity`:
+For Kubernetes installation, required RBAC, immutable-image guidance, and platform notes, use the [installation guide](docs/installation.md). In Kubernetes authentication mode, users also need RBAC for the virtual `kuberight.io` resources. Reviewing requires `update` on `recommendations/approval`, generating forecasts requires `create` on `forecasts`, the efficiency views require `list` on `efficiency`, node impact requires `list` on `capacity`, and the webhook outbox requires `list` on `notifications` and `update` on `notifications/replay`:
 
 ```yaml
 - apiGroups: ["kuberight.io"]

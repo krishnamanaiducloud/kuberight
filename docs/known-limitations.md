@@ -41,7 +41,7 @@ This list describes the current implementation, not planned behavior. KubeRight 
 - The ML compute budget is cooperative: it is checked between forecast phases and cannot interrupt numerical work in progress. A proxy deadline is needed for a hard time limit.
 - CPU forecast intervals cover 88.4% on held-out production VMs, short of the 90% target, on machines with abrupt level shifts.
 - On 195 production VMs, the forecasting service's P95 forecasts, and its CPU P50 forecasts, have higher pinball loss than a seasonal-naive baseline on most VMs. LightGBM quantile regression with conformal calibration is more accurate but covers only 91–92% at P95. Neither replaces observed percentiles for sizing.
-- Webhooks use a process-memory queue of 256 events. Transient failures are retried, but there is no durable outbox, dead-letter queue, or replay. A full queue or a restart can lose notifications.
+- With the PostgreSQL store, webhook events are written to an outbox, retried with backoff, dead-lettered after a rejection or ten attempts, and can be replayed. Delivery is at least once: an event delivered just before a crash can be sent again with the same delivery ID. The outbox write is not in the same transaction as the change it reports, so a database failure between the two loses the event to the in-memory fallback queue. Without PostgreSQL, webhooks use a process-memory queue of 256 events that a full queue or a restart can lose.
 
 ## Security and operations
 

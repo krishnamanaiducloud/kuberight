@@ -80,6 +80,9 @@ type Dependencies struct {
 	Usage      UsageSource
 	Forecaster Forecaster
 	Notifier   notify.Notifier
+	// Outbox is the durable webhook outbox when durable delivery is enabled;
+	// it backs the notification list and replay endpoints.
+	Outbox repository.NotificationOutbox
 	// Pricer supplies per-namespace unit prices; nil uses the configured
 	// prices for every namespace.
 	Pricer pricing.Pricer
@@ -97,6 +100,7 @@ type apiServer struct {
 	usage      UsageSource
 	forecaster Forecaster
 	notifier   notify.Notifier
+	outbox     repository.NotificationOutbox
 	pricer     pricing.Pricer
 	gitops     gitops.Provider
 	logger     *slog.Logger
@@ -170,6 +174,7 @@ func newAPIServer(cfg config.Config, dependencies Dependencies) (*apiServer, err
 		usage:      dependencies.Usage,
 		forecaster: dependencies.Forecaster,
 		notifier:   dependencies.Notifier,
+		outbox:     dependencies.Outbox,
 		pricer:     pricer,
 		gitops:     gitOps,
 		logger:     logger,
@@ -227,6 +232,8 @@ func (server *apiServer) routes() (http.Handler, error) {
 	mux.HandleFunc("POST /api/v1/fleet/scans/{id}/cancel", server.cancelFleetScan)
 	mux.HandleFunc("POST /api/v1/fleet/scans/{id}/resume", server.resumeFleetScan)
 	mux.HandleFunc("GET /api/v1/audit", server.audit)
+	mux.HandleFunc("GET /api/v1/notifications", server.listNotifications)
+	mux.HandleFunc("POST /api/v1/notifications/{id}/replay", server.replayNotification)
 	mux.HandleFunc("GET /api/v1/settings/integrations", server.integrations)
 	for _, resource := range []string{"clusters", "namespaces", "workloads", "autoscalers", "gitops/changes"} {
 		resource := resource

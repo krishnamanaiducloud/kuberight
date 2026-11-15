@@ -109,17 +109,27 @@ func main() {
 		}
 		dependencies.Forecaster = client
 	}
-	var webhook *notify.Webhook
+	// webhook is the notifier to close at shutdown: the in-memory queue, or
+	// the durable outbox dispatcher with the PostgreSQL store.
+	var webhook interface {
+		Close(context.Context) error
+	}
 	if cfg.WebhookURL != "" {
-		var webhookErr error
-		webhook, webhookErr = notify.NewWebhook(notify.Options{
+		queue, webhookErr := notify.NewWebhook(notify.Options{
 			URL: cfg.WebhookURL, Secret: cfg.WebhookSecret, Format: cfg.WebhookFormat, AllowHTTP: cfg.AllowInsecureUpstreams, Logger: logger,
 		})
 		if webhookErr != nil {
 			logger.Error("webhook initialization failed", "error", webhookErr)
 			os.Exit(1)
 		}
-		dependencies.Notifier = webhook
+		webhook, dependencies.Notifier = queue, queue
+		// A shared database makes delivery durable: events survive restarts,
+		// are retried with backoff, and are dead-lettered for replay.
+		if outbox, durable := dependencies.Repository.(repository.NotificationOutbox); durable && dependencies.Repository.Kind() == "postgres" {
+			dispatcher := notify.NewDurable(queue, outbox, nil)
+			webhook, dependencies.Notifier, dependencies.Outbox = dispatcher, dispatcher, outbox
+			logger.Info("webhook delivery is durable through the PostgreSQL outbox")
+		}
 	}
 	if cfg.OpenCostURL != "" {
 		pricer, pricerErr := pricing.NewOpenCost(pricing.OpenCostOptions{

@@ -40,6 +40,7 @@ func Recommendation(namespace, workload, container, risk string) optimizer.Recom
 func Run(t *testing.T, newStore func(*testing.T) repository.Store) {
 	t.Helper()
 	ctx := context.Background()
+	runOutbox(t, newStore)
 
 	t.Run("empty stores list empty, non-nil pages", func(t *testing.T) {
 		// API responses encode these pages directly; a nil slice becomes

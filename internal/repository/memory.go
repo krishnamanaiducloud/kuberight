@@ -33,6 +33,9 @@ type Memory struct {
 	maximumRecords int
 	state          memoryState
 	now            func() time.Time
+	// outbox is guarded by mu and outside transactions: deliveries are not
+	// rolled back with the change that produced them.
+	outbox memoryOutbox
 }
 
 type memoryState struct {
