@@ -2654,7 +2654,18 @@ components:
         memoryLimitBytes: { type: integer, minimum: 0 }
         estimatedCpuChangePercent: { type: number }
         estimatedMemoryChangePercent: { type: number }
-        status: { type: string, description: The candidate's assessment verdict. }
+        status:
+          type: string
+          description: >-
+            The candidate's assessment verdict. Each candidate runs the full
+            assessment, including LimitRange, quota, QoS, and autoscaler
+            checks, under the effective policy's resource bounds and the
+            stricter of the profile's and the effective policy's change guards.
+        statusReasons:
+          type: array
+          items: { type: string }
+          description: Why a candidate is not `recommend`.
+        riskScore: { type: number, minimum: 0, maximum: 100 }
         backtest:
           $ref: "#/components/schemas/Backtest"
         outOfSample:

@@ -46,3 +46,34 @@ func TestCandidatesCompareProfilesWithinTheOperatorsBounds(t *testing.T) {
 		}
 	}
 }
+
+func TestCandidatesKeepTheStricterChangeGuards(t *testing.T) {
+	input := baseInput()
+	policy := DefaultPolicy()
+	policy.MaximumReduction, policy.CooldownHours, policy.RequiredObservations = 0.05, 72, 3
+	input.Policy = &policy
+	recommendation, err := Recommend(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	effective := normalizePolicy(policy)
+	for _, candidate := range recommendation.Candidates {
+		// No profile may cut more per change than the operator allows.
+		if candidate.EstimatedCPUChangePercent < -5.01 || candidate.EstimatedMemoryChangePercent < -5.01 {
+			t.Fatalf("%s exceeds the 5%% reduction guard: %#v", candidate.Profile, candidate)
+		}
+		if candidate.RiskScore == nil || *candidate.RiskScore < 0 || *candidate.RiskScore > 100 {
+			t.Fatalf("%s risk=%v", candidate.Profile, candidate.RiskScore)
+		}
+		if candidate.Status != StatusRecommend && len(candidate.StatusReasons) == 0 {
+			t.Fatalf("%s is %s without reasons", candidate.Profile, candidate.Status)
+		}
+	}
+	for _, profile := range Profiles() {
+		strict := guarded(normalizePolicy(profile.Policy), effective)
+		if strict.MaximumReduction > 0.05 || strict.CooldownHours < 72 || strict.RequiredObservations < 3 ||
+			strict.CPUSafetyMargin != normalizePolicy(profile.Policy).CPUSafetyMargin {
+			t.Fatalf("%s guards=%#v", profile.Name, strict)
+		}
+	}
+}

@@ -589,6 +589,10 @@ export type Candidate = {
   estimatedCpuChangePercent: number
   estimatedMemoryChangePercent: number
   status?: string
+  /** Why a candidate is not `recommend`. */
+  statusReasons?: string[]
+  /** The candidate's 0–100 assessment risk. */
+  riskScore?: number
   backtest: Backtest
   outOfSample: OutOfSample
 }

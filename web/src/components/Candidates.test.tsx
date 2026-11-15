@@ -21,6 +21,15 @@ describe('CandidatesTable', () => {
     expect(screen.queryAllByText('Recommended')).toHaveLength(1)
   })
 
+  it('shows the risk of each candidate and why it is held', () => {
+    render(<CandidatesTable candidates={[candidate('balanced', 640, 0.012, true), { ...candidate('aggressive', 480, 0.061), status: 'hold', riskScore: 71.6, statusReasons: ['held-out CPU exceeded the request in 6.1% of samples'] }]} />)
+    const rows = screen.getAllByRole('row')
+    expect(within(rows[2]).getByText('72')).toBeInTheDocument()
+    expect(within(rows[2]).getByText('hold')).toBeInTheDocument()
+    expect(within(rows[2]).getByText('held-out CPU exceeded the request in 6.1% of samples')).toBeInTheDocument()
+    expect(within(rows[1]).getByText('—')).toBeInTheDocument()
+  })
+
   it('renders nothing without candidates', () => {
     const { container } = render(<CandidatesTable candidates={[]} />)
     expect(container).toBeEmptyDOMElement()

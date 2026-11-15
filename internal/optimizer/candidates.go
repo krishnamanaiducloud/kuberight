@@ -17,6 +17,10 @@ type Candidate struct {
 	// Status is the candidate's assessment verdict, such as "recommend" or
 	// "hold".
 	Status string `json:"status,omitempty"`
+	// StatusReasons explain a verdict other than "recommend", and RiskScore
+	// is the candidate's 0-100 assessment risk.
+	StatusReasons []string `json:"statusReasons,omitempty"`
+	RiskScore     *float64 `json:"riskScore,omitempty"`
 	// Backtest replays every observed sample against the candidate;
 	// OutOfSample sizes it from the first 70% of samples and measures the
 	// rest.
@@ -25,8 +29,10 @@ type Candidate struct {
 }
 
 // candidates sizes the input with every stock profile. Each profile keeps the
-// effective policy's resource bounds and CPU-limit strategy, so a candidate
-// never leaves the range an operator allowed.
+// effective policy's resource bounds and CPU-limit strategy, and the stricter
+// of its own and the effective change guards, so a candidate never leaves the
+// range or the pace an operator allowed. Each candidate runs the full
+// assessment, including LimitRange, quota, QoS, and autoscaler checks.
 func candidates(input Input, effective Policy) []Candidate {
 	selected := policyFingerprint(effective)
 	result := make([]Candidate, 0, 3)
@@ -35,7 +41,7 @@ func candidates(input Input, effective Policy) []Candidate {
 		policy.MinimumCPUMilli, policy.MaximumCPUMilli = effective.MinimumCPUMilli, effective.MaximumCPUMilli
 		policy.MinimumMemoryBytes, policy.MaximumMemoryBytes = effective.MinimumMemoryBytes, effective.MaximumMemoryBytes
 		policy.CPULimitStrategy = effective.CPULimitStrategy
-		policy = normalizePolicy(policy)
+		policy = guarded(normalizePolicy(policy), effective)
 		alternative := input
 		alternative.Policy = &policy
 		alternative.skipCandidates = true
@@ -52,8 +58,29 @@ func candidates(input Input, effective Policy) []Candidate {
 		}
 		if recommendation.Assessment != nil {
 			candidate.Status, candidate.OutOfSample = recommendation.Assessment.Status, recommendation.Assessment.OutOfSample
+			risk := recommendation.Assessment.RiskScore
+			candidate.RiskScore = &risk
+			if candidate.Status != StatusRecommend {
+				candidate.StatusReasons = recommendation.Assessment.StatusReasons
+			}
 		}
 		result = append(result, candidate)
 	}
 	return result
+}
+
+// guarded applies the stricter of a profile's and the effective policy's
+// change guards: the largest reduction per change, the evidence required, the
+// hysteresis, the cooldown, the agreeing observations, and the trend horizon.
+// Margins and percentiles stay the profile's, since they are what the
+// profiles compare.
+func guarded(profile, effective Policy) Policy {
+	profile.MaximumReduction = min(profile.MaximumReduction, effective.MaximumReduction)
+	profile.MinimumSamples = max(profile.MinimumSamples, effective.MinimumSamples)
+	profile.HighConfidenceSamples = max(profile.HighConfidenceSamples, effective.HighConfidenceSamples)
+	profile.MinimumChangeRatio = max(profile.MinimumChangeRatio, effective.MinimumChangeRatio)
+	profile.CooldownHours = max(profile.CooldownHours, effective.CooldownHours)
+	profile.RequiredObservations = max(profile.RequiredObservations, effective.RequiredObservations)
+	profile.TrendHorizonDays = max(profile.TrendHorizonDays, effective.TrendHorizonDays)
+	return profile
 }
