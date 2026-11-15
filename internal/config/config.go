@@ -91,6 +91,9 @@ type Config struct {
 	// VerificationInterval is how often approved recommendations are checked
 	// for post-change regressions. Zero disables the background check.
 	VerificationInterval time.Duration
+	// VerificationEarlyInterval is how often changes in their first hour are
+	// rechecked for severe regressions. Zero leaves them to the full pass.
+	VerificationEarlyInterval time.Duration
 	// AutomationInterval is how often apply mode evaluates approved
 	// recommendations; AutomationMaxChanges bounds changes per pass; and
 	// AutomationWindow is an optional daily UTC change window "HH:MM-HH:MM".
@@ -122,13 +125,14 @@ type Config struct {
 }
 
 const (
-	DefaultRecommendationWindow = 7 * 24 * time.Hour
-	DefaultVerificationInterval = 15 * time.Minute
-	DefaultAutomationInterval   = 15 * time.Minute
-	DefaultAutomationMaxChanges = 5
-	DefaultRecommendationStep   = 5 * time.Minute
-	DefaultForecastWindow       = 14 * 24 * time.Hour
-	DefaultForecastStep         = time.Hour
+	DefaultRecommendationWindow      = 7 * 24 * time.Hour
+	DefaultVerificationInterval      = 15 * time.Minute
+	DefaultVerificationEarlyInterval = 2 * time.Minute
+	DefaultAutomationInterval        = 15 * time.Minute
+	DefaultAutomationMaxChanges      = 5
+	DefaultRecommendationStep        = 5 * time.Minute
+	DefaultForecastWindow            = 14 * 24 * time.Hour
+	DefaultForecastStep              = time.Hour
 	// MaximumQueryPoints matches the Prometheus client's per-query bound.
 	MaximumQueryPoints = 11_000
 )
@@ -278,6 +282,7 @@ func Load() (Config, error) {
 		{"KUBERIGHT_FORECAST_WINDOW", DefaultForecastWindow, 2 * 24 * time.Hour, 30 * 24 * time.Hour, &cfg.ForecastWindow},
 		{"KUBERIGHT_FORECAST_STEP", DefaultForecastStep, time.Minute, 24 * time.Hour, &cfg.ForecastStep},
 		{"KUBERIGHT_VERIFICATION_INTERVAL", DefaultVerificationInterval, 0, 24 * time.Hour, &cfg.VerificationInterval},
+		{"KUBERIGHT_VERIFICATION_EARLY_INTERVAL", DefaultVerificationEarlyInterval, 0, time.Hour, &cfg.VerificationEarlyInterval},
 		{"KUBERIGHT_AUTOMATION_INTERVAL", DefaultAutomationInterval, time.Minute, 24 * time.Hour, &cfg.AutomationInterval},
 	}
 	for _, item := range durations {
@@ -405,6 +410,9 @@ func (c Config) Validate() error {
 	}
 	if c.VerificationInterval != 0 && (c.VerificationInterval < time.Minute || c.VerificationInterval > 24*time.Hour) {
 		return errors.New("KUBERIGHT_VERIFICATION_INTERVAL must be 0 (disabled) or between 1m and 24h")
+	}
+	if c.VerificationEarlyInterval != 0 && (c.VerificationEarlyInterval < 30*time.Second || c.VerificationEarlyInterval > time.Hour) {
+		return errors.New("KUBERIGHT_VERIFICATION_EARLY_INTERVAL must be 0 (disabled) or between 30s and 1h")
 	}
 	if err := validateUpstream("KUBERIGHT_OPENCOST_URL", c.OpenCostURL, c.AllowInsecureUpstreams, "KUBERIGHT_ALLOW_INSECURE_UPSTREAMS=true"); err != nil {
 		return err

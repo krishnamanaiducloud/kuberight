@@ -302,6 +302,8 @@ spec:
               value: "1h"
             - name: KUBERIGHT_VERIFICATION_INTERVAL
               value: "15m"
+            - name: KUBERIGHT_VERIFICATION_EARLY_INTERVAL
+              value: "2m"
           startupProbe:
             httpGet:
               path: /healthz

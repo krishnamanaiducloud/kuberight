@@ -162,6 +162,8 @@ spec:
             {{- end }}
             - name: KUBERIGHT_VERIFICATION_INTERVAL
               value: {{ .Values.verification.interval | quote }}
+            - name: KUBERIGHT_VERIFICATION_EARLY_INTERVAL
+              value: {{ .Values.verification.earlyInterval | quote }}
             {{- if eq .Values.operationMode "apply" }}
             - name: KUBERIGHT_AUTOMATION_INTERVAL
               value: {{ .Values.automation.interval | quote }}

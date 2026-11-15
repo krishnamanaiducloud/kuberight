@@ -161,6 +161,8 @@ A regression is any of the following:
 - throttling that reaches 5% and rises by at least 5 points;
 - latency that rises 25% or more.
 
+Severe regressions are caught sooner. During the first hour, the verifier rechecks each change every `verification.earlyInterval` (two minutes by default), starting five minutes after the change is first observed. An OOM kill, a restart, or throttling or CPU or memory pressure that reaches 25% and rises by at least 20 points marks the change regressed. The evidence must cover exactly the live pods. In apply mode the change is then rolled back on the same cadence. Rollbacks are not deferred by the change window or the per-run change limit.
+
 The background verifier exports these metrics:
 
 - `kuberight_recommendation_verifications{status}`;

@@ -265,6 +265,37 @@ func (server *apiServer) evaluateAutomation(ctx context.Context, record reposito
 // container. With dryRun it only plans. Otherwise it applies eligible
 // changes, rollbacks first, up to the per-run limit inside the change window.
 func (server *apiServer) automationPass(ctx context.Context, dryRun bool) (AutomationReport, error) {
+	return server.automationRun(ctx, dryRun, false)
+}
+
+// regressedRecommendations lists approved recommendations whose latest
+// verification regressed, the only candidates of a rollback pass.
+func (server *apiServer) regressedRecommendations(ctx context.Context) ([]repository.RecommendationRecord, error) {
+	records := []repository.RecommendationRecord{}
+	for page := 1; len(records) < maxAutomationCandidates; page++ {
+		result, err := server.repository.ListVerificationOutcomes(ctx, page, 100)
+		if err != nil {
+			return nil, err
+		}
+		for _, outcome := range result.Items {
+			if outcome.Status != VerificationRegressed || len(records) >= maxAutomationCandidates {
+				continue
+			}
+			if record, getErr := server.repository.GetRecommendation(ctx, outcome.RecommendationID); getErr == nil && record.ReviewStatus == repository.ReviewApproved {
+				records = append(records, record)
+			}
+		}
+		if page*100 >= result.Total {
+			break
+		}
+	}
+	return records, nil
+}
+
+// automationRun evaluates approved recommendations and executes the
+// eligible decisions. With rollbacksOnly it evaluates only regressed ones and
+// executes only rollbacks.
+func (server *apiServer) automationRun(ctx context.Context, dryRun, rollbacksOnly bool) (AutomationReport, error) {
 	cfg := server.config.Normalized()
 	window, err := automation.ParseWindow(cfg.AutomationWindow)
 	if err != nil {
@@ -296,7 +327,22 @@ func (server *apiServer) automationPass(ctx context.Context, dryRun bool) (Autom
 		defer func() { recordAutomationPass(report) }()
 	}
 	patcher, _ := server.provider.(ResourcePatcher)
-	for page := 1; report.Evaluated < maxAutomationCandidates; page++ {
+	if rollbacksOnly {
+		records, listErr := server.regressedRecommendations(ctx)
+		if listErr != nil {
+			return report, listErr
+		}
+		for _, record := range records {
+			if ctx.Err() != nil {
+				break
+			}
+			report.Evaluated++
+			if decision := server.evaluateAutomation(ctx, record, patcher); decision.Action == AutomationRollback {
+				report.Decisions = append(report.Decisions, decision)
+			}
+		}
+	}
+	for page := 1; !rollbacksOnly && report.Evaluated < maxAutomationCandidates; page++ {
 		result, listErr := server.repository.ListRecommendations(ctx, repository.ListOptions{Page: page, PageSize: 100, ReviewStatus: repository.ReviewApproved, LatestOnly: true, Sort: "createdAt", Order: "desc"})
 		if listErr != nil {
 			return report, listErr
@@ -327,6 +373,11 @@ func (server *apiServer) automationPass(ctx context.Context, dryRun bool) (Autom
 		switch {
 		case report.DryRun:
 			decision.Outcome = AutomationPlanned
+		case decision.Action == AutomationRollback:
+			// A rollback restores the exact values that ran before a
+			// detected regression, so neither the change window nor the
+			// per-run limit defers it.
+			server.executeAutomation(ctx, decision, patcher, &report)
 		case !report.WindowOpen:
 			decision.Outcome = AutomationDeferred
 			decision.Reasons = append(decision.Reasons, "outside the change window "+report.Window)
@@ -426,21 +477,36 @@ func NewAutomator(cfg config.Config, dependencies Dependencies) (*Automator, err
 
 // Run evaluates on the configured interval until the context ends.
 func (automator *Automator) Run(ctx context.Context) {
-	ticker := time.NewTicker(automator.server.config.Normalized().AutomationInterval)
+	cfg := automator.server.config.Normalized()
+	ticker := time.NewTicker(cfg.AutomationInterval)
 	defer ticker.Stop()
-	for {
-		report, err := automator.server.automationPass(ctx, false)
+	// Regressions found by early verification are rolled back on the early
+	// cadence instead of waiting for the next full pass.
+	var rollbacks <-chan time.Time
+	if every := cfg.VerificationEarlyInterval; every > 0 && every < cfg.AutomationInterval {
+		early := time.NewTicker(every)
+		defer early.Stop()
+		rollbacks = early.C
+	}
+	run := func(rollbacksOnly bool) {
+		report, err := automator.server.automationRun(ctx, false, rollbacksOnly)
 		if errors.Is(err, errAutomationBusy) {
 			automator.server.logger.Debug("automation pass skipped; another replica holds the lock")
 		} else if err != nil {
 			automator.server.logger.Warn("automation pass failed", "error", err)
 		} else if report.Applied+report.RolledBack+report.Failed > 0 {
-			automator.server.logger.Info("automation pass completed", "applied", report.Applied, "rolled_back", report.RolledBack, "failed", report.Failed, "deferred", report.Deferred)
+			automator.server.logger.Info("automation pass completed", "applied", report.Applied, "rolled_back", report.RolledBack, "failed", report.Failed, "deferred", report.Deferred, "rollbacks_only", rollbacksOnly)
 		}
+	}
+	run(false)
+	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			run(false)
+		case <-rollbacks:
+			run(true)
 		}
 	}
 }

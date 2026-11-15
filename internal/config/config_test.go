@@ -90,6 +90,10 @@ func TestValidateIntegrationSettings(t *testing.T) {
 		"step longer than window":     {func(c *Config) { c.RecommendationWindow, c.RecommendationStep = time.Hour, 2*time.Hour }, false},
 		"too many points":             {func(c *Config) { c.RecommendationWindow, c.RecommendationStep = 30*24*time.Hour, 15*time.Second }, false},
 		"custom forecast sampling":    {func(c *Config) { c.ForecastWindow, c.ForecastStep = 7*24*time.Hour, 30*time.Minute }, true},
+		"early verification off":      {func(c *Config) { c.VerificationEarlyInterval = 0 }, true},
+		"early verification 30s":      {func(c *Config) { c.VerificationEarlyInterval = 30 * time.Second }, true},
+		"early verification too fast": {func(c *Config) { c.VerificationEarlyInterval = 10 * time.Second }, false},
+		"early verification too slow": {func(c *Config) { c.VerificationEarlyInterval = 2 * time.Hour }, false},
 	}
 	for name, test := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -112,7 +116,7 @@ func TestLoadAppliesIntegrationDefaults(t *testing.T) {
 	if cfg.RequireDistinctApprover {
 		t.Fatal("static mode has one identity, so distinct approvers must default off")
 	}
-	if cfg.DatabaseMigrate || cfg.DatabaseMaxConns != 10 || cfg.PrometheusMaxInFlight != 8 || cfg.RecommendationWindow != DefaultRecommendationWindow || cfg.ForecastStep != DefaultForecastStep || cfg.CostCurrency != "USD" || cfg.CostConfigured() {
+	if cfg.DatabaseMigrate || cfg.DatabaseMaxConns != 10 || cfg.PrometheusMaxInFlight != 8 || cfg.RecommendationWindow != DefaultRecommendationWindow || cfg.ForecastStep != DefaultForecastStep || cfg.VerificationEarlyInterval != DefaultVerificationEarlyInterval || cfg.CostCurrency != "USD" || cfg.CostConfigured() {
 		t.Fatalf("unexpected defaults: %#v", cfg)
 	}
 	t.Setenv("KUBERIGHT_AUTH_MODE", "kubernetes")

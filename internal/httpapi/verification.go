@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kuberight/kuberight/internal/config"
@@ -32,6 +33,14 @@ const (
 	maximumPostChange       = 7 * 24 * time.Hour
 	appliedTolerance        = 0.02
 	maxVerificationsPerPass = 200
+	// earlyCheckAfter is how long the target values must be live before the
+	// early check reads their events; a rollout may not have settled sooner.
+	earlyCheckAfter = 5 * time.Minute
+	// Early pressure thresholds are stricter than the hourly check because
+	// a short window is noisier: the ratio must be high and have risen.
+	earlyPressureRatio    = 0.25
+	earlyPressureIncrease = 0.20
+	maxEarlyChecksPerPass = 50
 )
 
 // VerificationCheck and Verification keep the public API tied to exactly the
@@ -263,6 +272,9 @@ func (server *apiServer) verify(ctx context.Context, record repository.Recommend
 	if postChange < minimumPostChange {
 		run.Status = VerificationPending
 		run.Reasons = append(run.Reasons, fmt.Sprintf("only %s of exact post-change observation exists; %s is required", postChange.Truncate(time.Minute), minimumPostChange))
+		if postChange >= earlyCheckAfter {
+			server.earlyCheck(ctx, &run, record, identity, exactSource, postChange, now)
+		}
 		return run
 	}
 
@@ -415,6 +427,71 @@ func postChangeChecks(record repository.RecommendationRecord, history usage.Hist
 	return checks
 }
 
+// earlyCheck looks for severe regressions before the hour of evidence a full
+// verdict needs. A pod running the target values that was OOM killed or
+// restarted, or throttling or CPU or memory pressure that is both high and
+// well above the pre-change baseline, marks the change regressed, so apply
+// mode rolls it back. Otherwise the change stays pending. Missing evidence
+// never produces a verdict here.
+func (server *apiServer) earlyCheck(ctx context.Context, run *repository.VerificationRun, record repository.RecommendationRecord, identity usage.WorkloadIdentity, source attributedUsageSource, postChange time.Duration, now time.Time) {
+	subject := usage.Subject{Namespace: record.Namespace, Kind: record.Kind, Workload: record.Workload, Container: record.Container}
+	window := usage.Window{Duration: postChange, Step: min(server.config.RecommendationStep, 30*time.Second), End: now}
+	events, err := source.EventsForIdentity(ctx, subject, identity, window)
+	if err != nil || !events.Available {
+		run.Reasons = append(run.Reasons, "the early check could not read restart and OOM evidence")
+		return
+	}
+	expected := make(map[string]string, len(identity.Pods))
+	for _, pod := range identity.Pods {
+		expected[pod.Name] = pod.UID
+	}
+	// A verdict needs events for exactly the live pods: none missing, none
+	// from outside the workload identity.
+	complete := len(events.Replicas) == len(expected)
+	for _, replica := range events.Replicas {
+		complete = complete && expected[replica.Pod] == replica.UID
+	}
+	if !complete {
+		run.Reasons = append(run.Reasons, "the early check found event evidence that does not match the exact live pods")
+		return
+	}
+	run.Checks = earlyChecks(record, events)
+	severe := []string{}
+	for _, check := range run.Checks {
+		if check.Regressed {
+			severe = append(severe, "early check after "+postChange.Truncate(time.Minute).String()+": "+check.Detail)
+		}
+	}
+	if len(severe) == 0 {
+		run.Reasons = append(run.Reasons, "the early check after "+postChange.Truncate(time.Minute).String()+" found no OOM kill, restart, or severe throttling or pressure")
+		return
+	}
+	run.Status, run.EvidenceComplete, run.Reasons = VerificationRegressed, true, severe
+}
+
+// earlyChecks are the severe subset of postChangeChecks that a few minutes
+// of events can show.
+func earlyChecks(record repository.RecommendationRecord, events usage.Events) []repository.VerificationCheck {
+	checks := []repository.VerificationCheck{
+		{Name: "OOM kills", After: ratioPointer(float64(events.OOMKills)), Regressed: events.OOMKills > 0, Detail: fmt.Sprintf("%d OOM kill(s) occurred after the target configuration was observed", events.OOMKills)},
+		{Name: "Restarts", After: ratioPointer(float64(events.Restarts)), Regressed: events.Restarts > 0, Detail: fmt.Sprintf("%d restart(s) occurred after the target configuration was observed", events.Restarts)},
+	}
+	rising := func(name string, before, after float64, available bool) {
+		if !available {
+			return
+		}
+		checks = append(checks, repository.VerificationCheck{
+			Name: name, Before: ratioPointer(before), After: ratioPointer(after),
+			Regressed: after >= earlyPressureRatio && after-before >= earlyPressureIncrease,
+			Detail:    fmt.Sprintf("%s changed from %.1f%% before analysis to %.1f%% after the target was observed", strings.ToLower(name[:1])+name[1:], before*100, after*100),
+		})
+	}
+	rising("CPU throttling", record.CPUThrottlingRatio, events.ThrottlingRatio, events.ThrottlingAvailable)
+	rising("CPU pressure", record.CPUPressureRatio, events.CPUPressureRatio, events.PressureAvailable)
+	rising("Memory pressure peak", record.MemoryPressurePeakRatio, events.MemoryPressurePeakRatio, events.PressureAvailable)
+	return checks
+}
+
 // percentText formats a ratio as a percentage, keeping one decimal below 10%
 // so a small but nonzero value is not shown as 0%.
 func percentText(ratio float64) string {
@@ -467,16 +544,62 @@ func (verifier *Verifier) Run(ctx context.Context) {
 	if interval <= 0 {
 		return
 	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	full := time.NewTicker(interval)
+	defer full.Stop()
+	// Changes in their first hour are rechecked more often, so a severe
+	// regression is caught within minutes instead of at the next full pass.
+	var early <-chan time.Time
+	if every := verifier.server.config.VerificationEarlyInterval; every > 0 && every < interval {
+		ticker := time.NewTicker(every)
+		defer ticker.Stop()
+		early = ticker.C
+	}
+	verifier.Pass(ctx)
 	for {
-		verifier.Pass(ctx)
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-full.C:
+			verifier.Pass(ctx)
+		case <-early:
+			verifier.PassRecent(ctx)
 		}
 	}
+}
+
+// PassRecent rechecks approved changes that were first observed less than an
+// hour ago and are still pending a full verdict.
+func (verifier *Verifier) PassRecent(ctx context.Context) int {
+	server := verifier.server
+	now := server.now().UTC()
+	checked := 0
+	for page := 1; checked < maxEarlyChecksPerPass; page++ {
+		result, err := server.repository.ListVerificationOutcomes(ctx, page, 100)
+		if err != nil {
+			server.logger.Warn("early verification could not list outcomes", "error", err)
+			return checked
+		}
+		for _, outcome := range result.Items {
+			if ctx.Err() != nil || checked >= maxEarlyChecksPerPass {
+				return checked
+			}
+			if outcome.Status != VerificationPending || outcome.FirstObservedAt == nil || now.Sub(*outcome.FirstObservedAt) >= minimumPostChange {
+				continue
+			}
+			record, getErr := server.repository.GetRecommendation(ctx, outcome.RecommendationID)
+			if getErr != nil || record.ReviewStatus != repository.ReviewApproved {
+				continue
+			}
+			if _, err := server.refreshVerification(ctx, record); err != nil {
+				server.logger.Warn("early verification refresh failed", "recommendation_id", record.ID, "error", err)
+			}
+			checked++
+		}
+		if page*100 >= result.Total {
+			return checked
+		}
+	}
+	return checked
 }
 
 func (verifier *Verifier) Pass(ctx context.Context) int {

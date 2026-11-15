@@ -138,6 +138,11 @@
           "type": "string",
           "description": "0s disables the background check; otherwise between 1m and 24h.",
           "pattern": "^(0s|([1-9][0-9]*(m|h))+)$"
+        },
+        "earlyInterval": {
+          "type": "string",
+          "description": "How often changes in their first hour are rechecked for severe regressions. 0s leaves them to the full pass; otherwise between 30s and 1h.",
+          "pattern": "^(0s|([1-9][0-9]*(s|m|h))+)$"
         }
       }
     },

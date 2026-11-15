@@ -110,9 +110,14 @@ requestRateQuery: ""
 # Post-change verification of approved recommendations: how often each API
 # replica checks for OOM kills, throttling, restarts, and latency after the
 # approved values go live. "0s" disables the background check; the
-# verification endpoint still works on demand.
+# verification endpoint still works on demand. Changes in their first hour
+# are rechecked every earlyInterval: from five minutes after the change, an
+# OOM kill, a restart, or throttling or CPU or memory pressure that is high
+# and well above the baseline marks the change regressed, and apply mode
+# rolls it back. "0s" leaves new changes to the full pass.
 verification:
   interval: 15m
+  earlyInterval: 2m
 
 # Continuous rightsizing (operationMode=apply). KubeRight then patches the pod
 # template resources of Deployments, StatefulSets, and DaemonSets, but only:
@@ -125,9 +130,10 @@ verification:
 # - with a resourceVersion precondition, at most maxChangesPerRun per pass,
 #   inside the optional daily UTC window (for example "22:00-04:00").
 # A regression found by post-change verification is rolled back to the exact
-# previous values. Annotate a workload kuberight.io/automation=disabled to opt
-# it out. Apply mode grants patch on those three kinds and requires
-# auth.mode=kubernetes and rbac.scope=cluster.
+# previous values, even outside the window and beyond maxChangesPerRun.
+# Annotate a workload kuberight.io/automation=disabled to opt it out. Apply
+# mode grants patch on those three kinds and requires auth.mode=kubernetes and
+# rbac.scope=cluster.
 automation:
   interval: 15m
   maxChangesPerRun: 5
