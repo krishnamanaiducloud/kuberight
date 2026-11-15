@@ -42,14 +42,15 @@ func TestAutomationRollsBackAStagedResizeThatStaysHalted(t *testing.T) {
 		t.Fatalf("the halt was not noted: %+v", state)
 	}
 
-	// Just short of one automation interval the stage is tried again.
-	haltedFor(record.ID, config.DefaultAutomationInterval-time.Second)
+	// Well short of one automation interval the stage is tried again.
+	haltedFor(record.ID, config.DefaultAutomationInterval*8/10)
 	_, body = api.do(t, http.MethodPost, "/api/v1/automation:run", "alice", "")
 	if decision := decisionFor(t, body); decision["action"] != AutomationApply || len(*patches) != 0 || len(*resizes) != 2 {
 		t.Fatalf("rolled back too early: decision=%v patches=%d resizes=%d", decision, len(*patches), len(*resizes))
 	}
 
-	haltedFor(record.ID, config.DefaultAutomationInterval)
+	// The next pass comes one interval later, give or take its own duration.
+	haltedFor(record.ID, config.DefaultAutomationInterval-10*time.Second)
 	_, body = api.do(t, http.MethodPost, "/api/v1/automation:run", "alice", "")
 	decision := decisionFor(t, body)
 	if decision["action"] != AutomationRollback || decision["outcome"] != AutomationRolledBack || body["rolledBack"].(float64) != 1 || body["failed"].(float64) != 0 || len(*patches) != 1 || len(*resizes) != 3 {

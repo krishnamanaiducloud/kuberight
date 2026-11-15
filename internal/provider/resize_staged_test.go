@@ -136,6 +136,36 @@ func TestResizeInPlaceHaltsWhileAResizedPodIsUnsettled(t *testing.T) {
 	}
 }
 
+func TestResizeInPlaceLeavesUnreadyPodsForALaterPass(t *testing.T) {
+	unready := func(name string) *corev1.Pod {
+		pod := readyPod(name)
+		pod.Status.Conditions[0].Status = corev1.ConditionFalse
+		return pod
+	}
+	resizing := readyPod("db-3")
+	resizing.Status.Conditions = append(resizing.Status.Conditions, corev1.PodCondition{Type: corev1.PodResizeInProgress, Status: corev1.ConditionTrue})
+	// An old restart says nothing about a pod that never took the change.
+	restarted := readyPod("db-1")
+	restarted.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "db", LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{FinishedAt: metav1.Now()}}}}
+
+	// The highest ordinals are unwell, so the first healthy pod goes first.
+	client := kubernetesfake.NewSimpleClientset(resizeStatefulSet(appsv1.OnDeleteStatefulSetStrategyType), readyPod("db-0"), restarted, unready("db-2"), resizing)
+	patched := recordResizes(client, nil)
+	result, err := testProvider(client).ResizeInPlace(context.Background(), resizeChange())
+	if err != nil || result.Halted || result.Pods != 4 || result.Resized != 1 || result.Remaining != 3 || patchedPods(*patched) != "db-1" {
+		t.Fatalf("result=%+v err=%v patched=%s", result, err, patchedPods(*patched))
+	}
+
+	// With only unwell pods left, the pass says so instead of reporting
+	// progress it did not make.
+	client = kubernetesfake.NewSimpleClientset(resizeStatefulSet(appsv1.OnDeleteStatefulSetStrategyType), resizedPod("db-0"), unready("db-1"), unready("db-2"))
+	patched = recordResizes(client, nil)
+	result, err = testProvider(client).ResizeInPlace(context.Background(), resizeChange())
+	if err != nil || !result.Halted || result.Resized != 0 || result.Remaining != 2 || len(*patched) != 0 || !strings.Contains(result.Error, "pod db-1 is not ready or is still resizing; pods left on their resources until they are ready: 2") {
+		t.Fatalf("result=%+v err=%v patched=%s", result, err, patchedPods(*patched))
+	}
+}
+
 func TestResizeInPlaceDoesNotHaltWhenEveryPodIsResized(t *testing.T) {
 	// An unready pod is not a reason to report a halt once nothing is left
 	// to resize.

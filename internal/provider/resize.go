@@ -145,7 +145,9 @@ func unsettled(pod corev1.Pod, container string, changed time.Time) bool {
 // the new resources, and at least one: one pod, then one more, then two,
 // four, and so on. It resizes nothing while a pod that carries them is
 // unsettled: not ready, not done resizing, or restarted after the change was
-// written. A rollback restores values that ran before and is not staged.
+// written. A pod that is not ready or is resizing for another reason is
+// left for a later pass. A rollback restores values that ran before: it is
+// not staged and reaches every running pod.
 func (provider *KubernetesProvider) ResizeInPlace(ctx context.Context, change automation.Change) (automation.ResizeResult, error) {
 	skip := func(reason string) (automation.ResizeResult, error) {
 		return automation.ResizeResult{Reason: reason}, nil
@@ -186,15 +188,25 @@ func (provider *KubernetesProvider) ResizeInPlace(ctx context.Context, change au
 	result := automation.ResizeResult{Attempted: true}
 	var behind []string
 	current, unhealthy := 0, ""
+	waiting, unready := 0, ""
 	for _, pod := range pods.Items {
 		if !ownedByUID(pod, target.uid) || pod.DeletionTimestamp != nil || pod.Status.Phase != corev1.PodRunning {
 			continue
 		}
 		result.Pods++
+		identity := podIdentity(pod)
 		switch {
 		case !carries(pod, change.Container, change.Desired):
+			// A pod that is already unwell is no test of new values and
+			// should not be given them; a rollback reaches it all the same.
+			if !change.Rollback && identity.Unsettled(change.Container, time.Time{}) {
+				if waiting++; unready == "" {
+					unready = pod.Name
+				}
+				continue
+			}
 			behind = append(behind, pod.Name)
-		case podIdentity(pod).Unsettled(change.Container, target.changed) && unhealthy == "":
+		case identity.Unsettled(change.Container, target.changed) && unhealthy == "":
 			current, unhealthy = current+1, pod.Name
 		default:
 			current++
@@ -202,9 +214,14 @@ func (provider *KubernetesProvider) ResizeInPlace(ctx context.Context, change au
 	}
 	batch := len(behind)
 	if !change.Rollback {
-		if unhealthy != "" && len(behind) > 0 {
-			result.Halted, result.Remaining = true, len(behind)
-			result.Error = fmt.Sprintf("pod %s carries the new resources and is not ready, has not finished resizing, or restarted after the change; %d other running pods keep their resources", unhealthy, len(behind))
+		switch {
+		case unhealthy != "" && len(behind)+waiting > 0:
+			result.Halted, result.Remaining = true, len(behind)+waiting
+			result.Error = fmt.Sprintf("pod %s carries the new resources and is not ready, has not finished resizing, or restarted after the change; %d other running pods keep their resources", unhealthy, result.Remaining)
+			return result, nil
+		case len(behind) == 0 && waiting > 0:
+			result.Halted, result.Remaining = true, waiting
+			result.Error = fmt.Sprintf("pod %s is not ready or is still resizing; pods left on their resources until they are ready: %d", unready, waiting)
 			return result, nil
 		}
 		batch = max(1, current)
@@ -243,6 +260,6 @@ func (provider *KubernetesProvider) ResizeInPlace(ctx context.Context, change au
 			result.Error = fmt.Sprintf("pod %s: %s", name, safeKubernetesError(err))
 		}
 	}
-	result.Remaining = len(behind) - result.Resized - result.Failed
+	result.Remaining = len(behind) - result.Resized - result.Failed + waiting
 	return result, nil
 }

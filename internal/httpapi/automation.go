@@ -398,7 +398,9 @@ func (server *apiServer) unfinishedResize(spec WorkloadSpec, container Container
 		if interval <= 0 {
 			interval = config.DefaultAutomationInterval
 		}
-		if since, halted := resizeHaltSince(record.ID, unsettled != "", server.now()); halted && server.now().Sub(since) >= interval {
+		// Passes are one interval apart give or take their own duration, so
+		// the second sighting counts even if it comes a little early.
+		if since, halted := resizeHaltSince(record.ID, unsettled != "", server.now()); halted && server.now().Sub(since) >= interval-interval/10 {
 			decision.Action, decision.Desired = AutomationRollback, previous
 			change.Desired, change.Previous, change.Rollback = previous, template, true
 			decision.change = &change

@@ -49,7 +49,7 @@ func resizePod(name, owner string, phase corev1.PodPhase) *corev1.Pod {
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "shop", Labels: template.Labels,
 			OwnerReferences: []metav1.OwnerReference{{Kind: "StatefulSet", Name: "db", UID: "sts-1", Controller: &controller}}},
 		Spec:   template.Spec,
-		Status: corev1.PodStatus{Phase: phase},
+		Status: corev1.PodStatus{Phase: phase, Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}},
 	}
 }
 

@@ -178,7 +178,7 @@ func TestLiveInPlaceResize(t *testing.T) {
 	}
 	waitForLive(t, "db-1 is behind the template", func() bool {
 		_, pods := liveContainerResources(t, provider)
-		return pods["db-1"].Resources["api"] == before && pods["db-0"].Resources["api"] == after
+		return pods["db-1"].Resources["api"] == before && !pods["db-1"].Resizing && pods["db-0"].Resources["api"] == after
 	})
 	if result, err := provider.ResizeInPlace(ctx, change); err != nil || result.Resized != 1 || result.Failed != 0 || result.Remaining != 0 {
 		t.Fatalf("retry: result=%+v err=%v", result, err)
@@ -212,7 +212,14 @@ func TestLiveInPlaceResize(t *testing.T) {
 	if spec, pods := liveContainerResources(t, provider); pods["db-0"].Resources["api"] != after || !pods["db-1"].Unsettled("api", spec.AutomationWrite) || pods["db-0"].Unsettled("api", spec.AutomationWrite) {
 		t.Fatalf("the halted stage changed db-0 or the unsettled pod is not reported: %+v", pods)
 	}
-	if result, err := provider.ResizeInPlace(ctx, change); err != nil || result.Halted || result.Resized != 1 {
+	// A stage leaves a pod alone while its resize is unfinished; the
+	// rollback that follows a halt reaches it and ends the pending resize.
+	if result, err := provider.ResizeInPlace(ctx, change); err != nil || !result.Halted || result.Resized != 0 {
+		t.Fatalf("a stage resized a pod that is still resizing: result=%+v err=%v", result, err)
+	}
+	restore := change
+	restore.Rollback = true
+	if result, err := provider.ResizeInPlace(ctx, restore); err != nil || result.Halted || result.Resized != 1 || result.Remaining != 0 {
 		t.Fatalf("restore: result=%+v err=%v", result, err)
 	}
 	waitForLive(t, "both pods settle on the new resources", running(after))
