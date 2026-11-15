@@ -192,9 +192,9 @@ def _start_worker(horizon: int) -> None:
     )
 
 
-def evaluate(task: tuple[dict[str, Any], int, int]) -> dict[str, dict[tuple[str, float], tuple[float, float]] | None]:
+def evaluate(task: tuple[dict[str, Any], int, int, bool]) -> dict[str, dict[tuple[str, float], tuple[float, float]] | None]:
     """Per resource: (method, quantile) -> (coverage, scaled pinball), or None when skipped."""
-    workload, horizon, origins = task
+    workload, horizon, origins, with_lightgbm = task
     assert _ENGINE is not None
     results: dict[str, dict[tuple[str, float], tuple[float, float]] | None] = {}
     for resource, key in (("cpu", "cpuMilli"), ("memory", "memoryBytes")):
@@ -216,7 +216,7 @@ def evaluate(task: tuple[dict[str, Any], int, int]) -> dict[str, dict[tuple[str,
             actual = scaled[cut : cut + horizon]
             for quantile, predicted in seasonal_naive(scaled, cut, horizon).items():
                 pairs.setdefault(("seasonal-naive", quantile), []).append((actual, predicted))
-            for method, forecasts in lightgbm_forecasts(scaled, cut, horizon).items():
+            for method, forecasts in (lightgbm_forecasts(scaled, cut, horizon) if with_lightgbm else {}).items():
                 for quantile, predicted in forecasts.items():
                     pairs.setdefault((method, quantile), []).append((actual, predicted))
             indices = range(cut, cut + horizon)
@@ -244,6 +244,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--resamples", type=int, default=2_000)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--workers", type=int, default=max(1, (multiprocessing.cpu_count() or 1)))
+    parser.add_argument("--skip-lightgbm", action="store_true", help="score only seasonal-naive and the service")
     arguments = parser.parse_args(argv)
 
     opener = gzip.open if arguments.trace.suffix == ".gz" else open
@@ -254,7 +255,7 @@ def main(argv: list[str] | None = None) -> int:
         chosen = sorted(random.choice(len(workloads), size=arguments.limit, replace=False))
         workloads = [workloads[index] for index in chosen]
 
-    tasks = [(workload, arguments.horizon, arguments.origins) for workload in workloads]
+    tasks = [(workload, arguments.horizon, arguments.origins, not arguments.skip_lightgbm) for workload in workloads]
     coverage: dict[str, dict[str, dict[float, list[float]]]] = {}
     loss: dict[str, dict[str, dict[float, list[float]]]] = {}
     skipped, started = 0, time.monotonic()

@@ -49,6 +49,8 @@ MAX_SAMPLE_VALUE = 1.0e18
 MAX_BACKTEST_ORIGINS = 4
 MAX_CALIBRATION_FACTOR = 3.0
 CALIBRATION_TOLERANCE = 0.10
+# Naive baselines take their intervals from their own past errors.
+NAIVE_MODELS = frozenset({"seasonal-naive-v1", "last-value-naive-v1"})
 SERIES_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 MAX_MODEL_ARTIFACT_BYTES = 64 * 1024 * 1024
@@ -257,6 +259,10 @@ class CalibrationSummary(BaseModel):
     last fold. When coverage falls short of the nominal level, offsets are
     widened by the smallest factor (at most MAX_CALIBRATION_FACTOR) that reaches
     it on that fold, and the final intervals use the widened offsets.
+
+    Naive baselines use ``naive-error-conformal`` instead: offsets are
+    conformal ranks of the baseline's past errors at each lag, and coverage
+    is measured on the last validation fold with offsets built before it.
     """
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
@@ -1105,6 +1111,85 @@ def _calibrate(residuals: list[float], fold_lengths: list[int], level: float) ->
     )
 
 
+def _naive_lag(step: int, period: int | None) -> int:
+    """Lag whose value a naive forecast repeats ``step`` samples ahead."""
+    return period * math.ceil(step / period) if period is not None else step
+
+
+def _naive_error_offsets(
+    values: np.ndarray, horizon: int, period: int | None, level: float
+) -> list[tuple[float, float]] | None:
+    """Per-step interval offsets from the naive baseline's own past errors.
+
+    A seasonal-naive forecast ``h`` steps ahead repeats the value
+    ``period * ceil(h / period)`` samples earlier (``h`` for last-value
+    naive), so its error is the change over that lag. The baseline has no
+    fitted parameters, so every such change in the history is an
+    out-of-sample error, which gives far more calibration samples than the
+    validation folds. Offsets use finite-sample split-conformal ranks.
+    """
+    alpha = (1.0 - level) / 2.0
+    by_lag: dict[int, tuple[float, float]] = {}
+    offsets: list[tuple[float, float]] = []
+    for step in range(1, horizon + 1):
+        lag = _naive_lag(step, period)
+        if lag not in by_lag:
+            if len(values) < lag + 8:
+                return None
+            changes = np.sort(values[lag:] - values[:-lag])
+            count = len(changes)
+            low_rank = max(1, math.floor((count + 1) * alpha))
+            high_rank = min(count, math.ceil((count + 1) * (1.0 - alpha)))
+            by_lag[lag] = (
+                min(0.0, float(changes[low_rank - 1])),
+                max(0.0, float(changes[high_rank - 1])),
+            )
+        offsets.append(by_lag[lag])
+    return offsets
+
+
+def _naive_calibration(
+    values: np.ndarray, validation: _ValidationResult, period: int | None, level: float
+) -> CalibrationSummary | None:
+    """Coverage on the last validation fold of offsets built before it."""
+    if not validation.training_end_indices or not validation.fold_lengths:
+        return None
+    cutoff, length = validation.training_end_indices[-1], validation.fold_lengths[-1]
+    offsets = _naive_error_offsets(values[:cutoff], length, period, level)
+    residuals = validation.baseline_residuals[-length:]
+    if offsets is None or len(residuals) != length or length < 8:
+        return None
+    # Rounding leaves residuals of about 1e-16 on exactly repeating usage; a
+    # tolerance relative to the series keeps them inside zero-width offsets.
+    tolerance = 1e-9 * max(1.0, float(np.max(np.abs(values))))
+    inside = sum(
+        1
+        for residual, (low, high) in zip(residuals, offsets, strict=True)
+        if low - tolerance <= residual <= high + tolerance
+    )
+    coverage = inside / length
+    return CalibrationSummary(
+        nominal_coverage=level,
+        held_out_coverage=round(coverage, 6),
+        calibrated_coverage=round(coverage, 6),
+        factor=1.0,
+        evaluation_samples=length,
+        calibrated=coverage >= level - CALIBRATION_TOLERANCE,
+        method="naive-error-conformal",
+    )
+
+
+def _naive_intervals(
+    predictions: list[float], offsets: list[tuple[float, float]]
+) -> list[ConfidenceInterval]:
+    return [
+        ConfidenceInterval(
+            lower=max(0.0, prediction + low), upper=max(prediction, prediction + high)
+        )
+        for prediction, (low, high) in zip(predictions, offsets, strict=True)
+    ]
+
+
 def _confidence_intervals(
     predictions: list[float], residuals: list[float], level: float, factor: float = 1.0
 ) -> list[ConfidenceInterval]:
@@ -1401,6 +1486,16 @@ class ForecastEngine:
                 serialized_predictions, values, request.confidence_level
             )
         )
+        if model_name in NAIVE_MODELS:
+            offsets = _naive_error_offsets(
+                values, request.horizon, period, request.confidence_level
+            )
+            naive_calibration = _naive_calibration(
+                values, validation, period, request.confidence_level
+            )
+            if offsets is not None and naive_calibration is not None:
+                intervals = _naive_intervals(serialized_predictions, offsets)
+                calibration = naive_calibration
         return ForecastResponse(
             predictions=serialized_predictions,
             confidence_intervals=intervals,

@@ -79,6 +79,40 @@ def test_forecast_reports_calibration(client: TestClient) -> None:
     assert 1.0 <= calibration["factor"] <= service.MAX_CALIBRATION_FACTOR
 
 
+def test_naive_error_offsets_come_from_the_baselines_own_errors() -> None:
+    values = np.asarray(_periodic(24 * 20, 0.2), dtype=float)
+    offsets = service._naive_error_offsets(values, 30, 24, 0.9)
+    assert offsets is not None and len(offsets) == 30
+    # Every step within a period repeats the value a day earlier, so the steps
+    # share one error distribution; step 25 repeats the value two days earlier.
+    assert offsets[0] == offsets[23] and offsets[24] != offsets[0]
+    low, high = offsets[0]
+    changes = values[24:] - values[:-24]
+    assert low <= 0.0 <= high
+    assert 0.9 <= float(np.mean((changes >= low) & (changes <= high))) <= 0.93
+    # Without a period, each step has its own lag.
+    unseasonal = service._naive_error_offsets(values, 3, None, 0.9)
+    assert unseasonal is not None and unseasonal[0] != unseasonal[2]
+    assert service._naive_error_offsets(values[:20], 24, 24, 0.9) is None
+
+
+def test_seasonal_naive_forecasts_use_naive_error_intervals(settings: service.Settings) -> None:
+    # A noiseless daily pattern: no model beats repeating yesterday.
+    samples = [2.0 + math.sin(2 * math.pi * index / 24) for index in range(24 * 14)]
+    response = service.ForecastEngine(settings).forecast(
+        service.ForecastRequest(
+            samples=samples, horizon=24, interval_seconds=3_600, confidence_level=0.9
+        )
+    )
+    assert response.model in service.NAIVE_MODELS
+    assert response.calibration.method == "naive-error-conformal"
+    assert response.calibration.calibrated and response.calibration.factor == 1.0
+    for prediction, interval in zip(
+        response.predictions, response.confidence_intervals, strict=True
+    ):
+        assert interval.lower <= prediction <= interval.upper
+
+
 def test_backtest_scores_rolling_origins(client: TestClient) -> None:
     response = client.post(
         "/api/v1/backtest",
