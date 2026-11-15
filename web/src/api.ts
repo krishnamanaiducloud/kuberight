@@ -231,7 +231,7 @@ export type AutomationDecision = {
   current: AutomationResources
   desired: AutomationResources
   outcome?: 'planned' | 'applied' | 'rolled_back' | 'deferred' | 'failed'
-  inPlace?: { attempted: boolean; reason?: string; pods: number; resized: number; failed: number; error?: string }
+  inPlace?: { attempted: boolean; reason?: string; pods: number; resized: number; failed: number; remaining?: number; halted?: boolean; error?: string }
   error?: string
 }
 

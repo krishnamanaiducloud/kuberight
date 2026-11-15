@@ -1999,16 +1999,20 @@ components:
       description: >-
         In-place resize of the running pods of an OnDelete StatefulSet or
         DaemonSet after its template was patched. Present only when
-        automation.inPlaceResize is enabled. Pods that were not resized keep
-        their resources until they are recreated.
+        automation.inPlaceResize is enabled. A change is resized in stages:
+        one pod first, then as many pods per pass as already carry the new
+        resources. Pods that were not resized keep their resources until a
+        later pass resizes them or they are recreated.
       required: [attempted, pods, resized, failed]
       properties:
         attempted: { type: boolean, description: False when in-place resize does not apply; `reason` says why. }
         reason: { type: string }
-        pods: { type: integer, minimum: 0 }
-        resized: { type: integer, minimum: 0 }
-        failed: { type: integer, minimum: 0 }
-        error: { type: string, description: The first pod failure. }
+        pods: { type: integer, minimum: 0, description: Running pods of the workload. }
+        resized: { type: integer, minimum: 0, description: Pods whose resize was requested in this pass. }
+        failed: { type: integer, minimum: 0, description: Pods that rejected the resize in this pass. }
+        remaining: { type: integer, minimum: 0, description: Running pods that still carry other resources and were left for a later pass. }
+        halted: { type: boolean, description: True when no pod was resized because a pod that already carries the new resources is not ready, has not finished resizing, or restarted after the change. }
+        error: { type: string, description: The first pod failure, or the reason the resize halted. }
 
     AutomationReport:
       type: object

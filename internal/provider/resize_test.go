@@ -85,10 +85,12 @@ func TestResizeInPlaceResizesRunningPodsOfOnDeleteWorkloads(t *testing.T) {
 		resizePod("db-0", "db", corev1.PodRunning), resizePod("db-1", "db", corev1.PodRunning), resizePod("db-2", "db", corev1.PodPending), foreign)
 	patched := recordResizes(client, nil)
 	result, err := testProvider(client).ResizeInPlace(context.Background(), resizeChange())
-	if err != nil || !result.Attempted || result.Pods != 2 || result.Resized != 2 || result.Failed != 0 {
+	// Only running pods of this workload count, and the first pass resizes
+	// one of them.
+	if err != nil || !result.Attempted || result.Pods != 2 || result.Resized != 1 || result.Failed != 0 || result.Remaining != 1 {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
-	if len(*patched) != 2 || !strings.HasPrefix((*patched)[0], "db-0 ") || !strings.HasPrefix((*patched)[1], "db-1 ") {
+	if len(*patched) != 1 || !strings.HasPrefix((*patched)[0], "db-1 ") {
 		t.Fatalf("patched = %v", *patched)
 	}
 	var body struct {
@@ -99,7 +101,7 @@ func TestResizeInPlaceResizesRunningPodsOfOnDeleteWorkloads(t *testing.T) {
 			}
 		}
 	}
-	if err := json.Unmarshal([]byte(strings.TrimPrefix((*patched)[0], "db-0 ")), &body); err != nil {
+	if err := json.Unmarshal([]byte(strings.TrimPrefix((*patched)[0], "db-1 ")), &body); err != nil {
 		t.Fatal(err)
 	}
 	container := body.Spec.Containers[0]
@@ -145,14 +147,14 @@ func TestResizeInPlaceReportsClusterAndPodFailures(t *testing.T) {
 		resized, failed, patches int
 		message                  string
 	}{
-		"forbidden stops at the first pod":      {func(string) error { return apierrors.NewForbidden(pods, "db-0", errors.New("no")) }, 0, 1, 1, "permission is not granted"},
-		"no subresource stops at the first pod": {func(string) error { return apierrors.NewNotFound(pods, "db-0") }, 0, 1, 1, "does not serve the pods/resize"},
+		"forbidden stops at the first pod":      {func(string) error { return apierrors.NewForbidden(pods, "db-1", errors.New("no")) }, 0, 2, 1, "permission is not granted"},
+		"no subresource stops at the first pod": {func(string) error { return apierrors.NewNotFound(pods, "db-1") }, 0, 2, 1, "does not serve the pods/resize"},
 		"one rejected pod does not stop the rest": {func(pod string) error {
-			if pod == "db-0" {
+			if pod == "db-1" {
 				return apierrors.NewBadRequest("the resize would change the QoS class")
 			}
 			return nil
-		}, 1, 1, 2, "pod db-0"},
+		}, 1, 1, 2, "pod db-1"},
 	} {
 		client := kubernetesfake.NewSimpleClientset(workload()...)
 		patched := recordResizes(client, test.answer)

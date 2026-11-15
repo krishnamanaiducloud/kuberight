@@ -3,6 +3,8 @@ package provider
 import (
 	"context"
 	"fmt"
+	"sort"
+	"time"
 
 	"github.com/kuberight/kuberight/internal/automation"
 	appsv1 "k8s.io/api/apps/v1"
@@ -19,6 +21,20 @@ type resizeTarget struct {
 	onDelete bool
 	selector *metav1.LabelSelector
 	template corev1.PodSpec
+	// changed is when KubeRight last wrote the workload, or zero.
+	changed time.Time
+}
+
+// lastAutomatedWrite reads, from the managed fields, when KubeRight last
+// patched a workload. The zero time means it is not recorded.
+func lastAutomatedWrite(meta metav1.ObjectMeta) time.Time {
+	var last time.Time
+	for _, entry := range meta.ManagedFields {
+		if entry.Manager == automation.FieldManager && entry.Time != nil && entry.Time.After(last) {
+			last = entry.Time.Time
+		}
+	}
+	return last
 }
 
 // resizeTarget reads the workload with the list permission the inventory
@@ -35,7 +51,7 @@ func (provider *KubernetesProvider) resizeTarget(ctx context.Context, change aut
 		}
 		for _, item := range list.Items {
 			if item.Name == change.Workload {
-				return resizeTarget{item.UID, item.Spec.UpdateStrategy.Type == appsv1.OnDeleteStatefulSetStrategyType, item.Spec.Selector, item.Spec.Template.Spec}, true, nil
+				return resizeTarget{item.UID, item.Spec.UpdateStrategy.Type == appsv1.OnDeleteStatefulSetStrategyType, item.Spec.Selector, item.Spec.Template.Spec, lastAutomatedWrite(item.ObjectMeta)}, true, nil
 			}
 		}
 	case "DaemonSet":
@@ -45,7 +61,7 @@ func (provider *KubernetesProvider) resizeTarget(ctx context.Context, change aut
 		}
 		for _, item := range list.Items {
 			if item.Name == change.Workload {
-				return resizeTarget{item.UID, item.Spec.UpdateStrategy.Type == appsv1.OnDeleteDaemonSetStrategyType, item.Spec.Selector, item.Spec.Template.Spec}, true, nil
+				return resizeTarget{item.UID, item.Spec.UpdateStrategy.Type == appsv1.OnDeleteDaemonSetStrategyType, item.Spec.Selector, item.Spec.Template.Spec, lastAutomatedWrite(item.ObjectMeta)}, true, nil
 			}
 		}
 	}
@@ -78,11 +94,57 @@ func ownedByUID(pod corev1.Pod, uid types.UID) bool {
 	return false
 }
 
+// carries reports whether the pod spec already holds the resources for the
+// container.
+func carries(pod corev1.Pod, container string, want automation.Resources) bool {
+	for _, item := range pod.Spec.Containers {
+		if item.Name == container {
+			requests, limits := item.Resources.Requests, item.Resources.Limits
+			return requests.Cpu().MilliValue() == want.CPURequestMilli && limits.Cpu().MilliValue() == want.CPULimitMilli &&
+				requests.Memory().Value() == want.MemoryRequestBytes && limits.Memory().Value() == want.MemoryLimitBytes
+		}
+	}
+	return false
+}
+
+// unsettled reports whether a pod that carries the new resources is no
+// evidence that they work: it is not ready, the kubelet has not finished
+// (or cannot finish) its resize, or the container restarted after the
+// change was written.
+func unsettled(pod corev1.Pod, container string, changed time.Time) bool {
+	ready := false
+	for _, condition := range pod.Status.Conditions {
+		switch condition.Type {
+		case corev1.PodReady:
+			ready = condition.Status == corev1.ConditionTrue
+		case corev1.PodResizePending, corev1.PodResizeInProgress:
+			if condition.Status == corev1.ConditionTrue {
+				return true
+			}
+		}
+	}
+	if !ready {
+		return true
+	}
+	for _, status := range pod.Status.ContainerStatuses {
+		if terminated := status.LastTerminationState.Terminated; status.Name == container && terminated != nil && !changed.IsZero() && terminated.FinishedAt.After(changed) {
+			return true
+		}
+	}
+	return false
+}
+
 // ResizeInPlace resizes the running pods of an OnDelete StatefulSet or
 // DaemonSet through the pods/resize subresource, after PatchResources has
 // updated the template. It never deletes or restarts a pod: where in-place
 // resize does not apply or the cluster rejects it, the pods keep their
 // resources until their owner recreates them from the patched template.
+//
+// A change is resized in stages, so new values that harm a pod do not reach
+// every replica at once. Each call resizes as many pods as already carry
+// the new resources, and at least one: one pod, then one more, then two,
+// four, and so on. It resizes nothing while a pod that carries them is
+// unsettled. A rollback restores values that ran before and is not staged.
 func (provider *KubernetesProvider) ResizeInPlace(ctx context.Context, change automation.Change) (automation.ResizeResult, error) {
 	skip := func(reason string) (automation.ResizeResult, error) {
 		return automation.ResizeResult{Reason: reason}, nil
@@ -121,30 +183,65 @@ func (provider *KubernetesProvider) ResizeInPlace(ctx context.Context, change au
 		return automation.ResizeResult{}, err
 	}
 	result := automation.ResizeResult{Attempted: true}
+	var behind []string
+	current, unhealthy := 0, ""
 	for _, pod := range pods.Items {
 		if !ownedByUID(pod, target.uid) || pod.DeletionTimestamp != nil || pod.Status.Phase != corev1.PodRunning {
 			continue
 		}
 		result.Pods++
-		_, err := provider.client.CoreV1().Pods(change.Namespace).Patch(ctx, pod.Name, types.StrategicMergePatchType, body, metav1.PatchOptions{FieldManager: automation.FieldManager}, "resize")
+		switch {
+		case !carries(pod, change.Container, change.Desired):
+			behind = append(behind, pod.Name)
+		case unsettled(pod, change.Container, target.changed) && unhealthy == "":
+			current, unhealthy = current+1, pod.Name
+		default:
+			current++
+		}
+	}
+	batch := len(behind)
+	if !change.Rollback {
+		if unhealthy != "" && len(behind) > 0 {
+			result.Halted, result.Remaining = true, len(behind)
+			result.Error = fmt.Sprintf("pod %s carries the new resources and is not ready, has not finished resizing, or restarted after the change; %d other running pods keep their resources", unhealthy, len(behind))
+			return result, nil
+		}
+		batch = max(1, current)
+		// The highest ordinal goes first, as in a StatefulSet rolling
+		// update: ordinal 0 is often the primary.
+		sort.Slice(behind, func(left, right int) bool {
+			if len(behind[left]) != len(behind[right]) {
+				return len(behind[left]) > len(behind[right])
+			}
+			return behind[left] > behind[right]
+		})
+	}
+	// A rejected pod does not use up the batch, so one pod the cluster
+	// refuses to resize cannot block the others forever.
+	for index, name := range behind {
+		if result.Resized >= batch {
+			break
+		}
+		_, err := provider.client.CoreV1().Pods(change.Namespace).Patch(ctx, name, types.StrategicMergePatchType, body, metav1.PatchOptions{FieldManager: automation.FieldManager}, "resize")
 		switch {
 		case err == nil:
 			result.Resized++
 			continue
 		case apierrors.IsForbidden(err):
 			// Without the permission every pod fails the same way.
-			result.Failed, result.Error = result.Pods-result.Resized, "the pods/resize permission is not granted"
+			result.Failed, result.Error = len(behind)-result.Resized, "the pods/resize permission is not granted"
 			return result, nil
-		case apierrors.IsMethodNotSupported(err) || (apierrors.IsNotFound(err) && result.Pods == 1):
+		case apierrors.IsMethodNotSupported(err) || (apierrors.IsNotFound(err) && index == 0):
 			// A cluster without the resize subresource answers 404 or 405
 			// on the first pod.
-			result.Failed, result.Error = 1, "this cluster does not serve the pods/resize subresource"
+			result.Failed, result.Error = len(behind)-result.Resized, "this cluster does not serve the pods/resize subresource"
 			return result, nil
 		}
 		result.Failed++
 		if result.Error == "" {
-			result.Error = fmt.Sprintf("pod %s: %s", pod.Name, safeKubernetesError(err))
+			result.Error = fmt.Sprintf("pod %s: %s", name, safeKubernetesError(err))
 		}
 	}
+	result.Remaining = len(behind) - result.Resized - result.Failed
 	return result, nil
 }

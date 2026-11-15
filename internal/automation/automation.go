@@ -195,10 +195,19 @@ type ResizeResult struct {
 	// Attempted is false when in-place resize does not apply; Reason says why.
 	Attempted bool   `json:"attempted"`
 	Reason    string `json:"reason,omitempty"`
-	Pods      int    `json:"pods"`
-	Resized   int    `json:"resized"`
-	Failed    int    `json:"failed"`
-	// Error is the first pod failure.
+	// Pods counts the running pods of the workload, Resized the pods whose
+	// resize was requested in this pass, and Failed the pods that rejected it.
+	Pods    int `json:"pods"`
+	Resized int `json:"resized"`
+	Failed  int `json:"failed"`
+	// Remaining counts running pods that still carry other resources and
+	// were left for a later pass: a change is resized in stages, one pod
+	// first and then as many pods as already run the new resources.
+	Remaining int `json:"remaining,omitempty"`
+	// Halted is set when no pod was resized because a pod that already
+	// carries the new resources is unhealthy; Error names it.
+	Halted bool `json:"halted,omitempty"`
+	// Error is the first pod failure, or the reason the resize halted.
 	Error string `json:"error,omitempty"`
 }
 

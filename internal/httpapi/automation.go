@@ -389,6 +389,8 @@ func (server *apiServer) retryResize(ctx context.Context, decision *AutomationDe
 		decision.Action = AutomationSkip
 		decision.Reasons = append(decision.Reasons, result.Reason)
 		return true, nil
+	case result.Halted:
+		return false, fmt.Errorf("in-place resize stopped: %s", result.Error)
 	case result.Failed > 0:
 		return false, fmt.Errorf("in-place resize reached %d of %d running pods: %s", result.Resized, result.Pods, result.Error)
 	}
@@ -591,6 +593,11 @@ func (server *apiServer) resizeInPlace(ctx context.Context, decision *Automation
 	case result.Failed > 0:
 		decision.Reasons = append(decision.Reasons, fmt.Sprintf("in-place resize reached %d of %d running pods; the rest take the new resources when recreated", result.Resized, result.Pods))
 		server.logger.Warn("in-place resize incomplete", "recommendation_id", decision.RecommendationID, "pods", result.Pods, "resized", result.Resized, "error", result.Error)
+	case result.Halted:
+		decision.Reasons = append(decision.Reasons, "in-place resize did not start: "+result.Error)
+		server.logger.Warn("in-place resize halted", "recommendation_id", decision.RecommendationID, "pods", result.Pods, "error", result.Error)
+	case result.Attempted && result.Remaining > 0:
+		decision.Reasons = append(decision.Reasons, fmt.Sprintf("resized %d of %d running pods in place; the other %d follow in later passes while the resized pods stay healthy", result.Resized, result.Pods, result.Remaining))
 	case result.Attempted:
 		decision.Reasons = append(decision.Reasons, fmt.Sprintf("resized %d running pods in place", result.Resized))
 	}

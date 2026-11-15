@@ -141,11 +141,29 @@ func TestLiveInPlaceResize(t *testing.T) {
 		}
 	}
 
+	// The API server records when KubeRight wrote the template; a restart
+	// of a resized container is judged against that time.
+	if target, found, err := provider.resizeTarget(ctx, change); err != nil || !found || target.changed.IsZero() || time.Since(target.changed) > 10*time.Minute {
+		t.Fatalf("the time of the template patch was not found: target=%+v found=%v err=%v", target.changed, found, err)
+	}
+
+	// The first stage resizes one pod, the highest ordinal; the second
+	// follows only once that pod has settled on the new resources.
 	result, err := provider.ResizeInPlace(ctx, change)
-	if err != nil || !result.Attempted || result.Pods != 2 || result.Resized != 2 || result.Failed != 0 {
-		t.Fatalf("resize: result=%+v err=%v", result, err)
+	if err != nil || !result.Attempted || result.Halted || result.Pods != 2 || result.Resized != 1 || result.Failed != 0 || result.Remaining != 1 {
+		t.Fatalf("first stage: result=%+v err=%v", result, err)
+	}
+	waitForLive(t, "only db-1 runs the new resources", func() bool {
+		_, pods := liveContainerResources(t, provider)
+		return pods["db-1"].Resources["api"] == after && !pods["db-1"].Resizing && pods["db-0"].Resources["api"] == before
+	})
+	if result, err := provider.ResizeInPlace(ctx, change); err != nil || result.Halted || result.Resized != 1 || result.Failed != 0 || result.Remaining != 0 {
+		t.Fatalf("second stage: result=%+v err=%v", result, err)
 	}
 	waitForLive(t, "both pods run the new resources", running(after))
+	if result, err := provider.ResizeInPlace(ctx, change); err != nil || result.Resized != 0 || result.Remaining != 0 || result.Pods != 2 {
+		t.Fatalf("a finished resize was repeated: result=%+v err=%v", result, err)
+	}
 
 	// One pod falls behind, as after a failed resize; the retry fixes it.
 	revert := []byte(`{"spec":{"containers":[{"name":"api","resources":{"requests":{"cpu":"100m","memory":"64Mi"}}}]}}`)
@@ -156,7 +174,7 @@ func TestLiveInPlaceResize(t *testing.T) {
 		_, pods := liveContainerResources(t, provider)
 		return pods["db-1"].Resources["api"] == before && pods["db-0"].Resources["api"] == after
 	})
-	if result, err := provider.ResizeInPlace(ctx, change); err != nil || result.Resized != 2 || result.Failed != 0 {
+	if result, err := provider.ResizeInPlace(ctx, change); err != nil || result.Resized != 1 || result.Failed != 0 || result.Remaining != 0 {
 		t.Fatalf("retry: result=%+v err=%v", result, err)
 	}
 	waitForLive(t, "the retry brought both pods to the new resources", running(after))
@@ -169,17 +187,24 @@ func TestLiveInPlaceResize(t *testing.T) {
 	}
 
 	// A resize no node can satisfy is accepted by the API server and left
-	// pending by the kubelet; the pod must be reported as still resizing.
+	// pending by the kubelet. It reaches one pod, which is reported as
+	// still resizing, and the next stage halts instead of spreading it.
 	infeasible := change
 	infeasible.Desired.CPURequestMilli = 4_000_000
-	if result, err := provider.ResizeInPlace(ctx, infeasible); err != nil || result.Resized != 2 {
+	if result, err := provider.ResizeInPlace(ctx, infeasible); err != nil || result.Resized != 1 || result.Remaining != 1 {
 		t.Fatalf("infeasible resize: result=%+v err=%v", result, err)
 	}
 	waitForLive(t, "the infeasible resize is reported as unfinished", func() bool {
 		_, pods := liveContainerResources(t, provider)
-		return pods["db-0"].Resizing && pods["db-1"].Resizing
+		return pods["db-1"].Resizing && !pods["db-0"].Resizing
 	})
-	if result, err := provider.ResizeInPlace(ctx, change); err != nil || result.Resized != 2 {
+	if result, err := provider.ResizeInPlace(ctx, infeasible); err != nil || !result.Halted || result.Resized != 0 || result.Remaining != 1 || !strings.Contains(result.Error, "pod db-1 carries the new resources") {
+		t.Fatalf("an unfinished stage did not halt the next: result=%+v err=%v", result, err)
+	}
+	if _, pods := liveContainerResources(t, provider); pods["db-0"].Resources["api"] != after {
+		t.Fatalf("the halted stage changed db-0: %+v", pods["db-0"].Resources["api"])
+	}
+	if result, err := provider.ResizeInPlace(ctx, change); err != nil || result.Halted || result.Resized != 1 {
 		t.Fatalf("restore: result=%+v err=%v", result, err)
 	}
 	waitForLive(t, "both pods settle on the new resources", running(after))
