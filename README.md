@@ -288,18 +288,19 @@ Results:
 
 **Forecasts on real traces.** `python -m ml.benchmark --traces FILE --limit 200` runs the same backtest on hourly means of the Bitbrains trace: 200 random VMs, 3 origins with a 24-hour horizon, and 95% bootstrap intervals over VMs.
 
-- **Memory:** intervals covered 90.5% (89.0–91.9) of held-out hours against a nominal 90%. The service beat seasonal-naive on 49% of VMs.
-- **CPU:** intervals covered 86%, because the calibration factor was fitted on the last validation fold only. It is now the largest factor any fold needs. Chosen on one set of 100 VMs and confirmed on a different 100, coverage rose to 88.4% (85.0–91.2). The remaining shortfall comes from VMs whose CPU level shifts abruptly; there the service usually selects the seasonal-naive model itself (median skill 0). KubeRight uses a forecast for sizing only when its own calibration check passes.
+- **CPU:** 90% intervals covered 91.4% (89.7–93.2) of held-out hours. On the same VMs they covered 89.6% (87.4–91.5) before naive-baseline intervals were taken from the baseline's own lagged errors. The service's point forecast beat seasonal-naive on 23% of VMs (median skill 0), because it usually selects that model itself.
+- **Memory:** intervals covered 93.1% (91.7–94.3), down from 93.8% and so slightly tighter. The service beat seasonal-naive on 49% of VMs.
+- KubeRight uses a forecast for sizing only when its own calibration check passes, and a forecast can only raise a recommendation.
 
 **Quantile accuracy.** `scripts/benchmark-quantile.py FILE --limit 200` scores quantile forecasts on the same VMs, origins, and horizon. It compares seasonal-naive with empirical quantiles, the forecasting service, and LightGBM quantile regression with and without split-conformal calibration. LightGBM is a benchmark-only dependency. The score is pinball loss scaled by each VM's mean, averaged over 195 VMs with 95% bootstrap intervals.
 
 | P95 forecast | CPU coverage | CPU pinball | Memory coverage | Memory pinball |
 | --- | ---: | ---: | ---: | ---: |
 | Seasonal-naive | 95.1% | 0.132 | 94.6% | 0.086 |
-| Forecasting service (Ridge) | 96.0% | 0.211 (0.131–0.328) | 96.5% | 0.134 |
+| Forecasting service | 95.8% | 0.212 (0.133–0.333) | 95.8% | 0.128 |
 | LightGBM, conformal | 91.0% (90.0–92.1) | 0.102 (0.066–0.152) | 91.9% | 0.072 |
 
-- The service's P95 forecast is less accurate than seasonal-naive on most VMs: it wins on 40% for CPU and 37% for memory. Its upper bound covers enough hours, but it is wider or more biased than it needs to be. Its P50 wins on 38% of VMs for CPU and 53% for memory.
+- The service's P95 forecast is still less accurate than seasonal-naive on most VMs: it wins on 43% for CPU and 41% for memory. When the service selects a naive model, its intervals now come from that model's own past errors at each lag, with conformal ranks, instead of a widened residual pool. That raised the share of VMs where the P95 wins from 40% to 43% (CPU) and from 37% to 41% (memory), and cut memory pinball loss from 0.134 to 0.128, with coverage still above 95%. Its P50 wins on 38% of VMs for CPU and 53% for memory. On a sample of 60 VMs, 22% of CPU and 13% of memory forecasts used the conservative fallback for low-confidence series, which reports recent highs instead of a median.
 - LightGBM with conformal calibration has the lowest P95 loss and beats seasonal-naive on 73% (CPU) and 72% (memory) of VMs. It under-covers, though: 91–92% at P95 and 96–97% at P99, so it is not yet safe to size from.
 - Seasonal-naive is the best calibrated: 95% at P95 and 98.6–98.7% at P99.
 

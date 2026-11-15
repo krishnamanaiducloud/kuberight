@@ -18,7 +18,7 @@ This list describes the current implementation, not planned behavior. KubeRight 
 - Changes are applied only with `operationMode=apply`, only to approved and fresh recommendations, and only in namespaces labeled `kuberight.io/automation=enabled`. Apply mode requires Kubernetes or OIDC authentication and cluster-scoped RBAC.
 - A change is applied by patching the workload template, which rolls its pods. In-place pod resize is not used.
 - After a change, KubeRight compares OOM kills, restarts, throttling, and optional latency against the period before it. A regression is rolled back to the exact previous resources. A full verdict needs at least one hour of history after the change. Severe signals (OOM kills, restarts, and throttling or pressure that is high and rising) are checked from five minutes after the change is first observed, and the first observation happens at a full verification pass, up to `verification.interval` after the rollout. A regression is caught only after it has happened, and gradual regressions wait for the hourly verdict. Rollbacks ignore the change window.
-- Pull requests can be opened on GitHub, GitLab, and Gitea or Forgejo. KubeRight edits only the resources of the named container in a Kubernetes manifest file. It does not merge or reconcile pull requests. Helm values files are edited at an annotated key; templates, Kustomize patches, and values spread across several files are not. The live pull-request test was against Gitea; GitHub and GitLab are covered by contract tests.
+- Pull requests can be opened on GitHub, GitLab, and Gitea or Forgejo. KubeRight edits only the resources of the named container, in a Kubernetes manifest file or at an annotated key of a Helm values file. It does not merge or reconcile pull requests. Chart templates, Kustomize patches, and values spread across several files are not edited. The live pull-request test was against Gitea; GitHub and GitLab are covered by contract tests.
 
 ## Cost and FinOps
 
@@ -27,7 +27,7 @@ This list describes the current implementation, not planned behavior. KubeRight 
 
 ## Persistence and high availability
 
-- External PostgreSQL stores recommendations, reviews, policies, fleet scans, verification outcomes, and the audit trail, and can be shared by replicas. The chart does not deploy PostgreSQL, create users, rotate credentials, or schedule backups. A backup and restore was tested once, manually.
+- External PostgreSQL stores recommendations, reviews, policies, fleet scans, verification outcomes, the webhook outbox, and the audit trail, and can be shared by replicas. The chart does not deploy PostgreSQL, create users, rotate credentials, or schedule backups. A backup and restore was tested once, manually.
 - Without a database, the in-process repository loses its state at restart and cannot be shared, so the chart rejects API scaling without `database.enabled=true`.
 - Migrations are applied forward by a pre-install or pre-upgrade hook, and serving pods require an exact schema match. Down migrations are tested but not exposed as a command. A Helm rollback after a migration needs a restore from backup or a roll-forward; see the [runbook](operations-runbook.md).
 - The audit table rejects update, delete, and truncate, but it is not WORM storage. A privileged database operator can still change it, and there is no external audit sink or retention workflow.
@@ -39,8 +39,8 @@ This list describes the current implementation, not planned behavior. KubeRight 
 - The ML model store is single-writer, so ML replicas and ML autoscaling are rejected. Without `ml.persistence.enabled`, models are lost when the pod is replaced.
 - The ML API key is optional and unset by default. The NetworkPolicy limits ingress when enforced, but operators must still protect the service and rotate the key.
 - The ML compute budget is cooperative: it is checked between forecast phases and cannot interrupt numerical work in progress. A proxy deadline is needed for a hard time limit.
-- CPU forecast intervals cover 88.4% on held-out production VMs, short of the 90% target, on machines with abrupt level shifts.
-- On 195 production VMs, the forecasting service's P95 forecasts, and its CPU P50 forecasts, have higher pinball loss than a seasonal-naive baseline on most VMs. LightGBM quantile regression with conformal calibration is more accurate but covers only 91–92% at P95. Neither replaces observed percentiles for sizing.
+- On 200 production VMs, 90% forecast intervals cover 91.4% (89.7–93.2) for CPU and 93.1% for memory. The CPU interval's lower bound is still under 90%, and VMs with abrupt level shifts remain the weakest case.
+- On 195 production VMs, the forecasting service's P95 forecasts, and its CPU P50 forecasts, have higher pinball loss than a seasonal-naive baseline on most VMs (the P95 wins on 43% for CPU and 41% for memory). Low-confidence series use a conservative fallback that reports recent highs as the point forecast, so its P50 is biased high by design. LightGBM quantile regression with conformal calibration is more accurate but covers only 91–92% at P95. Neither replaces observed percentiles for sizing.
 - With the PostgreSQL store, webhook events are written to an outbox, retried with backoff, dead-lettered after a rejection or ten attempts, and can be replayed. Delivery is at least once: an event delivered just before a crash can be sent again with the same delivery ID. The outbox write is not in the same transaction as the change it reports, so a database failure between the two loses the event to the in-memory fallback queue. Without PostgreSQL, webhooks use a process-memory queue of 256 events that a full queue or a restart can lose.
 
 ## Security and operations
