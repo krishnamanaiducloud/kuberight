@@ -494,7 +494,17 @@ These were functional runs on a small cluster. Accuracy is evaluated separately,
 | `charts/kuberight/` | Helm chart and profiles |
 | `deploy/manifests/` | Generated standalone manifests; do not edit by hand |
 | `api/openapi.yaml` | Go API contract artifact; it is not served by the process |
+| `scripts/check-openapi-compat.py` | Reports breaking `/api/v1` changes between two versions of the contract |
 | `.github/workflows/` | Required quality gates and immutable tag release workflow |
+
+## API compatibility
+
+`/api/v1` changes are additive within a major version: new endpoints, new optional parameters and fields, and new enum values that clients can ignore. Removing or renaming an operation, parameter, schema, field, or enum value, making an optional parameter or field required, or changing a field's type needs a new API version. The older version is then served for at least two minor releases. Before 1.0.0, a minor release may still break the API, and its release notes list each break. To check a change against the last release:
+
+```sh
+git show v0.1.0:api/openapi.yaml > /tmp/base.yaml
+scripts/check-openapi-compat.py /tmp/base.yaml api/openapi.yaml
+```
 
 ## Documentation
 
