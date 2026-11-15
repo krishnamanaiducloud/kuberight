@@ -1,8 +1,59 @@
 import { useQuery } from '@tanstack/react-query'
-import { Box, Card, CardContent, Chip, Skeleton, Stack, Typography } from '@mui/material'
+import { Box, Card, CardContent, Chip, Skeleton, Stack, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Tooltip, Typography } from '@mui/material'
 import ArrowForward from '@mui/icons-material/ArrowForward'
-import { api, type CapacityResponse } from '../api'
+import { api, type CapacityResponse, type NodeGroupImpact } from '../api'
 import { formatBytes, formatMillicores } from '../format'
+
+const providerName: Record<NodeGroupImpact['provider'], string> = {
+  karpenter: 'Karpenter NodePool',
+  eks: 'EKS node group',
+  gke: 'GKE node pool',
+  aks: 'AKS agent pool',
+  openshift: 'OpenShift MachineSet',
+  'cluster-api': 'Cluster API MachineSet',
+  none: 'No node group',
+}
+
+/** Per-group share of the node-impact estimate, with membership evidence. */
+export function NodeGroupTable({ groups }: { groups: NodeGroupImpact[] }) {
+  return (
+    <TableContainer sx={{ mt: 2 }} tabIndex={0} role="region" aria-label="Node groups">
+      <Table size="small" aria-label="Node impact by node group">
+        <TableHead>
+          <TableRow>
+            <TableCell>Node group</TableCell>
+            <TableCell>Membership</TableCell>
+            <TableCell align="right">Nodes</TableCell>
+            <TableCell align="right">Needed now → after</TableCell>
+            <TableCell align="right">Reclaimable</TableCell>
+            <TableCell>How it shrinks</TableCell>
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {groups.map((group) => (
+            <TableRow key={`${group.provider}/${group.name}`}>
+              <TableCell>
+                <Typography variant="body2" sx={{ overflowWrap: 'anywhere' }}>{group.name}</Typography>
+                <Typography variant="caption" color="text.secondary">
+                  {providerName[group.provider]}{group.instanceTypes.length > 0 && ` · ${group.instanceTypes.join(', ')}`}{group.capacityTypes.length > 0 && ` · ${group.capacityTypes.join(', ')}`}
+                </Typography>
+              </TableCell>
+              <TableCell>
+                <Tooltip title={group.evidence}>
+                  <Chip size="small" variant="outlined" color={group.membership === 'verified' ? 'success' : 'warning'} label={group.membership === 'verified' ? 'Verified' : 'Inferred'} />
+                </Tooltip>
+              </TableCell>
+              <TableCell align="right">{group.schedulableNodes} of {group.nodes}</TableCell>
+              <TableCell align="right">{group.currentNodesNeeded} → {group.recommendedNodesNeeded}</TableCell>
+              <TableCell align="right">{group.reclaimableNodes}</TableCell>
+              <TableCell><Typography variant="caption">{group.realization}</Typography></TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </TableContainer>
+  )
+}
 
 /** Node impact of applying the current recommendations. */
 export function CapacityCard() {
@@ -69,6 +120,7 @@ export function CapacityCard() {
             <Typography variant="caption" color="text.secondary" component="p" sx={{ mt: 1 }}>{data.assumptions?.join(' ')}</Typography>
           </Box>
         </Stack>
+        {(data.nodeGroups?.length ?? 0) > 0 && <NodeGroupTable groups={data.nodeGroups ?? []} />}
       </CardContent>
     </Card>
   )

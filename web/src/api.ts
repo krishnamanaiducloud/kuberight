@@ -606,6 +606,23 @@ export type SignalsResponse = {
   spikes?: SpikeProfile
 }
 
+export type NodeGroupImpact = {
+  name: string
+  provider: 'karpenter' | 'eks' | 'gke' | 'aks' | 'openshift' | 'cluster-api' | 'none'
+  membership: 'verified' | 'inferred'
+  evidence: string
+  nodes: number
+  schedulableNodes: number
+  instanceTypes: string[]
+  capacityTypes: string[]
+  cpuMilli: number
+  memoryBytes: number
+  currentNodesNeeded: number
+  recommendedNodesNeeded: number
+  reclaimableNodes: number
+  realization: string
+}
+
 export type CapacityResponse = {
   status: ApiStatus
   nodes?: { total: number; schedulable: number }
@@ -620,6 +637,7 @@ export type CapacityResponse = {
     nodePools: Array<{ name: string; consolidationPolicy: string; consolidateAfter?: string; disruptionBudgets: string[] }>
     warnings: string[]
   }
+  nodeGroups?: NodeGroupImpact[]
   realization?: string
   assumptions?: string[]
 }

@@ -987,8 +987,14 @@ paths:
         each node, once with current requests and once with the newest
         non-rejected recommendations. Reports Karpenter NodePools (read-only,
         `karpenter.sh/v1`) and Cluster Autoscaler presence, and explains how
-        node savings are realized. Requires cluster-scoped inventory and the
-        `list` verb on `capacity`.
+        node savings are realized. `nodeGroups` splits both packings by node
+        group: Karpenter NodePools, EKS, GKE, and AKS node groups, and
+        OpenShift and Cluster API MachineSets. Each group's `membership` is
+        `verified` when it comes from the platform's own node-group label or
+        annotation, or from the node's Machine object, and `inferred` when it
+        comes from a Machine name or the node's shape; `evidence` names the
+        source. Requires cluster-scoped inventory and the `list` verb on
+        `capacity`.
       responses:
         "200":
           description: Node counts now and after, autoscaler context, and assumptions.

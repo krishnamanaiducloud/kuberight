@@ -11,9 +11,59 @@ type NodeCapacity struct {
 	InstanceType string `json:"instanceType,omitempty"`
 	CapacityType string `json:"capacityType,omitempty"`
 	NodePool     string `json:"nodePool,omitempty"`
+	// NodeGroup is the group that provisions the node: a Karpenter NodePool,
+	// an EKS, GKE, or AKS node group, an OpenShift or Cluster API MachineSet,
+	// or, without any of these, a shape group ("shape:<instance type>").
+	NodeGroup         string `json:"nodeGroup"`
+	NodeGroupProvider string `json:"nodeGroupProvider"`
+	// NodeGroupMembership is MembershipVerified or MembershipInferred, and
+	// NodeGroupEvidence says which label, annotation, or object decided it.
+	NodeGroupMembership string `json:"nodeGroupMembership"`
+	NodeGroupEvidence   string `json:"nodeGroupEvidence"`
 	// Labels and Taints decide which pods the node accepts.
 	Labels map[string]string `json:"-"`
 	Taints []NodeTaint       `json:"taints,omitempty"`
+}
+
+// Node-group providers.
+const (
+	NodeGroupKarpenter  = "karpenter"
+	NodeGroupEKS        = "eks"
+	NodeGroupGKE        = "gke"
+	NodeGroupAKS        = "aks"
+	NodeGroupOpenShift  = "openshift"
+	NodeGroupClusterAPI = "cluster-api"
+	NodeGroupNone       = "none"
+)
+
+// Node-group membership evidence.
+const (
+	// MembershipVerified comes from the platform's own node-group label or
+	// annotation, or from the node's Machine object.
+	MembershipVerified = "verified"
+	// MembershipInferred comes from a Machine name prefix or the node shape.
+	MembershipInferred = "inferred"
+)
+
+// NodeGroupImpact is one node group's share of the node-impact estimate.
+type NodeGroupImpact struct {
+	Name             string   `json:"name"`
+	Provider         string   `json:"provider"`
+	Membership       string   `json:"membership"`
+	Evidence         string   `json:"evidence"`
+	Nodes            int      `json:"nodes"`
+	SchedulableNodes int      `json:"schedulableNodes"`
+	InstanceTypes    []string `json:"instanceTypes"`
+	CapacityTypes    []string `json:"capacityTypes"`
+	CPUMilli         int64    `json:"cpuMilli"`
+	MemoryBytes      int64    `json:"memoryBytes"`
+	// CurrentNodesNeeded and RecommendedNodesNeeded count this group's nodes
+	// that receive at least one pod in each packing.
+	CurrentNodesNeeded     int `json:"currentNodesNeeded"`
+	RecommendedNodesNeeded int `json:"recommendedNodesNeeded"`
+	ReclaimableNodes       int `json:"reclaimableNodes"`
+	// Realization explains how, or whether, this group shrinks.
+	Realization string `json:"realization"`
 }
 
 // NodePool summarizes a Karpenter NodePool's consolidation behavior.

@@ -217,6 +217,9 @@ func TestCapacityShowsNodeImpactAndKarpenterRealization(t *testing.T) {
 		},
 		Autoscaling: NodeAutoscaling{Karpenter: true, NodePools: []NodePool{{Name: "default", ConsolidationPolicy: "WhenEmptyOrUnderutilized"}}},
 	}
+	for index := range cluster.Nodes {
+		cluster.Nodes[index].NodeGroup, cluster.Nodes[index].NodeGroupProvider, cluster.Nodes[index].NodeGroupMembership = "default", NodeGroupKarpenter, MembershipVerified
+	}
 	api := newTestAPI(t, nil, Dependencies{Provider: capacityInventory{inventoryRecords: inventoryRecords{records: records}, cluster: cluster}})
 	observationStart, observationEnd, expiry := fixedNow.Add(-24*time.Hour), fixedNow.Add(-time.Minute), fixedNow.Add(time.Hour)
 	recommendation := optimizer.Recommendation{
@@ -245,6 +248,11 @@ func TestCapacityShowsNodeImpactAndKarpenterRealization(t *testing.T) {
 	}
 	if !strings.Contains(body["realization"].(string), "Karpenter consolidates") || body["containersWithRecommendations"].(float64) != 1 {
 		t.Fatalf("body=%v", body)
+	}
+	groups := body["nodeGroups"].([]any)
+	if group := groups[0].(map[string]any); len(groups) != 1 || group["name"] != "default" || group["membership"] != MembershipVerified ||
+		group["currentNodesNeeded"].(float64) != 3 || group["recommendedNodesNeeded"].(float64) != 2 || group["reclaimableNodes"].(float64) != 1 {
+		t.Fatalf("nodeGroups=%v", groups)
 	}
 	if _, unavailable := newTestAPI(t, nil, Dependencies{}).do(t, http.MethodGet, "/api/v1/capacity", "alice", ""); unavailable["status"].(map[string]any)["available"] != false {
 		t.Fatalf("unconfigured capacity=%v", unavailable)

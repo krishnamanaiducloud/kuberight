@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -29,7 +30,11 @@ type packingResult struct {
 	NoEligibleNodePods int `json:"noEligibleNodePods"`
 	// UnplacedWorkloads names up to 20 workloads with unplaced pods.
 	UnplacedWorkloads []string `json:"unplacedWorkloads"`
+	// nodesByGroup counts used nodes by nodeGroupKey.
+	nodesByGroup map[string]int
 }
+
+func nodeGroupKey(node NodeCapacity) string { return node.NodeGroupProvider + "\x00" + node.NodeGroup }
 
 // pack places pods with first-fit-decreasing onto nodes ordered largest
 // first, after reserving DaemonSet pods on every node. A pod only uses nodes
@@ -60,7 +65,7 @@ func pack(nodes []NodeCapacity, daemon podDemand, pods []podDemand) packingResul
 		return max(float64(pod.cpuMilli)/float64(maxCPU), float64(pod.memoryBytes)/float64(maxMemory))
 	}
 	sort.SliceStable(ordered, func(left, right int) bool { return dominant(ordered[left]) > dominant(ordered[right]) })
-	result := packingResult{UnplacedWorkloads: []string{}}
+	result := packingResult{UnplacedWorkloads: []string{}, nodesByGroup: map[string]int{}}
 	used := make([]bool, len(bins))
 	unplaced := map[string]bool{}
 	for _, pod := range ordered {
@@ -78,6 +83,7 @@ func pack(nodes []NodeCapacity, daemon podDemand, pods []podDemand) packingResul
 				if !used[index] {
 					used[index] = true
 					result.NodesNeeded++
+					result.nodesByGroup[nodeGroupKey(bins[index].node)]++
 				}
 				placed = true
 				break
@@ -168,6 +174,80 @@ func realization(autoscaling NodeAutoscaling) string {
 		return "Cluster Autoscaler removes nodes whose requested resources fall below its scale-down utilization threshold (50% by default)."
 	default:
 		return "No node autoscaler was detected inside the cluster. A managed autoscaler outside the cluster may still act; otherwise drain and remove nodes manually."
+	}
+}
+
+// nodeGroupImpacts summarizes every node group and its share of both
+// packings. A group with any inferred member is reported as inferred.
+func nodeGroupImpacts(nodes []NodeCapacity, autoscaling NodeAutoscaling, current, recommended packingResult) []NodeGroupImpact {
+	policies := map[string]string{}
+	for _, pool := range autoscaling.NodePools {
+		policies[pool.Name] = pool.ConsolidationPolicy
+	}
+	positions := map[string]int{}
+	groups := []NodeGroupImpact{}
+	for _, node := range nodes {
+		key := nodeGroupKey(node)
+		position, found := positions[key]
+		if !found {
+			position = len(groups)
+			positions[key] = position
+			groups = append(groups, NodeGroupImpact{Name: node.NodeGroup, Provider: node.NodeGroupProvider, Membership: node.NodeGroupMembership, Evidence: node.NodeGroupEvidence, InstanceTypes: []string{}, CapacityTypes: []string{}})
+		}
+		group := &groups[position]
+		group.Nodes++
+		if node.NodeGroupMembership == MembershipInferred && group.Membership != MembershipInferred {
+			group.Membership, group.Evidence = MembershipInferred, node.NodeGroupEvidence
+		}
+		if node.Schedulable {
+			group.SchedulableNodes++
+			group.CPUMilli += node.CPUMilli
+			group.MemoryBytes += node.MemoryBytes
+		}
+		if node.InstanceType != "" && !slices.Contains(group.InstanceTypes, node.InstanceType) {
+			group.InstanceTypes = append(group.InstanceTypes, node.InstanceType)
+		}
+		if node.CapacityType != "" && !slices.Contains(group.CapacityTypes, node.CapacityType) {
+			group.CapacityTypes = append(group.CapacityTypes, node.CapacityType)
+		}
+	}
+	for index := range groups {
+		group := &groups[index]
+		key := group.Provider + "\x00" + group.Name
+		group.CurrentNodesNeeded, group.RecommendedNodesNeeded = current.nodesByGroup[key], recommended.nodesByGroup[key]
+		group.ReclaimableNodes = max(0, group.CurrentNodesNeeded-group.RecommendedNodesNeeded)
+		group.Realization = groupRealization(*group, policies[group.Name], autoscaling.ClusterAutoscaler)
+	}
+	sort.SliceStable(groups, func(left, right int) bool {
+		if groups[left].ReclaimableNodes != groups[right].ReclaimableNodes {
+			return groups[left].ReclaimableNodes > groups[right].ReclaimableNodes
+		}
+		return groups[left].Provider+groups[left].Name < groups[right].Provider+groups[right].Name
+	})
+	return groups
+}
+
+// groupRealization explains how a node group's nodes would be removed.
+func groupRealization(group NodeGroupImpact, consolidationPolicy string, clusterAutoscaler bool) string {
+	switch {
+	case group.Provider == NodeGroupKarpenter && consolidationPolicy == "WhenEmpty":
+		return "This NodePool removes only empty nodes (consolidationPolicy WhenEmpty); set WhenEmptyOrUnderutilized to realize these savings."
+	case group.Provider == NodeGroupKarpenter && consolidationPolicy != "":
+		return "Karpenter consolidates underutilized nodes in this NodePool within its disruption budgets."
+	case group.Provider == NodeGroupKarpenter:
+		return "Karpenter manages these nodes, but the NodePool could not be read, so its consolidation policy is unknown."
+	case group.Provider == NodeGroupNone:
+		return "No node group was identified for these nodes; drain and remove them manually."
+	case clusterAutoscaler:
+		return "Cluster Autoscaler can remove underutilized nodes from this group down to its minimum size, which is not visible from inside the cluster."
+	case group.Provider == NodeGroupGKE || group.Provider == NodeGroupAKS:
+		return "The provider's node-pool autoscaler removes underutilized nodes when it is enabled; its settings are not visible from inside the cluster."
+	case group.Provider == NodeGroupOpenShift:
+		return "A MachineAutoscaler scales this MachineSet when one is configured; otherwise lower the MachineSet's replicas."
+	case group.Provider == NodeGroupClusterAPI:
+		return "Lower the owning MachineDeployment's replicas, or enable Cluster Autoscaler for it."
+	default:
+		return "No autoscaler was detected for this node group; lower its desired size or enable Cluster Autoscaler or Karpenter."
 	}
 }
 
@@ -262,11 +342,13 @@ func (server *apiServer) capacity(w http.ResponseWriter, r *http.Request) {
 		"reclaimableNodes":              max(0, current.NodesNeeded-recommended.NodesNeeded),
 		"containersWithRecommendations": applied,
 		"autoscaling":                   cluster.Autoscaling,
+		"nodeGroups":                    nodeGroupImpacts(cluster.Nodes, cluster.Autoscaling, current, recommended),
 		"realization":                   realization(cluster.Autoscaling),
 		"assumptions": []string{
 			"Pods are packed by requests with first-fit-decreasing onto existing node shapes, largest first.",
 			"Each pod only uses nodes whose NoSchedule and NoExecute taints it tolerates and whose labels satisfy its nodeSelector and required node affinity.",
 			"Preferred affinity, pod affinity and anti-affinity, topology spread, PodDisruptionBudgets, and pods not owned by a supported controller are not modeled; this is an estimate, not a scheduler simulation.",
+			"Per-group node counts come from the same packing, which fills the largest nodes first; an autoscaler that scales each group on its own may remove nodes from different groups.",
 			fmt.Sprintf("Recommended requests use the newest approved, unexpired, live-workload-matched recommendation for %d containers; others keep their current requests.", applied),
 		},
 	}

@@ -53,6 +53,11 @@ rules:
   - apiGroups: ["karpenter.sh"]
     resources: ["nodepools"]
     verbs: ["list"]
+  # Read-only OpenShift Machines verify each node's MachineSet; without them
+  # membership is inferred from Machine names.
+  - apiGroups: ["machine.openshift.io"]
+    resources: ["machines"]
+    verbs: ["list"]
   {{- end }}
   # Pod ownerReferences attribute container metrics to exact controllers;
   # pod names are never used as an ownership heuristic.

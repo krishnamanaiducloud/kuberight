@@ -3,8 +3,10 @@ package provider
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
+	"github.com/kuberight/kuberight/internal/httpapi"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -34,7 +36,7 @@ func node(name string, ready bool, labels map[string]string) *corev1.Node {
 
 func capacityProvider(client *kubernetesfake.Clientset, objects ...runtime.Object) *KubernetesProvider {
 	provider := testProvider(client)
-	provider.dynamic = fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{nodePoolResource: "NodePoolList"}, objects...)
+	provider.dynamic = fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{nodePoolResource: "NodePoolList", machineResource: "MachineList"}, objects...)
 	return provider
 }
 
@@ -107,5 +109,84 @@ func TestSchedulingConstraintsFromPodSpec(t *testing.T) {
 	}
 	if !schedulingConstraints(corev1.PodSpec{}).Empty() {
 		t.Fatal("a plain pod spec must have no constraints")
+	}
+}
+
+func annotated(node *corev1.Node, annotations map[string]string) *corev1.Node {
+	node.Annotations = annotations
+	return node
+}
+
+func machine(namespace, name, machineSet string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "machine.openshift.io/v1beta1", "kind": "Machine",
+		"metadata": map[string]any{"name": name, "namespace": namespace, "labels": map[string]any{openShiftMachineSetLabel: machineSet}},
+	}}
+}
+
+func TestCapacityIdentifiesNodeGroupsAndMembershipEvidence(t *testing.T) {
+	client := kubernetesfake.NewSimpleClientset(
+		node("karpenter", true, map[string]string{"karpenter.sh/nodepool": "default", "eks.amazonaws.com/nodegroup": "ignored"}),
+		node("eks", true, map[string]string{"eks.amazonaws.com/nodegroup": "general"}),
+		node("eksctl", true, map[string]string{"alpha.eksctl.io/nodegroup-name": "self-managed"}),
+		node("gke", true, map[string]string{"cloud.google.com/gke-nodepool": "pool-1"}),
+		node("aks", true, map[string]string{"kubernetes.azure.com/agentpool": "nodepool1"}),
+		annotated(node("capi", true, nil), map[string]string{"cluster.x-k8s.io/owner-kind": "MachineSet", "cluster.x-k8s.io/owner-name": "md-0-7f9c"}),
+		annotated(node("ocp-read", true, nil), map[string]string{openShiftMachineAnnotation: "openshift-machine-api/ocp-worker-a-x7k2p"}),
+		annotated(node("ocp-missing", true, nil), map[string]string{openShiftMachineAnnotation: "openshift-machine-api/ocp-worker-b-q9z4m"}),
+		node("bare", true, map[string]string{"node.kubernetes.io/instance-type": "m6i.large"}),
+	)
+	capacity, err := capacityProvider(client, machine("openshift-machine-api", "ocp-worker-a-x7k2p", "ocp-worker-a")).Capacity(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][3]string{
+		"karpenter":   {"default", "karpenter", "verified"},
+		"eks":         {"general", "eks", "verified"},
+		"eksctl":      {"self-managed", "eks", "verified"},
+		"gke":         {"pool-1", "gke", "verified"},
+		"aks":         {"nodepool1", "aks", "verified"},
+		"capi":        {"md-0-7f9c", "cluster-api", "verified"},
+		"ocp-read":    {"ocp-worker-a", "openshift", "verified"},
+		"ocp-missing": {"ocp-worker-b", "openshift", "inferred"},
+		"bare":        {"shape:m6i.large", "none", "inferred"},
+	}
+	for _, node := range capacity.Nodes {
+		if got := [3]string{node.NodeGroup, node.NodeGroupProvider, node.NodeGroupMembership}; got != want[node.Name] || node.NodeGroupEvidence == "" {
+			t.Errorf("%s: got %v (%q), want %v", node.Name, got, node.NodeGroupEvidence, want[node.Name])
+		}
+	}
+	if len(capacity.Autoscaling.Warnings) != 0 {
+		t.Fatalf("warnings=%v", capacity.Autoscaling.Warnings)
+	}
+}
+
+func TestCapacityInfersMachineSetsWhenMachinesAreForbidden(t *testing.T) {
+	client := kubernetesfake.NewSimpleClientset(
+		annotated(node("ocp", true, nil), map[string]string{openShiftMachineAnnotation: "openshift-machine-api/ocp-worker-a-x7k2p"}),
+		annotated(node("odd", true, map[string]string{"node.kubernetes.io/instance-type": "m5.xlarge"}), map[string]string{openShiftMachineAnnotation: "openshift-machine-api/hand-made"}),
+	)
+	provider := capacityProvider(client)
+	dynamicClient := provider.dynamic.(*fake.FakeDynamicClient)
+	dynamicClient.PrependReactor("list", "machines", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(action.GetResource().GroupResource(), "", errors.New("denied"))
+	})
+	capacity, err := provider.Capacity(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]httpapi.NodeCapacity{}
+	for _, node := range capacity.Nodes {
+		byName[node.Name] = node
+	}
+	if ocp := byName["ocp"]; ocp.NodeGroup != "ocp-worker-a" || ocp.NodeGroupMembership != "inferred" {
+		t.Fatalf("ocp=%#v", ocp)
+	}
+	// A Machine name without the MachineSet suffix falls back to the shape group.
+	if odd := byName["odd"]; odd.NodeGroup != "shape:m5.xlarge" || odd.NodeGroupProvider != "none" {
+		t.Fatalf("odd=%#v", odd)
+	}
+	if len(capacity.Autoscaling.Warnings) != 1 || !strings.Contains(capacity.Autoscaling.Warnings[0], "inferred from Machine names") {
+		t.Fatalf("warnings=%v", capacity.Autoscaling.Warnings)
 	}
 }

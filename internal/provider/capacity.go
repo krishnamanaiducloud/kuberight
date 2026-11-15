@@ -65,6 +65,7 @@ func (provider *KubernetesProvider) Capacity(ctx context.Context) (httpapi.Clust
 			capacity.Autoscaling.Karpenter = true
 		}
 	}
+	capacity.Autoscaling.Warnings = append(capacity.Autoscaling.Warnings, provider.assignNodeGroups(ctx, nodes, capacity.Nodes)...)
 
 	pools, err := listAll(ctx, func(ctx context.Context, options metav1.ListOptions) ([]unstructured.Unstructured, string, error) {
 		result, listErr := provider.dynamic.Resource(nodePoolResource).List(ctx, options)
