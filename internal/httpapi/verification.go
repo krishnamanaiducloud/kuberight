@@ -633,7 +633,8 @@ func (verifier *Verifier) PassRecent(ctx context.Context) int {
 func (verifier *Verifier) Pass(ctx context.Context) int {
 	server := verifier.server
 	checked := 0
-	for page := 1; checked < maxVerificationsPerPass; page++ {
+	seen := map[string]struct{}{}
+	for page, more := 1, true; more && checked < maxVerificationsPerPass; page++ {
 		result, err := server.repository.ListRecommendations(ctx, repository.ListOptions{
 			Page: page, PageSize: 100, ReviewStatus: repository.ReviewApproved, LatestOnly: true, Sort: "createdAt", Order: "desc",
 		})
@@ -645,13 +646,43 @@ func (verifier *Verifier) Pass(ctx context.Context) int {
 			if ctx.Err() != nil || checked >= maxVerificationsPerPass {
 				return checked
 			}
+			seen[record.ID] = struct{}{}
 			if _, err := server.refreshVerification(ctx, record); err != nil {
 				server.logger.Warn("verification refresh failed", "recommendation_id", record.ID, "error", err)
 			}
 			checked++
 		}
-		if len(result.Items) < 100 {
+		more = len(result.Items) == 100
+	}
+	// A change that is live still owes its verdict after a newer
+	// recommendation for the same container has replaced it as the latest.
+	// Without this pass, generating a recommendation would end the watch
+	// on the change that is actually running, and with it the rollback of
+	// a regression.
+	for page := 1; checked < maxVerificationsPerPass; page++ {
+		result, err := server.repository.ListVerificationOutcomes(ctx, page, 100)
+		if err != nil {
+			server.logger.Warn("verification could not list outcomes", "error", err)
 			return checked
+		}
+		for _, outcome := range result.Items {
+			if ctx.Err() != nil || checked >= maxVerificationsPerPass {
+				return checked
+			}
+			if _, done := seen[outcome.RecommendationID]; done || outcome.Status != VerificationPending || outcome.FirstObservedAt == nil {
+				continue
+			}
+			record, getErr := server.repository.GetRecommendation(ctx, outcome.RecommendationID)
+			if getErr != nil || record.ReviewStatus != repository.ReviewApproved {
+				continue
+			}
+			if _, err := server.refreshVerification(ctx, record); err != nil {
+				server.logger.Warn("verification refresh failed", "recommendation_id", record.ID, "error", err)
+			}
+			checked++
+		}
+		if page*100 >= result.Total {
+			break
 		}
 	}
 	return checked

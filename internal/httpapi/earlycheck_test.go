@@ -74,6 +74,53 @@ func TestEarlyVerificationFlagsSevereRegressionsWithinMinutes(t *testing.T) {
 	}
 }
 
+func TestVerificationFollowsALiveChangeAfterANewerRecommendation(t *testing.T) {
+	// The change has been live for two hours, past the early checks, and
+	// its container was OOM-killed. A newer recommendation for the same
+	// container is now the latest one.
+	supersede := func(t *testing.T, api testAPI) {
+		t.Helper()
+		if _, _, err := api.store.CreateRecommendation(context.Background(), liveRecommendation(), repository.CreateOptions{CreatedBy: "alice", Source: repository.SourcePrometheus}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	api, verifier, record := earlyVerifier(t, func(events *usage.Events) { events.OOMKills = 1 }, 2*time.Hour)
+	supersede(t, api)
+	if latest, err := api.store.ListRecommendations(context.Background(), repository.ListOptions{Page: 1, PageSize: 10, ReviewStatus: repository.ReviewApproved, LatestOnly: true}); err != nil || len(latest.Items) != 0 {
+		t.Fatalf("the approved change is still the latest: %+v err=%v", latest.Items, err)
+	}
+	if checked := verifier.Pass(context.Background()); checked != 1 {
+		t.Fatalf("checked = %d", checked)
+	}
+	outcome, err := api.store.GetVerificationOutcome(context.Background(), record.ID)
+	if err != nil || outcome.Status != VerificationRegressed || !outcome.CheckedAt.Equal(fixedNow) {
+		t.Fatalf("the live change was no longer verified: %+v err=%v", outcome, err)
+	}
+	// A verdict ends the watch: the superseded change is not checked again.
+	if checked := verifier.Pass(context.Background()); checked != 0 {
+		t.Fatalf("a finished verification was repeated: %d", checked)
+	}
+
+	// While the change is the latest, it is checked once, not twice.
+	api, verifier, _ = earlyVerifier(t, func(*usage.Events) {}, 2*time.Hour)
+	if checked := verifier.Pass(context.Background()); checked != 1 {
+		t.Fatalf("checked = %d", checked)
+	}
+
+	// A superseded approval whose values were never seen live is not followed.
+	api, verifier, record = earlyVerifier(t, func(*usage.Events) {}, 2*time.Hour)
+	if _, err := api.store.RecordVerification(context.Background(), repository.VerificationRun{
+		RecommendationID: record.ID, Status: repository.VerificationNotApplied, Attribution: repository.VerificationAttributionNone,
+		Checks: []repository.VerificationCheck{}, Reasons: []string{"not live"}, CheckedAt: fixedNow.Add(-time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	supersede(t, api)
+	if checked := verifier.Pass(context.Background()); checked != 0 {
+		t.Fatalf("an approval that is not live was followed: %d", checked)
+	}
+}
+
 func TestEarlyChecksIgnoreEventsOutsideTheIdentity(t *testing.T) {
 	api, verifier, record := earlyVerifier(t, func(events *usage.Events) {
 		events.OOMKills = 1
