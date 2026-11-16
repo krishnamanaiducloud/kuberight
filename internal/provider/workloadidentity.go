@@ -40,7 +40,10 @@ func podIdentity(pod corev1.Pod) usage.PodIdentity {
 			record(container)
 		}
 	}
-	resizing, ready := false, false
+	// Between a resize request and the kubelet's first look at it the pod
+	// has the new spec and no resize condition yet. Where the kubelet
+	// reports the generation it has observed, that gap counts as resizing.
+	resizing, ready := pod.Status.ObservedGeneration != 0 && pod.Status.ObservedGeneration < pod.Generation, false
 	for _, condition := range pod.Status.Conditions {
 		if (condition.Type == corev1.PodResizePending || condition.Type == corev1.PodResizeInProgress) && condition.Status == corev1.ConditionTrue {
 			resizing = true

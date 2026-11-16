@@ -166,6 +166,52 @@ func TestResizeInPlaceLeavesUnreadyPodsForALaterPass(t *testing.T) {
 	}
 }
 
+func TestResizeInPlaceWaitsBetweenStages(t *testing.T) {
+	written := func(pod *corev1.Pod, manager, subresource string, ago time.Duration) *corev1.Pod {
+		at := metav1.NewTime(time.Now().Add(-ago))
+		pod.ManagedFields = append(pod.ManagedFields, metav1.ManagedFieldsEntry{Manager: manager, Subresource: subresource, Time: &at})
+		return pod
+	}
+	created := func(pod *corev1.Pod, ago time.Duration) *corev1.Pod {
+		pod.CreationTimestamp = metav1.NewTime(time.Now().Add(-ago))
+		return pod
+	}
+	for name, test := range map[string]struct {
+		first   *corev1.Pod
+		gap     time.Duration
+		patched string
+	}{
+		"resized a minute ago":                 {written(resizedPod("db-2"), automation.FieldManager, "resize", time.Minute), 10 * time.Minute, ""},
+		"resized long enough ago":              {written(resizedPod("db-2"), automation.FieldManager, "resize", 11*time.Minute), 10 * time.Minute, "db-1"},
+		"recreated from the template just now": {created(resizedPod("db-2"), time.Minute), 10 * time.Minute, ""},
+		"another manager's resize":             {written(created(resizedPod("db-2"), time.Hour), "kubectl", "resize", time.Minute), 10 * time.Minute, "db-1"},
+		"a write that is not a resize":         {written(created(resizedPod("db-2"), time.Hour), automation.FieldManager, "status", time.Minute), 10 * time.Minute, "db-1"},
+		"no gap asked":                         {written(resizedPod("db-2"), automation.FieldManager, "resize", time.Minute), 0, "db-1"},
+	} {
+		client := kubernetesfake.NewSimpleClientset(resizeStatefulSet(appsv1.OnDeleteStatefulSetStrategyType), readyPod("db-0"), readyPod("db-1"), test.first)
+		patched := recordResizes(client, nil)
+		change := resizeChange()
+		change.StageGap = test.gap
+		result, err := testProvider(client).ResizeInPlace(context.Background(), change)
+		if err != nil || result.Halted || result.Pods != 3 || patchedPods(*patched) != test.patched {
+			t.Fatalf("%s: result=%+v err=%v patched=%s", name, result, err, patchedPods(*patched))
+		}
+		if test.patched == "" && (result.Attempted || result.Remaining != 2 || !strings.Contains(result.Reason, "the next stage follows in")) {
+			t.Fatalf("%s: a stage that is not due must say so: %+v", name, result)
+		}
+	}
+
+	// A rollback does not wait.
+	rollback := resizeChange()
+	rollback.Desired, rollback.Previous, rollback.Rollback, rollback.StageGap = rollback.Previous, rollback.Desired, true, time.Hour
+	client := kubernetesfake.NewSimpleClientset(resizeStatefulSet(appsv1.OnDeleteStatefulSetStrategyType),
+		written(readyPod("db-0"), automation.FieldManager, "resize", time.Second), resizedPod("db-1"), resizedPod("db-2"))
+	patched := recordResizes(client, nil)
+	if result, err := testProvider(client).ResizeInPlace(context.Background(), rollback); err != nil || result.Resized != 2 || patchedPods(*patched) != "db-1,db-2" {
+		t.Fatalf("rollback: result=%+v err=%v patched=%s", result, err, patchedPods(*patched))
+	}
+}
+
 func TestResizeInPlaceDoesNotHaltWhenEveryPodIsResized(t *testing.T) {
 	// An unready pod is not a reason to report a halt once nothing is left
 	// to resize.

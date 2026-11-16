@@ -94,6 +94,19 @@ func ownedByUID(pod corev1.Pod, uid types.UID) bool {
 	return false
 }
 
+// carriedSince is when a pod took the resources it carries: its last
+// in-place resize by KubeRight, which the API server records in the pod's
+// managed fields, or else its creation.
+func carriedSince(pod corev1.Pod) time.Time {
+	since := pod.CreationTimestamp.Time
+	for _, entry := range pod.ManagedFields {
+		if entry.Manager == automation.FieldManager && entry.Subresource == "resize" && entry.Time != nil && entry.Time.After(since) {
+			since = entry.Time.Time
+		}
+	}
+	return since
+}
+
 // carries reports whether the pod spec already holds the resources for the
 // container.
 func carries(pod corev1.Pod, container string, want automation.Resources) bool {
@@ -146,8 +159,11 @@ func unsettled(pod corev1.Pod, container string, changed time.Time) bool {
 // four, and so on. It resizes nothing while a pod that carries them is
 // unsettled: not ready, not done resizing, or restarted after the change was
 // written. A pod that is not ready or is resizing for another reason is
-// left for a later pass. A rollback restores values that ran before: it is
-// not staged and reaches every running pod.
+// left for a later pass. A stage also waits until the pods resized before it
+// have carried the new resources for change.StageGap. That time is read from
+// the cluster, so it holds however many replicas of KubeRight run passes. A
+// rollback restores values that ran before: it is not staged and reaches
+// every running pod.
 func (provider *KubernetesProvider) ResizeInPlace(ctx context.Context, change automation.Change) (automation.ResizeResult, error) {
 	skip := func(reason string) (automation.ResizeResult, error) {
 		return automation.ResizeResult{Reason: reason}, nil
@@ -189,6 +205,7 @@ func (provider *KubernetesProvider) ResizeInPlace(ctx context.Context, change au
 	var behind []string
 	current, unhealthy := 0, ""
 	waiting, unready := 0, ""
+	var newest time.Time
 	for _, pod := range pods.Items {
 		if !ownedByUID(pod, target.uid) || pod.DeletionTimestamp != nil || pod.Status.Phase != corev1.PodRunning {
 			continue
@@ -211,6 +228,9 @@ func (provider *KubernetesProvider) ResizeInPlace(ctx context.Context, change au
 		default:
 			current++
 		}
+		if since := carriedSince(pod); carries(pod, change.Container, change.Desired) && since.After(newest) {
+			newest = since
+		}
 	}
 	batch := len(behind)
 	if !change.Rollback {
@@ -219,6 +239,10 @@ func (provider *KubernetesProvider) ResizeInPlace(ctx context.Context, change au
 			result.Halted, result.Remaining = true, len(behind)+waiting
 			result.Error = fmt.Sprintf("pod %s carries the new resources and is not ready, has not finished resizing, or restarted after the change; %d other running pods keep their resources", unhealthy, result.Remaining)
 			return result, nil
+		case current > 0 && len(behind)+waiting > 0 && time.Since(newest) < change.StageGap:
+			carried := time.Since(newest)
+			return automation.ResizeResult{Pods: result.Pods, Remaining: len(behind) + waiting,
+				Reason: fmt.Sprintf("the pods resized last have carried the new resources for %s; the next stage follows in %s", carried.Round(time.Second), (change.StageGap - carried).Round(time.Second))}, nil
 		case len(behind) == 0 && waiting > 0:
 			result.Halted, result.Remaining = true, waiting
 			result.Error = fmt.Sprintf("pod %s is not ready or is still resizing; pods left on their resources until they are ready: %d", unready, waiting)

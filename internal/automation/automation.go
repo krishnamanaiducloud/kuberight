@@ -60,6 +60,10 @@ type Change struct {
 	Desired          Resources `json:"desired"`
 	Previous         Resources `json:"previous"`
 	Rollback         bool      `json:"rollback,omitempty"`
+	// StageGap is how long the pods resized in place by one stage must
+	// have carried the new resources before the next stage starts. Zero
+	// means no wait.
+	StageGap time.Duration `json:"-"`
 }
 
 // GitOpsManager names the GitOps controller that owns a workload, or "".

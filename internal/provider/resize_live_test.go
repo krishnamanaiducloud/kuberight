@@ -163,6 +163,13 @@ func TestLiveInPlaceResize(t *testing.T) {
 		_, pods := liveContainerResources(t, provider)
 		return pods["db-1"].Resources["api"] == after && !pods["db-1"].Resizing && pods["db-0"].Resources["api"] == before
 	})
+	// The API server recorded when db-1 was resized, so a stage that asks
+	// for a gap waits, whichever process asks.
+	gapped := change
+	gapped.StageGap = time.Hour
+	if result, err := provider.ResizeInPlace(ctx, gapped); err != nil || result.Attempted || result.Resized != 0 || result.Remaining != 1 || !strings.Contains(result.Reason, "the next stage follows in") {
+		t.Fatalf("a stage did not wait for its gap: result=%+v err=%v", result, err)
+	}
 	if result, err := provider.ResizeInPlace(ctx, change); err != nil || result.Halted || result.Resized != 1 || result.Failed != 0 || result.Remaining != 0 {
 		t.Fatalf("second stage: result=%+v err=%v", result, err)
 	}

@@ -394,13 +394,7 @@ func (server *apiServer) unfinishedResize(spec WorkloadSpec, container Container
 		return false
 	}
 	if decision.Action == AutomationApply {
-		interval := server.config.AutomationInterval
-		if interval <= 0 {
-			interval = config.DefaultAutomationInterval
-		}
-		// Passes are one interval apart give or take their own duration, so
-		// the second sighting counts even if it comes a little early.
-		if since, halted := resizeHaltSince(record.ID, unsettled != "", server.now()); halted && server.now().Sub(since) >= interval-interval/10 {
+		if since, halted := resizeHaltSince(record.ID, unsettled != "", server.now()); halted && server.now().Sub(since) >= server.stageGap() {
 			decision.Action, decision.Desired = AutomationRollback, previous
 			change.Desired, change.Previous, change.Rollback = previous, template, true
 			decision.change = &change
@@ -418,8 +412,21 @@ func (server *apiServer) unfinishedResize(spec WorkloadSpec, container Container
 	return true
 }
 
-// retryResize runs a planned resize retry. A resize that no longer applies
-// is not a failure: the decision becomes a skip that says why.
+// stageGap is how long the pods of one resize stage must have carried the
+// new values before the next stage, and how long a halt must last before
+// the change is rolled back: one automation interval, less a tenth because
+// passes are one interval apart give or take their own duration.
+func (server *apiServer) stageGap() time.Duration {
+	interval := server.config.AutomationInterval
+	if interval <= 0 {
+		interval = config.DefaultAutomationInterval
+	}
+	return interval - interval/10
+}
+
+// retryResize runs a planned resize retry. A resize that no longer applies,
+// or whose next stage is not due, is not a failure: the decision becomes a
+// skip that says why.
 func (server *apiServer) retryResize(ctx context.Context, decision *AutomationDecision, patcher ResourcePatcher) (skipped bool, err error) {
 	resizer, ok := patcher.(InPlaceResizer)
 	if !ok {
@@ -581,6 +588,7 @@ func (server *apiServer) executeAutomation(ctx context.Context, decision *Automa
 	if decision.Action == AutomationRollback {
 		action, event, outcome = "automation.rollback", notify.RecommendationRolledBack, AutomationRolledBack
 	}
+	decision.change.StageGap = server.stageGap()
 	var err error
 	if decision.resizeOnly {
 		var skipped bool

@@ -114,6 +114,23 @@ func TestPodIdentityReportsPodResourcesAndUnfinishedResizes(t *testing.T) {
 			t.Fatalf("%s was not reported as an unfinished resize", condition)
 		}
 	}
+	// A resize the kubelet has not seen yet has no condition, only a spec
+	// generation ahead of the observed one.
+	for name, test := range map[string]struct {
+		generation, observed int64
+		resizing             bool
+	}{
+		"not yet observed":       {3, 2, true},
+		"observed":               {3, 3, false},
+		"generation not tracked": {3, 0, false},
+	} {
+		unseen := pod.DeepCopy()
+		unseen.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+		unseen.Generation, unseen.Status.ObservedGeneration = test.generation, test.observed
+		if got := podIdentity(*unseen); got.Resizing != test.resizing || got.Unsettled("api", time.Time{}) != test.resizing {
+			t.Fatalf("%s: resizing=%v", name, got.Resizing)
+		}
+	}
 	if identity.Ready || identity.Restarted != nil || !identity.Unsettled("api", time.Time{}) {
 		t.Fatalf("a pod without a Ready condition must be unsettled: %+v", identity)
 	}

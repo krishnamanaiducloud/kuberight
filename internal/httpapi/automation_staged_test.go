@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/kuberight/kuberight/internal/automation"
+	"github.com/kuberight/kuberight/internal/config"
 )
 
 func TestAutomationReportsTheFirstStageOfAnInPlaceResize(t *testing.T) {
@@ -45,6 +46,42 @@ func TestAutomationContinuesAStagedResizeOnLaterPasses(t *testing.T) {
 	decision := decisionFor(t, body)
 	if decision["action"] != AutomationApply || decision["outcome"] != AutomationApplied || body["failed"].(float64) != 0 || len(*patches) != 0 || len(*resizes) != 1 {
 		t.Fatalf("decision=%v body=%v patches=%d resizes=%d", decision, body, len(*patches), len(*resizes))
+	}
+}
+
+func TestAutomationWaitsForTheGapBetweenStages(t *testing.T) {
+	// Another replica's pass seconds after a stage must not start the next.
+	waiting := "the pods resized last have carried the new resources for 3s; the next stage follows in 13m27s"
+	body, patches, resizes, api, record := runRetry(t, retryCase{stale: 1, mutate: func(_ *WorkloadSpec, inventory *resizingInventory) {
+		inventory.result = automation.ResizeResult{Pods: 2, Remaining: 1, Reason: waiting}
+	}})
+	decision := decisionFor(t, body)
+	if decision["action"] != AutomationSkip || decision["outcome"] != nil || body["applied"].(float64) != 0 || body["failed"].(float64) != 0 || body["eligible"].(float64) != 0 || len(*patches) != 0 || len(*resizes) != 1 {
+		t.Fatalf("decision=%v body=%v", decision, body)
+	}
+	if reasons := strings.Join(stringsOf(decision["reasons"]), "; "); !strings.Contains(reasons, waiting) {
+		t.Fatalf("reasons = %s", reasons)
+	}
+	// The provider is told to keep stages most of one interval apart.
+	if gap := (*resizes)[0].StageGap; gap != config.DefaultAutomationInterval*9/10 {
+		t.Fatalf("stage gap = %s", gap)
+	}
+	// Waiting is neither a failure to back off from nor a change to audit.
+	if state, _ := haltState(record.ID); state.failures != 0 {
+		t.Fatalf("a wait was counted as a failure: %+v", state)
+	}
+	_, audit := api.do(t, http.MethodGet, "/api/v1/audit?page=1&pageSize=20", "alice", "")
+	for _, item := range audit["items"].([]any) {
+		if event := item.(map[string]any); strings.HasPrefix(event["action"].(string), "automation.") {
+			t.Fatalf("a wait was audited as a change: %v", event)
+		}
+	}
+}
+
+func TestAutomationGivesTheFirstStageTheSameGap(t *testing.T) {
+	_, patches, resizes := runResizing(t, true, nil)
+	if len(*patches) != 1 || len(*resizes) != 1 || (*resizes)[0].StageGap != config.DefaultAutomationInterval*9/10 {
+		t.Fatalf("patches=%v resizes=%v", *patches, *resizes)
 	}
 }
 
