@@ -36,6 +36,8 @@ type Memory struct {
 	// outbox is guarded by mu and outside transactions: deliveries are not
 	// rolled back with the change that produced them.
 	outbox memoryOutbox
+	// resize is guarded by mu and, like the outbox, outside transactions.
+	resize map[string]ResizeState
 }
 
 type memoryState struct {

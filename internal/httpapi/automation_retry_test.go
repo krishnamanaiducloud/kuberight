@@ -23,6 +23,8 @@ type retryCase struct {
 	mutate   func(*WorkloadSpec, *resizingInventory)
 	config   func(*config.Config)
 	unmarked bool
+	// repository, when set, wraps the in-memory store.
+	repository repository.Store
 }
 
 // runRetry evaluates one approved recommendation against an OnDelete
@@ -64,7 +66,7 @@ func runRetry(t *testing.T, test retryCase) (map[string]any, *[]automation.Chang
 		if test.config != nil {
 			test.config(cfg)
 		}
-	}, Dependencies{Provider: inventory})
+	}, Dependencies{Provider: inventory, Repository: test.repository})
 	recommendation.Kind = spec.Kind
 	record := storeApproved(t, api, recommendation, fixedNow.Add(-time.Hour))
 	if !test.unmarked {
@@ -130,30 +132,51 @@ func TestAutomationFinishesARollbackOutsideTheChangeWindow(t *testing.T) {
 	}
 }
 
-func TestResizeRetryBackoffDoublesIsCappedAndResets(t *testing.T) {
-	id := "rec_backoff_test"
-	if _, due := resizeRetryDue(id, fixedNow); !due {
-		t.Fatal("a recommendation without failures must be due")
-	}
+func TestResizeBackoffDoublesAndIsCapped(t *testing.T) {
+	halted := fixedNow.Add(-time.Hour)
+	state := repository.ResizeState{RecommendationID: "rec_backoff_test", HaltedSince: &halted}
 	for failure, want := range []time.Duration{15 * time.Minute, 30 * time.Minute, time.Hour, 2 * time.Hour, 4 * time.Hour, 6 * time.Hour, 6 * time.Hour} {
-		recordResizeRetry(id, true, fixedNow, 15*time.Minute)
-		next, due := resizeRetryDue(id, fixedNow.Add(want-time.Second))
-		if due || !next.Equal(fixedNow.Add(want)) {
-			t.Fatalf("failure %d: next=%s due=%v, want a delay of %s", failure+1, next.Sub(fixedNow), due, want)
-		}
-		if _, due := resizeRetryDue(id, fixedNow.Add(want)); !due {
-			t.Fatalf("failure %d: not due after %s", failure+1, want)
+		state = resizeBackoff(state, fixedNow, 15*time.Minute)
+		if state.Failures != failure+1 || !state.NextAttemptAt.Equal(fixedNow.Add(want)) {
+			t.Fatalf("failure %d: next in %s, want %s", failure+1, state.NextAttemptAt.Sub(fixedNow), want)
 		}
 	}
-	recordResizeRetry(id, false, fixedNow, 15*time.Minute)
-	if _, due := resizeRetryDue(id, fixedNow); !due {
-		t.Fatal("a success must clear the delay")
+	// A failure does not forget how long the resize has been halted.
+	if state.HaltedSince == nil || !state.HaltedSince.Equal(halted) || state.RecommendationID != "rec_backoff_test" {
+		t.Fatalf("state = %+v", state)
 	}
-	recordResizeRetry(id, true, fixedNow, 0)
-	if next, _ := resizeRetryDue(id, fixedNow); !next.Equal(fixedNow.Add(config.DefaultAutomationInterval)) {
-		t.Fatalf("zero interval: next=%s", next.Sub(fixedNow))
+	if next := resizeBackoff(repository.ResizeState{}, fixedNow, 0).NextAttemptAt; !next.Equal(fixedNow.Add(config.DefaultAutomationInterval)) {
+		t.Fatalf("zero interval: next in %s", next.Sub(fixedNow))
 	}
-	recordResizeRetry(id, false, fixedNow, 0)
+}
+
+func TestAutomationForgetsResizeStateOnceEveryPodRunsTheTemplate(t *testing.T) {
+	// State left by a halt must not outlive the resize: a much later
+	// difference between pods and template starts from nothing.
+	var identity *usage.WorkloadIdentity
+	_, _, resizes, api, record := runRetry(t, retryCase{stale: 1, mutate: func(spec *WorkloadSpec, inventory *resizingInventory) {
+		identity, inventory.result = spec.MetricIdentity, automation.ResizeResult{Attempted: true, Pods: 2, Resized: 1, Failed: 1, Error: "pod rejected"}
+	}})
+	if state, known, err := api.store.GetResizeState(context.Background(), record.ID); err != nil || !known || state.Failures != 1 || state.HaltedSince == nil {
+		t.Fatalf("state=%+v known=%v err=%v", state, known, err)
+	}
+	// Reading the plan changes nothing.
+	for index := range identity.Pods {
+		identity.Pods[index].Resources = identity.Pods[1].Resources
+	}
+	if response, _ := api.do(t, http.MethodGet, "/api/v1/automation", "alice", ""); response.Code != http.StatusOK {
+		t.Fatalf("plan status = %d", response.Code)
+	}
+	if _, known, _ := api.store.GetResizeState(context.Background(), record.ID); !known {
+		t.Fatal("a dry run removed stored state")
+	}
+	_, body := api.do(t, http.MethodPost, "/api/v1/automation:run", "alice", "")
+	if decision := decisionFor(t, body); decision["action"] != AutomationSkip || len(*resizes) != 1 {
+		t.Fatalf("decision=%v resizes=%d", decision, len(*resizes))
+	}
+	if state, known, err := api.store.GetResizeState(context.Background(), record.ID); err != nil || known {
+		t.Fatalf("state was kept after the resize finished: %+v err=%v", state, err)
+	}
 }
 
 func TestAutomationDoesNotRetryWithoutCause(t *testing.T) {

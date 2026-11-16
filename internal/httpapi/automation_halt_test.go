@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -8,23 +10,30 @@ import (
 
 	"github.com/kuberight/kuberight/internal/automation"
 	"github.com/kuberight/kuberight/internal/config"
+	"github.com/kuberight/kuberight/internal/repository"
 	"github.com/kuberight/kuberight/internal/usage"
 )
 
 // haltedFor backdates the first sighting of a halted staged resize and
 // ends any retry delay, as if that much time had passed.
-func haltedFor(id string, age time.Duration) {
-	resizeRetries.Lock()
-	defer resizeRetries.Unlock()
-	state := resizeRetries.state[id]
-	state.haltedSince, state.next = fixedNow.Add(-age), fixedNow
-	resizeRetries.state[id] = state
+func haltedFor(t *testing.T, api testAPI, id string, age time.Duration) {
+	t.Helper()
+	state, _ := haltState(t, api, id)
+	since := fixedNow.Add(-age)
+	state.RecommendationID, state.HaltedSince, state.NextAttemptAt = id, &since, fixedNow
+	if err := api.store.SaveResizeState(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
 }
 
-func haltState(id string) (resizeRetryState, bool) {
-	resizeRetries.Lock()
-	defer resizeRetries.Unlock()
-	state, known := resizeRetries.state[id]
+// haltState reads what a pass left in the store, where another replica or
+// a restarted process would find it.
+func haltState(t *testing.T, api testAPI, id string) (repository.ResizeState, bool) {
+	t.Helper()
+	state, known, err := api.store.GetResizeState(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
 	return state, known
 }
 
@@ -38,19 +47,19 @@ func TestAutomationRollsBackAStagedResizeThatStaysHalted(t *testing.T) {
 	if decision := decisionFor(t, body); decision["action"] != AutomationApply || decision["outcome"] != AutomationFailed || len(*patches) != 0 || len(*resizes) != 1 {
 		t.Fatalf("first sighting: decision=%v patches=%d", decision, len(*patches))
 	}
-	if state, known := haltState(record.ID); !known || !state.haltedSince.Equal(fixedNow) {
+	if state, known := haltState(t, api, record.ID); !known || state.HaltedSince == nil || !state.HaltedSince.Equal(fixedNow) {
 		t.Fatalf("the halt was not noted: %+v", state)
 	}
 
 	// Well short of one automation interval the stage is tried again.
-	haltedFor(record.ID, config.DefaultAutomationInterval*8/10)
+	haltedFor(t, api, record.ID, config.DefaultAutomationInterval*8/10)
 	_, body = api.do(t, http.MethodPost, "/api/v1/automation:run", "alice", "")
 	if decision := decisionFor(t, body); decision["action"] != AutomationApply || len(*patches) != 0 || len(*resizes) != 2 {
 		t.Fatalf("rolled back too early: decision=%v patches=%d resizes=%d", decision, len(*patches), len(*resizes))
 	}
 
 	// The next pass comes one interval later, give or take its own duration.
-	haltedFor(record.ID, config.DefaultAutomationInterval-10*time.Second)
+	haltedFor(t, api, record.ID, config.DefaultAutomationInterval-10*time.Second)
 	_, body = api.do(t, http.MethodPost, "/api/v1/automation:run", "alice", "")
 	decision := decisionFor(t, body)
 	if decision["action"] != AutomationRollback || decision["outcome"] != AutomationRolledBack || body["rolledBack"].(float64) != 1 || body["failed"].(float64) != 0 || len(*patches) != 1 || len(*resizes) != 3 {
@@ -67,7 +76,7 @@ func TestAutomationRollsBackAStagedResizeThatStaysHalted(t *testing.T) {
 			t.Fatalf("%s rollback = %+v", name, change)
 		}
 	}
-	if _, known := haltState(record.ID); known {
+	if _, known := haltState(t, api, record.ID); known {
 		t.Fatal("the halt was not forgotten after the rollback")
 	}
 	_, audit := api.do(t, http.MethodGet, "/api/v1/audit?page=1&pageSize=10", "alice", "")
@@ -91,7 +100,7 @@ func TestAutomationRollsBackAHaltedResizeOutsideTheChangeWindow(t *testing.T) {
 	if decision := decisionFor(t, body); decision["outcome"] != AutomationDeferred || len(*resizes) != 0 {
 		t.Fatalf("decision=%v", decision)
 	}
-	haltedFor(record.ID, config.DefaultAutomationInterval)
+	haltedFor(t, api, record.ID, config.DefaultAutomationInterval)
 	_, body = api.do(t, http.MethodPost, "/api/v1/automation:run", "alice", "")
 	if decision := decisionFor(t, body); body["windowOpen"] != false || decision["action"] != AutomationRollback || decision["outcome"] != AutomationRolledBack || len(*patches) != 1 || !(*patches)[0].Rollback {
 		t.Fatalf("decision=%v body=%v patches=%d", decision, body, len(*patches))
@@ -110,12 +119,12 @@ func TestAutomationContinuesWhenTheHaltedPodRecovers(t *testing.T) {
 	for index := range identity.Pods {
 		identity.Pods[index].Ready = true
 	}
-	haltedFor(record.ID, 4*config.DefaultAutomationInterval)
+	haltedFor(t, api, record.ID, 4*config.DefaultAutomationInterval)
 	_, body = api.do(t, http.MethodPost, "/api/v1/automation:run", "alice", "")
 	if decision := decisionFor(t, body); decision["action"] != AutomationApply || len(*patches) != 0 || len(*resizes) != 2 {
 		t.Fatalf("a recovered pod was rolled back: decision=%v patches=%d resizes=%d", decision, len(*patches), len(*resizes))
 	}
-	if state, _ := haltState(record.ID); !state.haltedSince.IsZero() {
+	if state, _ := haltState(t, api, record.ID); state.HaltedSince != nil {
 		t.Fatalf("the halt was not forgotten: %+v", state)
 	}
 }
@@ -138,14 +147,11 @@ func TestAutomationDoesNotRollBackARestartFromBeforeTheChange(t *testing.T) {
 			}
 		}})
 		id = record.ID
-		haltedFor(id, config.DefaultAutomationInterval)
+		haltedFor(t, api, id, config.DefaultAutomationInterval)
 		_, body := api.do(t, http.MethodPost, "/api/v1/automation:run", "alice", "")
 		if decision := decisionFor(t, body); (decision["action"] == AutomationRollback) != test.rollback || (len(*patches) == 1) != test.rollback {
 			t.Fatalf("%s: decision=%v patches=%d", name, decision, len(*patches))
 		}
-		resizeRetries.Lock()
-		delete(resizeRetries.state, id)
-		resizeRetries.Unlock()
 	}
 }
 
@@ -156,9 +162,34 @@ func TestAHaltDoesNotTurnAFinishedRollbackAround(t *testing.T) {
 	if decision := decisionFor(t, body); decision["action"] != AutomationRollback || len(*patches) != 0 || len(*resizes) != 1 {
 		t.Fatalf("decision=%v", decision)
 	}
-	haltedFor(record.ID, config.DefaultAutomationInterval)
+	haltedFor(t, api, record.ID, config.DefaultAutomationInterval)
 	_, body = api.do(t, http.MethodPost, "/api/v1/automation:run", "alice", "")
 	if decision := decisionFor(t, body); decision["action"] != AutomationRollback || len(*patches) != 0 || !(*resizes)[len(*resizes)-1].Rollback {
 		t.Fatalf("decision=%v patches=%d", decision, len(*patches))
+	}
+}
+
+// unreadableResizeState is a store whose in-place resize state cannot be
+// read, as when the database is unreachable.
+type unreadableResizeState struct{ *repository.Memory }
+
+func (unreadableResizeState) wrap(memory *repository.Memory) repository.Store {
+	return unreadableResizeState{memory}
+}
+
+func (unreadableResizeState) GetResizeState(context.Context, string) (repository.ResizeState, bool, error) {
+	return repository.ResizeState{}, false, errors.New("connection refused")
+}
+
+func TestAutomationResizesNothingWhenItsStateCannotBeRead(t *testing.T) {
+	// Without the stored state the backoff and the age of a halt are
+	// unknown: no stage runs and nothing is rolled back.
+	body, patches, resizes, _, _ := runRetry(t, retryCase{stale: 1, repository: unreadableResizeState{}})
+	decision := decisionFor(t, body)
+	if decision["action"] != AutomationSkip || body["failed"].(float64) != 0 || body["applied"].(float64) != 0 || body["rolledBack"].(float64) != 0 || len(*patches) != 0 || len(*resizes) != 0 {
+		t.Fatalf("decision=%v body=%v patches=%d resizes=%d", decision, body, len(*patches), len(*resizes))
+	}
+	if reasons := strings.Join(stringsOf(decision["reasons"]), "; "); !strings.Contains(reasons, "the state of the unfinished in-place resize could not be read") {
+		t.Fatalf("reasons = %s", reasons)
 	}
 }

@@ -143,6 +143,54 @@ func Run(t *testing.T, newStore func(*testing.T) repository.Store) {
 		}
 	})
 
+	t.Run("in-place resize state is kept per recommendation", func(t *testing.T) {
+		store := newStore(t)
+		states, ok := store.(repository.ResizeStateStore)
+		if !ok {
+			t.Fatal("stores must keep in-place resize state for every replica")
+		}
+		record, _, err := store.CreateRecommendation(ctx, Recommendation("shop", "ledger", "app", "low"), repository.CreateOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state, known, err := states.GetResizeState(ctx, record.ID); err != nil || known || state.Failures != 0 {
+			t.Fatalf("state before any save: %+v known=%v err=%v", state, known, err)
+		}
+		next := time.Date(2026, 11, 16, 3, 0, 0, 0, time.UTC)
+		halted := next.Add(-10 * time.Minute)
+		if err := states.SaveResizeState(ctx, repository.ResizeState{RecommendationID: record.ID, Failures: 2, NextAttemptAt: next, HaltedSince: &halted}); err != nil {
+			t.Fatal(err)
+		}
+		state, known, err := states.GetResizeState(ctx, record.ID)
+		if err != nil || !known || state.RecommendationID != record.ID || state.Failures != 2 || !state.NextAttemptAt.Equal(next) || state.HaltedSince == nil || !state.HaltedSince.Equal(halted) {
+			t.Fatalf("saved state: %+v known=%v err=%v", state, known, err)
+		}
+		// A save replaces every field, including the ones it clears.
+		if err := states.SaveResizeState(ctx, repository.ResizeState{RecommendationID: record.ID, Failures: 3}); err != nil {
+			t.Fatal(err)
+		}
+		if state, known, err := states.GetResizeState(ctx, record.ID); err != nil || !known || state.Failures != 3 || !state.NextAttemptAt.IsZero() || state.HaltedSince != nil {
+			t.Fatalf("replaced state: %+v known=%v err=%v", state, known, err)
+		}
+		if err := states.SaveResizeState(ctx, repository.ResizeState{RecommendationID: "rec_ffffffffffffffffffffffffffffffff", Failures: 1}); !errors.Is(err, repository.ErrNotFound) {
+			t.Fatalf("state for an unknown recommendation: %v", err)
+		}
+		if err := states.SaveResizeState(ctx, repository.ResizeState{RecommendationID: record.ID, Failures: -1}); err == nil {
+			t.Fatal("negative failures were stored")
+		}
+		if err := states.SaveResizeState(ctx, repository.ResizeState{Failures: 1}); err == nil {
+			t.Fatal("state without a recommendation was stored")
+		}
+		for attempt := 0; attempt < 2; attempt++ {
+			if err := states.DeleteResizeState(ctx, record.ID); err != nil {
+				t.Fatalf("delete %d: %v", attempt, err)
+			}
+		}
+		if _, known, err := states.GetResizeState(ctx, record.ID); err != nil || known {
+			t.Fatalf("state after delete: known=%v err=%v", known, err)
+		}
+	})
+
 	t.Run("named locks are exclusive and reusable", func(t *testing.T) {
 		store := newStore(t)
 		locker, ok := store.(repository.Locker)

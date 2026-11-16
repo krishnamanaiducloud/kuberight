@@ -181,7 +181,15 @@ func newTestAPI(t *testing.T, mutate func(*config.Config), dependencies Dependen
 	access := &recordingAccess{}
 	store := repository.NewMemory(1000)
 	dependencies.Access = access
-	dependencies.Repository = store
+	// A test may hand in a store that wraps the in-memory one, to make
+	// single operations fail.
+	if wrapper, ok := dependencies.Repository.(interface {
+		wrap(*repository.Memory) repository.Store
+	}); ok {
+		dependencies.Repository = wrapper.wrap(store)
+	} else {
+		dependencies.Repository = store
+	}
 	dependencies.Now = func() time.Time { return fixedNow }
 	handler, err := NewHandler(cfg, dependencies)
 	if err != nil {

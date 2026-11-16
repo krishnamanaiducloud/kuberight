@@ -67,7 +67,7 @@ func TestAutomationWaitsForTheGapBetweenStages(t *testing.T) {
 		t.Fatalf("stage gap = %s", gap)
 	}
 	// Waiting is neither a failure to back off from nor a change to audit.
-	if state, _ := haltState(record.ID); state.failures != 0 {
+	if state, _ := haltState(t, api, record.ID); state.Failures != 0 || !state.NextAttemptAt.IsZero() {
 		t.Fatalf("a wait was counted as a failure: %+v", state)
 	}
 	_, audit := api.do(t, http.MethodGet, "/api/v1/audit?page=1&pageSize=20", "alice", "")
@@ -86,7 +86,7 @@ func TestAutomationGivesTheFirstStageTheSameGap(t *testing.T) {
 }
 
 func TestAutomationFailsAndBacksOffWhenAStagedResizeHalts(t *testing.T) {
-	body, patches, resizes, api, _ := runRetry(t, retryCase{stale: 1, mutate: func(_ *WorkloadSpec, inventory *resizingInventory) {
+	body, patches, resizes, api, record := runRetry(t, retryCase{stale: 1, mutate: func(_ *WorkloadSpec, inventory *resizingInventory) {
 		inventory.result = automation.ResizeResult{Attempted: true, Pods: 2, Remaining: 1, Halted: true, Error: "pod db-1 carries the new resources and is not ready"}
 	}})
 	decision := decisionFor(t, body)
@@ -94,6 +94,11 @@ func TestAutomationFailsAndBacksOffWhenAStagedResizeHalts(t *testing.T) {
 	if decision["outcome"] != AutomationFailed || body["failed"].(float64) != 1 || body["applied"].(float64) != 0 || inPlace["halted"] != true ||
 		!strings.Contains(decision["error"].(string), "in-place resize stopped: pod db-1 carries the new resources") || len(*patches) != 0 || len(*resizes) != 1 {
 		t.Fatalf("decision=%v body=%v", decision, body)
+	}
+	// The backoff is in the store, where a restarted process or another
+	// replica finds it.
+	if state, known := haltState(t, api, record.ID); !known || state.Failures != 1 || !state.NextAttemptAt.Equal(fixedNow.Add(config.DefaultAutomationInterval)) {
+		t.Fatalf("stored state = %+v known=%v", state, known)
 	}
 	// The halt is not re-reported on every pass.
 	_, body = api.do(t, http.MethodPost, "/api/v1/automation:run", "alice", "")

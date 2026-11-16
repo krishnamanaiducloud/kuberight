@@ -174,8 +174,8 @@ func resourcesMatch(live, target automation.Resources) bool {
 
 // evaluateAutomation decides whether an approved recommendation may be
 // applied now, or an automated change rolled back. Every reason it records
-// is a reason not to act.
-func (server *apiServer) evaluateAutomation(ctx context.Context, record repository.RecommendationRecord, patcher ResourcePatcher) AutomationDecision {
+// is a reason not to act. A dry run records nothing.
+func (server *apiServer) evaluateAutomation(ctx context.Context, record repository.RecommendationRecord, patcher ResourcePatcher, dryRun bool) AutomationDecision {
 	decision := AutomationDecision{
 		RecommendationID: record.ID, Cluster: record.Cluster, Namespace: record.Namespace, Kind: record.Kind, Workload: record.Workload, Container: record.Container,
 		Action: AutomationSkip, Reasons: []string{},
@@ -241,7 +241,7 @@ func (server *apiServer) evaluateAutomation(ctx context.Context, record reposito
 		}
 		return decision
 	}
-	if server.unfinishedResize(spec, container, record, previous, &decision) {
+	if server.unfinishedResize(ctx, spec, container, record, previous, &decision, dryRun) {
 		return decision
 	}
 
@@ -276,74 +276,71 @@ func (server *apiServer) evaluateAutomation(ctx context.Context, record reposito
 	return decision
 }
 
-// resizeRetries spaces out retries of an in-place resize that keeps failing,
-// so a pod the cluster will not resize does not produce a failed change on
-// every pass. The state is per process: it is lost at restart and not
-// shared between replicas, which costs at most one extra attempt each.
-var resizeRetries = struct {
-	sync.Mutex
-	state map[string]resizeRetryState
-}{state: map[string]resizeRetryState{}}
-
-type resizeRetryState struct {
-	failures int
-	next     time.Time
-	// haltedSince is when an unsettled pod was first seen holding up a
-	// staged resize, or zero.
-	haltedSince time.Time
-}
-
-// resizeHaltSince tracks how long a staged resize has been held up by an
-// unsettled pod. It returns when that was first seen; a pass that finds the
-// pods settled forgets it.
-func resizeHaltSince(recommendationID string, unsettled bool, now time.Time) (time.Time, bool) {
-	resizeRetries.Lock()
-	defer resizeRetries.Unlock()
-	state, known := resizeRetries.state[recommendationID]
-	switch {
-	case !unsettled:
-		if known && !state.haltedSince.IsZero() {
-			state.haltedSince = time.Time{}
-			resizeRetries.state[recommendationID] = state
-		}
-		return time.Time{}, false
-	case state.haltedSince.IsZero():
-		state.haltedSince = now
-		resizeRetries.state[recommendationID] = state
-	}
-	return state.haltedSince, true
-}
-
 const maxResizeRetryDelay = 6 * time.Hour
 
-// resizeRetryDue reports whether a retry may run now, and otherwise when.
-func resizeRetryDue(recommendationID string, now time.Time) (time.Time, bool) {
-	resizeRetries.Lock()
-	defer resizeRetries.Unlock()
-	state := resizeRetries.state[recommendationID]
-	return state.next, !now.Before(state.next)
-}
-
-// recordResizeRetry doubles the delay after each failure, starting at the
-// automation interval, and forgets the recommendation after a success.
-func recordResizeRetry(recommendationID string, failed bool, now time.Time, interval time.Duration) {
-	resizeRetries.Lock()
-	defer resizeRetries.Unlock()
-	if !failed {
-		delete(resizeRetries.state, recommendationID)
-		return
-	}
+// resizeBackoff returns the state after one more failed attempt. The delay
+// before the next attempt doubles from the automation interval up to
+// maxResizeRetryDelay, so a pod the cluster will not resize does not
+// produce a failed change on every pass.
+func resizeBackoff(state repository.ResizeState, now time.Time, interval time.Duration) repository.ResizeState {
 	if interval <= 0 {
 		interval = config.DefaultAutomationInterval
 	}
-	state := resizeRetries.state[recommendationID]
-	state.failures++
+	state.Failures++
 	delay := maxResizeRetryDelay
-	if shift := state.failures - 1; shift < 16 && interval<<shift < maxResizeRetryDelay {
+	if shift := state.Failures - 1; shift < 16 && interval<<shift < maxResizeRetryDelay {
 		delay = interval << shift
 	}
-	state.next = now.Add(delay)
-	resizeRetries.state[recommendationID] = state
+	state.NextAttemptAt = now.Add(delay)
+	return state
+}
+
+// resizeState reads what earlier passes recorded about an unfinished
+// in-place resize. It lives in the recommendation store, so it survives a
+// restart and is the same for every replica. No stored state is the zero
+// state.
+func (server *apiServer) resizeState(ctx context.Context, recommendationID string) (repository.ResizeState, error) {
+	store, ok := server.repository.(repository.ResizeStateStore)
+	if !ok {
+		return repository.ResizeState{}, errors.New("the recommendation store cannot keep in-place resize state")
+	}
+	state, _, err := store.GetResizeState(ctx, recommendationID)
+	state.RecommendationID = recommendationID
+	return state, err
+}
+
+// saveResizeState stores the state, or removes it once it says nothing. A
+// failure is logged and not returned: the worst outcome is an attempt that
+// comes sooner, or a rollback that comes later, than the state would say.
+func (server *apiServer) saveResizeState(ctx context.Context, state repository.ResizeState) {
+	store, ok := server.repository.(repository.ResizeStateStore)
+	if !ok {
+		return
+	}
+	var err error
+	if state.Failures == 0 && state.NextAttemptAt.IsZero() && state.HaltedSince == nil {
+		err = store.DeleteResizeState(ctx, state.RecommendationID)
+	} else {
+		err = store.SaveResizeState(ctx, state)
+	}
+	if err != nil {
+		server.logger.Warn("in-place resize state could not be stored", "recommendation_id", state.RecommendationID, "error", err)
+	}
+}
+
+// recordResizeRetry backs off after a failed attempt and forgets the
+// recommendation after a success.
+func (server *apiServer) recordResizeRetry(ctx context.Context, recommendationID string, failed bool) {
+	next := repository.ResizeState{RecommendationID: recommendationID}
+	if failed {
+		state, err := server.resizeState(ctx, recommendationID)
+		if err != nil {
+			server.logger.Warn("in-place resize state could not be read", "recommendation_id", recommendationID, "error", err)
+			return
+		}
+		next = resizeBackoff(state, server.now(), server.config.AutomationInterval)
+	}
+	server.saveResizeState(ctx, next)
 }
 
 // unfinishedResize plans a retry of an in-place resize. After KubeRight
@@ -358,7 +355,7 @@ func recordResizeRetry(recommendationID string, failed bool, now time.Time, inte
 // the new values is still unsettled one automation interval after that was
 // first seen, while other pods never took them, the change is rolled back:
 // the template and every pod return to the previous values.
-func (server *apiServer) unfinishedResize(spec WorkloadSpec, container ContainerSpec, record repository.RecommendationRecord, previous automation.Resources, decision *AutomationDecision) bool {
+func (server *apiServer) unfinishedResize(ctx context.Context, spec WorkloadSpec, container ContainerSpec, record repository.RecommendationRecord, previous automation.Resources, decision *AutomationDecision, dryRun bool) bool {
 	if !server.config.AutomationInPlaceResize || !spec.OnDelete || spec.MetricIdentity == nil || len(decision.Reasons) > 0 ||
 		spec.Annotations[automation.AppliedAnnotation] != record.ID {
 		return false
@@ -390,21 +387,47 @@ func (server *apiServer) unfinishedResize(spec WorkloadSpec, container Container
 		}
 	}
 	if behind == 0 {
+		// Every pod runs the template: whatever was recorded is over.
+		if !dryRun {
+			server.saveResizeState(ctx, repository.ResizeState{RecommendationID: record.ID})
+		}
 		decision.Action = AutomationSkip
 		return false
 	}
+	state, err := server.resizeState(ctx, record.ID)
+	if err != nil {
+		// Without the state neither the backoff nor the age of a halt is
+		// known, so nothing is resized or rolled back on a guess.
+		server.logger.Warn("in-place resize state could not be read", "recommendation_id", record.ID, "error", err)
+		decision.Action = AutomationSkip
+		decision.Reasons = append(decision.Reasons, "the state of the unfinished in-place resize could not be read")
+		return true
+	}
+	now := server.now()
 	if decision.Action == AutomationApply {
-		if since, halted := resizeHaltSince(record.ID, unsettled != "", server.now()); halted && server.now().Sub(since) >= server.stageGap() {
+		// The first sighting of an unsettled pod starts the clock; a pass
+		// that finds the pods settled stops it.
+		switch {
+		case unsettled == "" && state.HaltedSince != nil:
+			if state.HaltedSince = nil; !dryRun {
+				server.saveResizeState(ctx, state)
+			}
+		case unsettled != "" && state.HaltedSince == nil:
+			if state.HaltedSince = &now; !dryRun {
+				server.saveResizeState(ctx, state)
+			}
+		}
+		if state.HaltedSince != nil && now.Sub(*state.HaltedSince) >= server.stageGap() {
 			decision.Action, decision.Desired = AutomationRollback, previous
 			change.Desired, change.Previous, change.Rollback = previous, template, true
 			decision.change = &change
-			decision.Reasons = append(decision.Reasons, fmt.Sprintf("the staged in-place resize stayed halted since %s: pod %s runs the new resources and is not ready, has not finished resizing, or restarted after the change; %d of %d running pods never took them", since.UTC().Format(time.RFC3339), unsettled, behind, running))
+			decision.Reasons = append(decision.Reasons, fmt.Sprintf("the staged in-place resize stayed halted since %s: pod %s runs the new resources and is not ready, has not finished resizing, or restarted after the change; %d of %d running pods never took them", state.HaltedSince.UTC().Format(time.RFC3339), unsettled, behind, running))
 			return true
 		}
 	}
-	if next, due := resizeRetryDue(record.ID, server.now()); !due {
+	if now.Before(state.NextAttemptAt) {
 		decision.Action = AutomationSkip
-		decision.Reasons = append(decision.Reasons, fmt.Sprintf("%d of %d running pods still run other values than the template; the last in-place resize failed and is retried after %s", behind, running, next.UTC().Format(time.RFC3339)))
+		decision.Reasons = append(decision.Reasons, fmt.Sprintf("%d of %d running pods still run other values than the template; the last in-place resize failed and is retried after %s", behind, running, state.NextAttemptAt.UTC().Format(time.RFC3339)))
 		return true
 	}
 	decision.Desired, decision.change, decision.resizeOnly = template, &change, true
@@ -526,7 +549,7 @@ func (server *apiServer) automationRun(ctx context.Context, dryRun, rollbacksOnl
 				break
 			}
 			report.Evaluated++
-			if decision := server.evaluateAutomation(ctx, record, patcher); decision.Action == AutomationRollback {
+			if decision := server.evaluateAutomation(ctx, record, patcher, report.DryRun); decision.Action == AutomationRollback {
 				report.Decisions = append(report.Decisions, decision)
 			}
 		}
@@ -540,7 +563,7 @@ func (server *apiServer) automationRun(ctx context.Context, dryRun, rollbacksOnl
 			if ctx.Err() != nil || report.Evaluated >= maxAutomationCandidates {
 				break
 			}
-			report.Decisions = append(report.Decisions, server.evaluateAutomation(ctx, record, patcher))
+			report.Decisions = append(report.Decisions, server.evaluateAutomation(ctx, record, patcher, report.DryRun))
 			report.Evaluated++
 		}
 		if len(result.Items) < 100 {
@@ -597,12 +620,12 @@ func (server *apiServer) executeAutomation(ctx context.Context, decision *Automa
 			return
 		}
 		action = "automation.resize"
-		recordResizeRetry(decision.RecommendationID, err != nil, server.now(), server.config.AutomationInterval)
+		server.recordResizeRetry(ctx, decision.RecommendationID, err != nil)
 	} else {
 		err = patcher.PatchResources(ctx, *decision.change)
 		if err == nil && decision.Action == AutomationRollback {
 			// The change is gone, and with it any halted or failing resize.
-			recordResizeRetry(decision.RecommendationID, false, server.now(), server.config.AutomationInterval)
+			server.recordResizeRetry(ctx, decision.RecommendationID, false)
 		}
 	}
 	audit := repository.AuditEvent{Timestamp: server.now().UTC(), Actor: automationActor, Action: action, Resource: "recommendations/" + decision.RecommendationID, Namespace: decision.Namespace, Outcome: "success", RequestID: "automation/" + decision.RecommendationID}
