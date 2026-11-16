@@ -6,7 +6,7 @@
 
 ## CI on the candidate pull request
 
-[Run 43684865532](https://github.com/krishnamanaiducloud/kuberight/actions/runs/43684865532) on `141f0cc` passed every code job:
+[Run 43918150640](https://github.com/krishnamanaiducloud/kuberight/actions/runs/43918150640) on `223a8df` (2026-11-16) passed every code job:
 
 - Go (race tests with PostgreSQL and the attribution replay)
 - Dependency vulnerabilities
@@ -23,7 +23,8 @@ Dependency Review fails because the repository's Dependency graph is disabled: t
 
 | Gate | Result |
 | --- | --- |
-| Go formatting, vet, race tests with PostgreSQL 18.7 (schema version 6) | Pass; 75.3% statement coverage (floor 45%) |
+| Go formatting, vet, race tests with PostgreSQL 18.7 (schema version 7) | Pass on `223a8df` (2026-11-16), 17 packages; statement coverage last measured at 75.3% on `141f0cc` (floor 45%) |
+| In-place resize on kind (Kubernetes 1.35.1), run by hand | Staged resize, halt and rollback, and rollback after a regressed verification at `838522c`; migration 7 through the Helm hook at `538c6f4`; not rerun on later commits |
 | Attribution replay against Prometheus | 13/13 |
 | Python ruff, mypy, pytest | Pass; 50 tests, 94.1% coverage (floor 90%) |
 | Dashboard lint, types, unit tests, build | Pass; 56 tests |
