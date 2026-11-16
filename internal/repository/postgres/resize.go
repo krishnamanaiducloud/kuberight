@@ -72,3 +72,37 @@ func (store *Store) DeleteResizeState(ctx context.Context, recommendationID stri
 	}
 	return nil
 }
+
+// ListResizeStates implements repository.ResizeStateStore. The state that
+// was written longest ago comes first, so a limit never starves one.
+func (store *Store) ListResizeStates(ctx context.Context, limit int) ([]repository.ResizeState, error) {
+	if limit < 0 {
+		limit = 0
+	}
+	rows, err := store.pool.Query(ctx,
+		"SELECT recommendation_id, failures, next_attempt_at, halted_since FROM automation_resize_state ORDER BY updated_at, recommendation_id LIMIT $1", limit)
+	if err != nil {
+		return nil, fmt.Errorf("list resize states: %w", err)
+	}
+	defer rows.Close()
+	states := []repository.ResizeState{}
+	for rows.Next() {
+		var state repository.ResizeState
+		var next, halted *time.Time
+		if err := rows.Scan(&state.RecommendationID, &state.Failures, &next, &halted); err != nil {
+			return nil, fmt.Errorf("read resize state: %w", err)
+		}
+		if next != nil {
+			state.NextAttemptAt = next.UTC()
+		}
+		if halted != nil {
+			at := halted.UTC()
+			state.HaltedSince = &at
+		}
+		states = append(states, state)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list resize states: %w", err)
+	}
+	return states, nil
+}

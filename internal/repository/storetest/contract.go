@@ -165,6 +165,30 @@ func Run(t *testing.T, newStore func(*testing.T) repository.Store) {
 		if err != nil || !known || state.RecommendationID != record.ID || state.Failures != 2 || !state.NextAttemptAt.Equal(next) || state.HaltedSince == nil || !state.HaltedSince.Equal(halted) {
 			t.Fatalf("saved state: %+v known=%v err=%v", state, known, err)
 		}
+		other, _, err := store.CreateRecommendation(ctx, Recommendation("shop", "web", "app", "low"), repository.CreateOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := states.SaveResizeState(ctx, repository.ResizeState{RecommendationID: other.ID}); err != nil {
+			t.Fatalf("a state that only marks a resize as unfinished was refused: %v", err)
+		}
+		listed, err := states.ListResizeStates(ctx, 10)
+		if err != nil || len(listed) != 2 {
+			t.Fatalf("listed states: %+v err=%v", listed, err)
+		}
+		found := map[string]repository.ResizeState{listed[0].RecommendationID: listed[0], listed[1].RecommendationID: listed[1]}
+		if found[record.ID].Failures != 2 || found[record.ID].HaltedSince == nil || !found[record.ID].HaltedSince.Equal(halted) || found[other.ID].Failures != 0 || found[other.ID].HaltedSince != nil {
+			t.Fatalf("listed states: %+v", listed)
+		}
+		if limited, err := states.ListResizeStates(ctx, 1); err != nil || len(limited) != 1 {
+			t.Fatalf("limited list: %+v err=%v", limited, err)
+		}
+		if err := states.DeleteResizeState(ctx, other.ID); err != nil {
+			t.Fatal(err)
+		}
+		if listed, err := states.ListResizeStates(ctx, 10); err != nil || len(listed) != 1 || listed[0].RecommendationID != record.ID {
+			t.Fatalf("list after a delete: %+v err=%v", listed, err)
+		}
 		// A save replaces every field, including the ones it clears.
 		if err := states.SaveResizeState(ctx, repository.ResizeState{RecommendationID: record.ID, Failures: 3}); err != nil {
 			t.Fatal(err)

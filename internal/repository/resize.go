@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"sort"
 	"time"
 )
 
@@ -30,6 +31,9 @@ type ResizeStateStore interface {
 	SaveResizeState(ctx context.Context, state ResizeState) error
 	// DeleteResizeState removes the state; deleting none is not an error.
 	DeleteResizeState(ctx context.Context, recommendationID string) error
+	// ListResizeStates returns up to limit states. A stored state marks a
+	// resize as unfinished, so this is the list of changes in flight.
+	ListResizeStates(ctx context.Context, limit int) ([]ResizeState, error)
 }
 
 // ValidateResizeState rejects a state no store should hold.
@@ -103,4 +107,24 @@ func (memory *Memory) DeleteResizeState(ctx context.Context, recommendationID st
 	defer memory.mu.Unlock()
 	delete(memory.resize, recommendationID)
 	return nil
+}
+
+// ListResizeStates implements ResizeStateStore.
+func (memory *Memory) ListResizeStates(ctx context.Context, limit int) ([]ResizeState, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	memory.mu.RLock()
+	defer memory.mu.RUnlock()
+	states := make([]ResizeState, 0, len(memory.resize))
+	for id, state := range memory.resize {
+		if _, held := memory.state.byID[id]; held {
+			states = append(states, cloneResizeState(state))
+		}
+	}
+	sort.Slice(states, func(left, right int) bool { return states[left].RecommendationID < states[right].RecommendationID })
+	if limit >= 0 && len(states) > limit {
+		states = states[:limit]
+	}
+	return states, nil
 }

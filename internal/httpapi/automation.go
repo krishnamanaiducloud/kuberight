@@ -68,6 +68,10 @@ type AutomationDecision struct {
 	// resizeOnly marks a retry: the template already carries the change,
 	// and only pods that still run other values are resized.
 	resizeOnly bool
+	// unfinished marks a decision about an in-place resize that has not
+	// reached every pod. superseded is set when the workload carries
+	// another change, so this recommendation has nothing left in flight.
+	unfinished, superseded bool
 }
 
 // AutomationReport summarizes one evaluation pass.
@@ -242,6 +246,7 @@ func (server *apiServer) evaluateAutomation(ctx context.Context, record reposito
 		return decision
 	}
 	if server.unfinishedResize(ctx, spec, container, record, previous, &decision, dryRun) {
+		decision.unfinished = true
 		return decision
 	}
 
@@ -309,22 +314,98 @@ func (server *apiServer) resizeState(ctx context.Context, recommendationID strin
 	return state, err
 }
 
-// saveResizeState stores the state, or removes it once it says nothing. A
-// failure is logged and not returned: the worst outcome is an attempt that
-// comes sooner, or a rollback that comes later, than the state would say.
+// saveResizeState stores the state. A stored state, even an empty one, also
+// marks the resize as unfinished: automation follows every marked change,
+// including one that a newer recommendation has replaced as the latest for
+// its container. A failure is logged and not returned: the worst outcome is
+// an attempt that comes sooner, or a rollback that comes later, than the
+// state would say.
 func (server *apiServer) saveResizeState(ctx context.Context, state repository.ResizeState) {
 	store, ok := server.repository.(repository.ResizeStateStore)
 	if !ok {
 		return
 	}
-	var err error
-	if state.Failures == 0 && state.NextAttemptAt.IsZero() && state.HaltedSince == nil {
-		err = store.DeleteResizeState(ctx, state.RecommendationID)
-	} else {
-		err = store.SaveResizeState(ctx, state)
-	}
-	if err != nil {
+	if err := store.SaveResizeState(ctx, state); err != nil {
 		server.logger.Warn("in-place resize state could not be stored", "recommendation_id", state.RecommendationID, "error", err)
+	}
+}
+
+// forgetResizeState removes the state, and with it the mark, of a resize
+// that is over.
+func (server *apiServer) forgetResizeState(ctx context.Context, recommendationID string) {
+	store, ok := server.repository.(repository.ResizeStateStore)
+	if !ok {
+		return
+	}
+	if err := store.DeleteResizeState(ctx, recommendationID); err != nil {
+		server.logger.Warn("in-place resize state could not be removed", "recommendation_id", recommendationID, "error", err)
+	}
+}
+
+// markResize records, after a template patch, whether pods are left to
+// resize in place. A fresh mark also clears what a halted or failing resize
+// of the same recommendation left behind.
+func (server *apiServer) markResize(ctx context.Context, decision *AutomationDecision) {
+	if inPlace := decision.InPlace; inPlace != nil && (inPlace.Attempted || inPlace.Failed > 0 || inPlace.Remaining > 0) {
+		server.saveResizeState(ctx, repository.ResizeState{RecommendationID: decision.RecommendationID})
+		return
+	}
+	server.forgetResizeState(ctx, decision.RecommendationID)
+}
+
+// resizeFinished forgets a marked resize whose pods all run the template,
+// and has verification look at the result now. For a change that is no
+// longer the latest recommendation of its container this is the only
+// prompt verification gets; once the values are observed live, it follows
+// the change on its own.
+func (server *apiServer) resizeFinished(ctx context.Context, record repository.RecommendationRecord) {
+	store, ok := server.repository.(repository.ResizeStateStore)
+	if !ok {
+		return
+	}
+	if _, known, err := store.GetResizeState(ctx, record.ID); err != nil || !known {
+		return
+	}
+	server.forgetResizeState(ctx, record.ID)
+	if _, err := server.refreshVerification(ctx, record); err != nil {
+		server.logger.Warn("verification refresh after an in-place resize failed", "recommendation_id", record.ID, "error", err)
+	}
+}
+
+// followUnfinishedResizes adds the changes whose in-place resize is marked
+// unfinished and that the list of latest approved recommendations does not
+// carry. A newer recommendation for the same container must not strand a
+// workload half resized, or a halted resize without its rollback.
+func (server *apiServer) followUnfinishedResizes(ctx context.Context, patcher ResourcePatcher, report *AutomationReport) {
+	store, ok := server.repository.(repository.ResizeStateStore)
+	if !ok || !server.config.AutomationInPlaceResize {
+		return
+	}
+	states, err := store.ListResizeStates(ctx, maxAutomationCandidates)
+	if err != nil {
+		server.logger.Warn("unfinished in-place resizes could not be listed", "error", err)
+		return
+	}
+	listed := make(map[string]struct{}, len(report.Decisions))
+	for _, decision := range report.Decisions {
+		listed[decision.RecommendationID] = struct{}{}
+	}
+	for _, state := range states {
+		if _, done := listed[state.RecommendationID]; done || ctx.Err() != nil {
+			continue
+		}
+		record, getErr := server.repository.GetRecommendation(ctx, state.RecommendationID)
+		if getErr != nil {
+			continue
+		}
+		decision := server.evaluateAutomation(ctx, record, patcher, report.DryRun)
+		report.Evaluated++
+		switch {
+		case decision.unfinished:
+			report.Decisions = append(report.Decisions, decision)
+		case decision.superseded && !report.DryRun:
+			server.forgetResizeState(ctx, record.ID)
+		}
 	}
 }
 
@@ -356,8 +437,12 @@ func (server *apiServer) recordResizeRetry(ctx context.Context, recommendationID
 // first seen, while other pods never took them, the change is rolled back:
 // the template and every pod return to the previous values.
 func (server *apiServer) unfinishedResize(ctx context.Context, spec WorkloadSpec, container ContainerSpec, record repository.RecommendationRecord, previous automation.Resources, decision *AutomationDecision, dryRun bool) bool {
-	if !server.config.AutomationInPlaceResize || !spec.OnDelete || spec.MetricIdentity == nil || len(decision.Reasons) > 0 ||
-		spec.Annotations[automation.AppliedAnnotation] != record.ID {
+	if !server.config.AutomationInPlaceResize || !spec.OnDelete || spec.MetricIdentity == nil || len(decision.Reasons) > 0 {
+		return false
+	}
+	if spec.Annotations[automation.AppliedAnnotation] != record.ID {
+		// The workload carries another change now, or none.
+		decision.superseded = true
 		return false
 	}
 	template := liveResources(container)
@@ -371,7 +456,7 @@ func (server *apiServer) unfinishedResize(ctx context.Context, spec WorkloadSpec
 	default:
 		return false
 	}
-	behind, running, unsettled := 0, 0, ""
+	behind, running, settling, unsettled := 0, 0, 0, ""
 	for _, pod := range spec.MetricIdentity.Pods {
 		if !pod.Active() || pod.Phase != "Running" || pod.Resources == nil {
 			continue
@@ -382,14 +467,20 @@ func (server *apiServer) unfinishedResize(ctx context.Context, spec WorkloadSpec
 		// the right spec and needs no new request.
 		if !resourcesMatch(automation.Resources{CPURequestMilli: live.CPURequestMilli, CPULimitMilli: live.CPULimitMilli, MemoryRequestBytes: live.MemoryRequestBytes, MemoryLimitBytes: live.MemoryLimitBytes}, template) {
 			behind++
-		} else if unsettled == "" && pod.Unsettled(record.Container, spec.AutomationWrite) {
-			unsettled = pod.Name
+		} else {
+			if pod.Resizing {
+				settling++
+			}
+			if unsettled == "" && pod.Unsettled(record.Container, spec.AutomationWrite) {
+				unsettled = pod.Name
+			}
 		}
 	}
 	if behind == 0 {
-		// Every pod runs the template: whatever was recorded is over.
-		if !dryRun {
-			server.saveResizeState(ctx, repository.ResizeState{RecommendationID: record.ID})
+		// Every pod carries the template. The resize is over once the
+		// kubelet has finished the last of them.
+		if settling == 0 && !dryRun {
+			server.resizeFinished(ctx, record)
 		}
 		decision.Action = AutomationSkip
 		return false
@@ -570,6 +661,9 @@ func (server *apiServer) automationRun(ctx context.Context, dryRun, rollbacksOnl
 			break
 		}
 	}
+	if !rollbacksOnly {
+		server.followUnfinishedResizes(ctx, patcher, &report)
+	}
 	// Rollbacks restore safety, so they are never starved by new changes.
 	sort.SliceStable(report.Decisions, func(left, right int) bool {
 		rank := map[string]int{AutomationRollback: 0, AutomationApply: 1, AutomationSkip: 2}
@@ -623,10 +717,6 @@ func (server *apiServer) executeAutomation(ctx context.Context, decision *Automa
 		server.recordResizeRetry(ctx, decision.RecommendationID, err != nil)
 	} else {
 		err = patcher.PatchResources(ctx, *decision.change)
-		if err == nil && decision.Action == AutomationRollback {
-			// The change is gone, and with it any halted or failing resize.
-			server.recordResizeRetry(ctx, decision.RecommendationID, false)
-		}
 	}
 	audit := repository.AuditEvent{Timestamp: server.now().UTC(), Actor: automationActor, Action: action, Resource: "recommendations/" + decision.RecommendationID, Namespace: decision.Namespace, Outcome: "success", RequestID: "automation/" + decision.RecommendationID}
 	if err != nil {
@@ -644,6 +734,7 @@ func (server *apiServer) executeAutomation(ctx context.Context, decision *Automa
 		server.logger.Info("automated change applied", "recommendation_id", decision.RecommendationID, "action", decision.Action, "namespace", decision.Namespace, "workload", decision.Workload, "container", decision.Container)
 		if !decision.resizeOnly {
 			server.resizeInPlace(ctx, decision, patcher)
+			server.markResize(ctx, decision)
 		}
 	}
 	if auditErr := server.repository.AppendAuditEvent(ctx, audit); auditErr != nil {

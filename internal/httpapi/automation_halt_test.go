@@ -76,8 +76,10 @@ func TestAutomationRollsBackAStagedResizeThatStaysHalted(t *testing.T) {
 			t.Fatalf("%s rollback = %+v", name, change)
 		}
 	}
-	if _, known := haltState(t, api, record.ID); known {
-		t.Fatal("the halt was not forgotten after the rollback")
+	// The rollback resizes pods in place too, so it stays marked until every
+	// pod runs the restored values; the halt and its backoff are gone.
+	if state, known := haltState(t, api, record.ID); !known || state.HaltedSince != nil || state.Failures != 0 || !state.NextAttemptAt.IsZero() {
+		t.Fatalf("state after the rollback: %+v known=%v", state, known)
 	}
 	_, audit := api.do(t, http.MethodGet, "/api/v1/audit?page=1&pageSize=10", "alice", "")
 	found := false

@@ -29,6 +29,12 @@ func (inventory resizingInventory) ResizeInPlace(_ context.Context, change autom
 
 func runResizing(t *testing.T, enabled bool, mutate func(*resizingInventory)) (map[string]any, *[]automation.Change, *[]automation.Change) {
 	t.Helper()
+	body, patches, resizes, _ := runResizingAPI(t, enabled, mutate)
+	return body, patches, resizes
+}
+
+func runResizingAPI(t *testing.T, enabled bool, mutate func(*resizingInventory)) (map[string]any, *[]automation.Change, *[]automation.Change, testAPI) {
+	t.Helper()
 	patches, resizes := &[]automation.Change{}, &[]automation.Change{}
 	inventory := resizingInventory{
 		automationInventory: automationInventory{fakeInventory: fakeInventory{spec: automationSpec()}, mu: &sync.Mutex{}, enabled: true, patches: patches},
@@ -46,7 +52,7 @@ func runResizing(t *testing.T, enabled bool, mutate func(*resizingInventory)) (m
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%v", response.Code, body)
 	}
-	return body, patches, resizes
+	return body, patches, resizes, api
 }
 
 func TestAutomationResizesInPlaceOnlyWhenEnabled(t *testing.T) {
