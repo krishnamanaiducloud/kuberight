@@ -1,26 +1,33 @@
-# Production readiness — BLOCKED
+# Production readiness
 
-Status: **not production ready**. Do not publish `latest`, a stable `v1.0.0` image, or claim cross-distribution certification.
+Status on 2026-11-18: **release candidate**, with the evidence below. The previous version of this document (2026-11-14) is superseded.
 
-## Verified on 2026-10-17
+Readiness is scored out of 100. Only evidence from a test or a live run earns points. A row's deduction names exactly what is still missing.
 
-- The previous initial repository push is incomplete.
-- The prepared source archive exists but is not fully imported to GitHub.
-- `go test ./...` fails before compilation because `go.sum` is missing.
-- `go mod tidy` cannot download Kubernetes dependencies in the available execution environment (`proxy.golang.org` DNS/network failure).
-- Helm and Docker CLIs are not available in the current execution environment.
-- No live Kubernetes/OpenShift end-to-end test or container image build has passed.
+## Scorecard
 
-## Required release gates
+| Category | Max | Score | Evidence | Still missing |
+| --- | ---: | ---: | --- | --- |
+| Metric attribution and data correctness | 15 | 14 | Attribution replayed against a real Prometheus in CI. On a live kind cluster, scale-downs, rollouts, and recreated StatefulSet pods were attributed with 97–99% replica-time coverage. Four live-only defects were fixed. | Runs on larger clusters. |
+| Optimizer safety and accuracy | 15 | 13 | 945 production VMs, 2,809 week-ahead evaluations, 95% bootstrap intervals: KubeRight regressions 1.9% (1.5–2.4) against 18.3–86.9% for percentile baselines. A memory-headroom defect was found and fixed, and the fix was confirmed on held-out weeks. | Container traces from a Kubernetes cluster. The trace's memory baseline is assumed. |
+| Fleet, policy, and verification | 10 | 10 | PostgreSQL contract suite under the race detector. Three replicas: 224 requests/s; idempotent creates across replicas; a singleton automation pass under concurrent runs. Live post-change verification `verified` from exact pod-UID evidence. Early checks flag OOM kills, restarts, and severe throttling or pressure within minutes, and rollbacks bypass the change window (unit-tested). | — |
+| ML quality and persistence | 8 | 6 | Signed model files verified before unpickling (a live tamper was refused); persistence across pod replacement; 93.9% test coverage. On 200 production VMs, 90% intervals cover 91.4% (89.7–93.2) for CPU, up from 89.6% on the same VMs, and 93.1% for memory. A quantile benchmark against seasonal-naive and LightGBM on the same VMs. | A CPU coverage interval that clears 90%. P95 forecasts that beat seasonal-naive: the service's pinball loss is higher on 57–59% of VMs. |
+| Security and authorization | 12 | 11 | SubjectAccessReview on every request; browser single sign-on with any OIDC provider (live, forged identity headers ignored); separation of duties; signed ML models; Gitleaks, govulncheck, pip-audit, and Trivy clean. | An external penetration test. |
+| Dashboard and accessibility | 8 | 8 | WCAG 2.1 AA audit (axe) on all 20 views at desktop and mobile, live and in CI; a route error boundary. | — |
+| Database and operations | 8 | 8 | Upgrade from every earlier schema with data; full down/up round trip; a live `pg_dump`/`pg_restore` identical on every table and served by a second release; Prometheus alerts unit-tested in promtool; Grafana dashboard. | — |
+| Kubernetes and OpenShift | 8 | 7 | Live installs in apply mode. Pod Security `restricted`, arbitrary UIDs with GID 0, read-only root filesystems, and OpenShift's Route CRD. | A run on an OpenShift cluster. |
+| GitOps and FinOps | 6 | 5 | Pull requests on GitHub and Gitea/Forgejo and merge requests on GitLab, with in-place manifest edits and Helm values edits (live pull request in Gitea; GitHub and GitLab contract-tested); OpenCost per-namespace prices (live). Node impact separates request reduction, feasible node savings, and unmeasured billing. | A live run against github.com or gitlab.com. |
+| Tests, documentation, and release | 10 | 9 | [CI run 43940804651](https://github.com/krishnamanaiducloud/kuberight/actions/runs/43940804651) passed every mandatory job on the candidate, including Dependency Review, both architecture image gates, scans, SBOMs, Kind, and the live browser test. A local multi-architecture image was signed, attested, and verified (a wrong key was rejected). | A tagged keyless-signed release and verification of its published digests. |
+| **Total** | **100** | **91** | | |
 
-1. Import the entire reviewed source tree, including Go APIs, tests, Helm templates, Kubernetes manifests, Apache-2.0 LICENSE, Python ML code, and workflows.
-2. Run `go mod tidy` with network access and commit a verified `go.sum`.
-3. Pass `go test -race ./...`, `go vet ./...`, `go build ./cmd/kuberight`, Python tests, and strict Helm lint/render.
-4. Verify authentication and namespace-scoped authorization (TokenReview / SubjectAccessReview), fail-closed access, and recommendation-only behavior.
-5. Test a disposable upstream Kubernetes cluster and an OpenShift cluster; verify restricted SCC and non-root images.
-6. Scan container images for vulnerabilities, generate SBOMs, and ensure Docker Hub credentials are stored as GitHub Actions environment secrets.
-7. Build candidate images without pushing; publish release-candidate images only after all gates pass and explicit release approval.
+The live evidence is summarized in the README's [Live validation](../README.md#live-validation) section, and the accuracy method in [Benchmarks](../README.md#benchmarks).
 
-## Current publishing status
+## Open release gates
 
-Docker Hub namespace: `mohankrishna999`. **No image published or verified by this process.**
+1. Commit and push the final release-workflow/documentation changes, then repeat the full quality-gates workflow on pull request 1.
+2. Merge pull request 1 into `main`.
+3. With owner approval, a `v0.1.0-rc.*` tag runs the release workflow, which builds once, scans, and keyless-signs the published multi-architecture images and packaged Helm chart. It also attaches SPDX attestations and records the digests in the GitHub release.
+
+## Scope
+
+KubeRight runs in one cluster per installation. It does not ingest cloud billing or keep a FinOps ledger. Changes are applied only in `apply` mode, only to approved, fresh recommendations, and only in namespaces labeled `kuberight.io/automation=enabled`. Each applied change is verified afterwards and rolled back on regression.

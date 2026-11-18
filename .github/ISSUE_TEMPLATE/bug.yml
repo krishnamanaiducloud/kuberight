@@ -1,0 +1,49 @@
+name: Bug report
+description: Report a reproducible KubeRight defect. Use private security reporting for vulnerabilities.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include credentials, kubeconfigs, customer data, or sensitive workload names.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Provide the release tag, image digest, or commit SHA.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Kubernetes distribution/version, architecture, Helm profile, and operation mode.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Give minimal, ordered steps and sanitized configuration.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and evidence
+      description: Include sanitized logs, request IDs, events, and screenshots where useful.
+    validations:
+      required: true
+  - type: checkboxes
+    id: security
+    attributes:
+      label: Security check
+      options:
+        - label: I confirm this is not a vulnerability report and contains no secrets or private data.
+          required: true

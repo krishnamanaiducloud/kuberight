@@ -1,0 +1,8 @@
+# Default ownership and release-sensitive paths.
+* @krishnamanaiducloud
+
+/.github/workflows/ @krishnamanaiducloud
+/charts/ @krishnamanaiducloud
+/deploy/ @krishnamanaiducloud
+/api/ @krishnamanaiducloud
+/SECURITY.md @krishnamanaiducloud

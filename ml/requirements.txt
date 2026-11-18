@@ -1,5 +1,7 @@
-numpy>=1.26,<3
-scikit-learn>=1.5,<2
-fastapi>=0.115,<1
-uvicorn>=0.30,<1
-pydantic>=2,<3
+fastapi==0.162.0
+joblib==1.6.0
+numpy==2.5.4
+prometheus-client==0.26.0
+pydantic==2.14.3
+scikit-learn==1.9.1
+uvicorn==0.54.0
