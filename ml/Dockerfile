@@ -2,7 +2,7 @@
 
 FROM ubuntu/python:3.12-24.04_stable@sha256:ec2498ae556d1dd40e896fc6582797ab2b9f051618b3aaaa48c68bca48ce337a AS runtime-base
 
-FROM ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852 AS runtime-libs
+FROM ubuntu:25.10@sha256:7cc5e35f6567ee8c66d2abb4aab0fd866669e6207c237c3a8f0947a5c7f17092 AS runtime-libs
 RUN mkdir -p /opt/runtime-libs \
         /opt/runtime-metadata/usr/share/doc/libstdc++6 \
         /opt/runtime-metadata/var/lib/dpkg/status.d && \
