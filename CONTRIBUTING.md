@@ -1,6 +1,6 @@
 # Contributing to KubeRight
 
-KubeRight is a development preview. Contributions should preserve its fail-closed behavior and must not turn an unavailable integration into invented data.
+KubeRight is a release candidate. Contributions should preserve its fail-closed behavior and must not turn an unavailable integration into invented data.
 
 ## Development setup
 

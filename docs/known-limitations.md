@@ -60,4 +60,4 @@ This list describes the current implementation, not planned behavior. KubeRight 
 - A chart `appVersion` does not prove that an image tag exists. Use the digests recorded by a successful release workflow and verify their signatures and attestations.
 - The OpenAPI file is checked against the routes in CI but is not served by the API.
 - The chart requires Kubernetes 1.35 or later. Versions other than those tested in CI are unverified.
-- The `/api/v1` compatibility policy is in the README. `scripts/check-openapi-compat.py` reports breaking changes against a released contract, but it is not a CI gate yet because no release has been tagged, and it checks schema shape, not behavior.
+- The `/api/v1` compatibility policy is in the README. After the first release tag, CI runs `scripts/check-openapi-compat.py` against the newest earlier release reachable from `main`. It checks contract shape, not behavior or semantic changes, so release review remains required.

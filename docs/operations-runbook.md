@@ -1,6 +1,6 @@
 # Operations runbook
 
-This runbook covers the supplied development-preview deployment. No availability SLO, RPO, RTO, or production support commitment has been established.
+This runbook covers the supplied release-candidate deployment. No availability SLO, RPO, RTO, or production support commitment has been established.
 
 ## First response
 
@@ -100,7 +100,7 @@ Prometheus feature queries are bounded globally within each API pod by `promethe
 
 The Go API bounds request bodies and request duration, but has no cross-replica client rate limiter. Watch CPU/memory, throttling, OOM events, in-flight requests, PostgreSQL saturation, Prometheus concurrency, and 429/5xx responses. Do not increase API replicas while using the in-process store. With external PostgreSQL, the chart allows scaling and the production-shaped profile uses 2-6 replicas; size `database.maxConns × maxReplicas`, downstream query capacity, topology domains, and PDB behavior before enabling it. No tested scale envelope or availability SLO exists.
 
-The ML service has a bounded concurrency semaphore and can return 429 with `Retry-After: 1`. It can fall back to a deterministic forecast; inspect `fallbackUsed`, `fallbackReasons`, confidence, and warnings rather than treating every 200 response as an ML-model success. Do not increase its replica count or enable its HPA: each pod uses an independent ephemeral model store in the supplied chart.
+The ML service has a bounded concurrency semaphore and can return 429 with `Retry-After: 1`. It can fall back to a deterministic forecast; inspect `fallbackUsed`, `fallbackReasons`, confidence, and warnings rather than treating every 200 response as an ML-model success. Do not increase its replica count or enable its HPA: the model store is single-writer, including when `ml.persistence.enabled=true` mounts a persistent volume.
 
 ## Upgrade and rollback
 
@@ -128,13 +128,13 @@ After a migration succeeds, prefer rolling forward to a corrected compatible ima
 
 ## Backup and restore
 
-KubeRight does not schedule or manage backups. When PostgreSQL is configured, use the database/provider's consistent backup mechanism for both schema and data, encrypt the backup, record the KubeRight image/schema version, and regularly test a restore into an isolated database with the matching image. Recommendations, idempotency claims, reviews, and audit events are all part of that database. The audit trigger is restored as schema; an external immutable audit export remains an operator responsibility.
+KubeRight does not schedule or manage backups. When PostgreSQL is configured, use the database/provider's consistent backup mechanism for both schema and data, encrypt the backup, record the KubeRight image/schema version, and regularly test a restore into an isolated database with the matching image. Recommendations, idempotency claims, reviews, policies, fleet and verification state, automation state, notification outbox entries, and audit events are all part of that database. The audit trigger is restored as schema; an external immutable audit export remains an operator responsibility.
 
-In in-process repository mode, recommendation, idempotency, review, and audit history cannot be backed up or recovered after restart. Inventory can be read again from Kubernetes and metrics remain in Prometheus.
+In in-process repository mode, control-plane records cannot be backed up or recovered after restart. Inventory can be read again from Kubernetes and metrics remain in Prometheus.
 
-ML models are files under `KUBERIGHT_ML_MODEL_DIR`, but the supplied chart stores them in an ephemeral `/tmp` volume. If a custom deployment mounts durable storage, quiesce writes and use the storage provider's consistent snapshot procedure; that topology is not tested by this repository.
+ML models are files under `KUBERIGHT_ML_MODEL_DIR`. They use an ephemeral `/tmp` volume by default. With `ml.persistence.enabled=true`, back up the persistent volume using a storage-consistent snapshot while the singleton writer is quiesced, and preserve the referenced signing key separately. A restored artifact whose HMAC does not verify is refused and retrained.
 
-Webhook events waiting in the in-memory queue are not part of a database backup and have no replay API. Monitor delivered/failed/dropped counters and make receivers idempotent using the delivery identifier.
+With PostgreSQL, pending and dead-lettered webhook events are stored in the database outbox and can be listed or replayed through the authorized notification API after restore. Events that fell back to the in-memory queue because the outbox was unavailable are not part of a database backup and cannot be replayed. Monitor delivered/failed/dropped counters and make receivers idempotent using the delivery identifier.
 
 ## Credential rotation
 

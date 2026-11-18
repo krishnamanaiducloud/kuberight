@@ -1,6 +1,6 @@
 # Installation
 
-KubeRight is a development preview. The commands below describe the supplied packaging; they do not certify a production deployment. Before installing, identify a successful release, inspect its quality-gate run, verify the image signatures, and use the recorded immutable digests. Do not assume the chart's default tag exists.
+KubeRight is a release candidate, not a certified production release. The commands below describe the supplied packaging. Before installing, identify a successful release, inspect its quality-gate run, verify the image and chart signatures, and use the recorded immutable digests. Do not assume the chart's default tag exists.
 
 ## Prerequisites
 
@@ -159,7 +159,7 @@ helm upgrade --install kuberight charts/kuberight \
   --set-string ml.image.digest='sha256:<verified-ml-digest>'
 ```
 
-Set `ml.apiKey.existingSecret` before allowing additional network clients. The chart injects the same key into the Go and ML pods. Chart storage for model artifacts is ephemeral, so the chart rejects multiple ML replicas and ML autoscaling.
+Set `ml.apiKey.existingSecret` before allowing additional network clients. The chart injects the same key into the Go and ML pods. Model storage is ephemeral by default; `ml.persistence.enabled=true` mounts a persistent volume and requires `ml.persistence.signingKey.existingSecret` so artifacts are authenticated before loading. The store is single-writer in both modes, so the chart rejects multiple ML replicas and ML autoscaling.
 
 ## Profiles and platforms
 
@@ -168,7 +168,7 @@ Set `ml.apiKey.existingSecret` before allowing additional network clients. The c
 - `profiles/openshift.yaml` renders an edge-terminated Route and non-root settings. Confirm the image and chart against the target SCC and cluster version before use.
 - `profiles/cluster-wide.yaml` grants cluster-wide read-only inventory permissions.
 
-The chart rejects `replicaCount > 1` or API autoscaling unless `database.enabled=true`. PostgreSQL shares recommendation, idempotency, review, and audit state, but it does not add an inventory cache, a durable webhook outbox, or shared ML model storage. The chart always rejects `ml.replicaCount > 1` and ML autoscaling in the supplied topology.
+The chart rejects `replicaCount > 1` or API autoscaling unless `database.enabled=true`. PostgreSQL shares recommendations, idempotency, reviews, policies, fleet and verification state, automation state, audit records, and the durable webhook outbox. It does not add an inventory cache or make the independent ML artifact store multi-writer. The chart always rejects `ml.replicaCount > 1` and ML autoscaling in the supplied topology.
 
 Example OpenShift render and install:
 

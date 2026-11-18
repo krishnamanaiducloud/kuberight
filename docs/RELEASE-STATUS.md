@@ -2,11 +2,11 @@
 
 - Candidate: `v0.1.0-rc.3` (pending)
 - Branch: `feat/production-release`
-- Status: release candidate; see [production readiness](PRODUCTION-READINESS.md) (90/100)
+- Status: release candidate; see [production readiness](PRODUCTION-READINESS.md) (91/100)
 
 ## CI on the candidate pull request
 
-[Run 43918150640](https://github.com/krishnamanaiducloud/kuberight/actions/runs/43918150640) on `223a8df` (2026-11-16) passed every code job:
+[Run 43940804651](https://github.com/krishnamanaiducloud/kuberight/actions/runs/43940804651) on `914a498` (2026-11-16) passed every mandatory job:
 
 - Go (race tests with PostgreSQL and the attribution replay)
 - Dependency vulnerabilities
@@ -16,8 +16,10 @@
 - Secret scanning
 - Build, scan, SBOM, smoke, and Kind (including the live browser accessibility test)
 - ARM64 build, scan, and execution
+- Dependency Review
+- The aggregate `All mandatory gates passed` job
 
-Dependency Review fails because the repository's Dependency graph is disabled: the dependency-graph SBOM and comparison APIs return 404. The gate stays required. It passes once the Dependency graph is enabled in the repository's security settings.
+The Dependency graph is enabled and Dependency Review passed. The candidate source commit is green. Local Trivy `0.76.2`, release-chart packaging, and documentation changes made after that commit require a new CI run before release.
 
 ## Local reproduction of the required gates (2026-11-15)
 
@@ -41,5 +43,7 @@ Dependency Review fails because the repository's Dependency graph is disabled: t
 
 ## Pending repository evidence
 
-- The quality-gates workflow on the candidate pull request.
+- A new all-green quality-gates run for the final commit after the pending release-workflow and documentation changes.
+- Merge pull request 1 into `main`; the release workflow refuses tags that are not reachable from `main`.
 - The release workflow on the `v0.1.0-rc.3` tag: published digests, signatures, and attestations.
+- The packaged Helm chart, checksum, and Sigstore bundle attached to the GitHub prerelease.

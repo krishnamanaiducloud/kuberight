@@ -1,6 +1,6 @@
 # Production readiness
 
-Status on 2026-11-14: **release candidate**, with the evidence below. The previous version of this document (2026-11-01) is superseded.
+Status on 2026-11-18: **release candidate**, with the evidence below. The previous version of this document (2026-11-14) is superseded.
 
 Readiness is scored out of 100. Only evidence from a test or a live run earns points. A row's deduction names exactly what is still missing.
 
@@ -17,15 +17,16 @@ Readiness is scored out of 100. Only evidence from a test or a live run earns po
 | Database and operations | 8 | 8 | Upgrade from every earlier schema with data; full down/up round trip; a live `pg_dump`/`pg_restore` identical on every table and served by a second release; Prometheus alerts unit-tested in promtool; Grafana dashboard. | — |
 | Kubernetes and OpenShift | 8 | 7 | Live installs in apply mode. Pod Security `restricted`, arbitrary UIDs with GID 0, read-only root filesystems, and OpenShift's Route CRD. | A run on an OpenShift cluster. |
 | GitOps and FinOps | 6 | 5 | Pull requests on GitHub and Gitea/Forgejo and merge requests on GitLab, with in-place manifest edits and Helm values edits (live pull request in Gitea; GitHub and GitLab contract-tested); OpenCost per-namespace prices (live). Node impact separates request reduction, feasible node savings, and unmeasured billing. | A live run against github.com or gitlab.com. |
-| Tests, documentation, and release | 10 | 8 | Local reproduction of every CI gate. A multi-architecture image with provenance and an SBOM, signed, attested, and verified (a wrong key was rejected). | CI green on the candidate pull request; a tagged keyless-signed release. |
-| **Total** | **100** | **90** | | |
+| Tests, documentation, and release | 10 | 9 | [CI run 43940804651](https://github.com/krishnamanaiducloud/kuberight/actions/runs/43940804651) passed every mandatory job on the candidate, including Dependency Review, both architecture image gates, scans, SBOMs, Kind, and the live browser test. A local multi-architecture image was signed, attested, and verified (a wrong key was rejected). | A tagged keyless-signed release and verification of its published digests. |
+| **Total** | **100** | **91** | | |
 
 The live evidence is summarized in the README's [Live validation](../README.md#live-validation) section, and the accuracy method in [Benchmarks](../README.md#benchmarks).
 
 ## Open release gates
 
-1. The full quality-gates workflow passes on the pull request for `feat/production-release`.
-2. A `v0.1.0-rc.*` tag runs the release workflow, which builds once, scans, and keyless-signs the published multi-architecture images. It also attaches SPDX attestations and records the digests in the GitHub release.
+1. Commit and push the final release-workflow/documentation changes, then repeat the full quality-gates workflow on pull request 1.
+2. Merge pull request 1 into `main`.
+3. With owner approval, a `v0.1.0-rc.*` tag runs the release workflow, which builds once, scans, and keyless-signs the published multi-architecture images and packaged Helm chart. It also attaches SPDX attestations and records the digests in the GitHub release.
 
 ## Scope
 

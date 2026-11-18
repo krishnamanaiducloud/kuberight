@@ -72,6 +72,23 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - uses: azure/setup-helm@b9e51907a09c216f16ebe8536097933489208112 # v4.3.0
+        with:
+          version: v4.3.1
+      - name: Package the exact release chart
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-chart
+          helm lint --strict charts/kuberight
+          helm package charts/kuberight \
+            --version "$VERSION" --app-version "$VERSION" \
+            --destination release-chart
+          chart="release-chart/kuberight-${VERSION}.tgz"
+          test -s "$chart"
+          helm show chart "$chart" | grep -Fx "version: $VERSION"
+          helm show chart "$chart" | grep -Fx "appVersion: $VERSION"
+          sha256sum "$chart" > "${chart}.sha256"
       - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
         with:
           platforms: arm64
@@ -288,7 +305,7 @@ jobs:
           done
       - uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
         with:
-          version: v0.76.0
+          version: v0.76.2
       - name: Block vulnerable release archives
         run: |
           trivy image --input kuberight-linux-amd64.oci.tar --exit-code 1 --severity HIGH,CRITICAL --vuln-type os,library
@@ -367,6 +384,17 @@ jobs:
           ensure_staging_ref "$BACKEND_STAGING_REF" "$KUBERIGHT_DIGEST" kuberight.oci.tar
           ensure_staging_ref "$ML_STAGING_REF" "$KUBERIGHT_ML_DIGEST" kuberight-ml.oci.tar
       - uses: sigstore/cosign-installer@d7543c93d881b35a8faa02e8e3605f69b7a1ce62 # v3.10.0
+      - name: Keyless-sign and verify the Helm chart
+        shell: bash
+        run: |
+          set -euo pipefail
+          chart="release-chart/kuberight-${VERSION}.tgz"
+          bundle="${chart}.sigstore.json"
+          cosign sign-blob "$chart" --bundle "$bundle" --yes
+          cosign verify-blob "$chart" --bundle "$bundle" \
+            --certificate-identity "https://github.com/krishnamanaiducloud/kuberight/.github/workflows/release.yaml@refs/tags/v$VERSION" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          sha256sum --check "${chart}.sha256"
       - name: Keyless-sign staged digests and attach SBOM attestations
         shell: bash
         run: |
@@ -479,3 +507,6 @@ jobs:
             kuberight-ml-linux-amd64.spdx.json
             kuberight-ml-linux-arm64.spdx.json
             release-digests.txt
+            release-chart/kuberight-${{ needs.version.outputs.version }}.tgz
+            release-chart/kuberight-${{ needs.version.outputs.version }}.tgz.sha256
+            release-chart/kuberight-${{ needs.version.outputs.version }}.tgz.sigstore.json

@@ -93,6 +93,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
@@ -110,6 +111,19 @@ jobs:
         run: |
           openapi-spec-validator api/openapi.yaml
           python scripts/verify-openapi-contract.py
+      - name: Reject breaking API changes after the first release
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_ref=${GITHUB_REF_NAME:-}
+          base_tag=$(git tag --merged origin/main --list 'v*' --sort=-version:refname \
+            | grep -Fxv "$current_ref" | head -n 1 || true)
+          if test -z "$base_tag"; then
+            echo "No earlier release tag exists; compatibility comparison starts after the first release."
+            exit 0
+          fi
+          git show "${base_tag}:api/openapi.yaml" > /tmp/kuberight-openapi-base.yaml
+          python scripts/check-openapi-compat.py /tmp/kuberight-openapi-base.yaml api/openapi.yaml
       - name: Unit tests with coverage
         run: python -m pytest ml --cov=ml --cov-report=term-missing --cov-report=xml:coverage-python.xml --cov-fail-under=90
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -345,7 +359,7 @@ jobs:
           exit-code: "1"
           severity: HIGH,CRITICAL
           vuln-type: os,library
-          version: v0.76.0
+          version: v0.76.2
       - name: Scan ML image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -354,7 +368,7 @@ jobs:
           exit-code: "1"
           severity: HIGH,CRITICAL
           vuln-type: os,library
-          version: v0.76.0
+          version: v0.76.2
       - name: Generate backend/dashboard SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
@@ -513,7 +527,7 @@ jobs:
           exit-code: "1"
           severity: HIGH,CRITICAL
           vuln-type: os,library
-          version: v0.76.0
+          version: v0.76.2
       - name: Scan ARM64 ML image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -522,7 +536,7 @@ jobs:
           exit-code: "1"
           severity: HIGH,CRITICAL
           vuln-type: os,library
-          version: v0.76.0
+          version: v0.76.2
       - name: Run ARM64 read-only smoke tests under QEMU
         shell: bash
         run: |

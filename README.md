@@ -2,7 +2,7 @@
 
 KubeRight is a Kubernetes resource-inventory and right-sizing project. It combines a Go API, a React dashboard, an optional Python forecasting service, and a Helm chart.
 
-> **Development preview:** this repository is not a verified production release. A source checkout, chart version, or Dockerfile is not evidence that an image has been published or passed the required release gates. Verify a signed release and its digest before deploying.
+> **Release candidate:** the source candidate passes its pull-request quality gates, but no signed release has been published yet. A source checkout, chart version, or Dockerfile is not evidence that an image exists. Verify a signed release and its digest before deploying.
 
 ## What works today
 

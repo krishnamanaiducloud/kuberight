@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability privately
+    url: https://github.com/krishnamanaiducloud/kuberight/security/advisories/new
+    about: Do not disclose suspected vulnerabilities in public issues.
+  - name: Operational documentation
+    url: https://github.com/krishnamanaiducloud/kuberight/tree/main/docs
+    about: Check installation, runbook, release status, and known limitations first.
