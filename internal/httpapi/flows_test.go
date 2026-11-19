@@ -924,3 +924,25 @@ func TestChangeHistoryCoversTheCooldownWhateverTheWindow(t *testing.T) {
 		t.Fatalf("long window changed: %+v", got)
 	}
 }
+
+func TestIntegrationsNameTheDiscoveredPrometheus(t *testing.T) {
+	api := newTestAPI(t, func(cfg *config.Config) {
+		cfg.PrometheusURL = "https://thanos-querier.openshift-monitoring.svc:9092"
+		cfg.PrometheusBearerTokenFile = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+		cfg.PrometheusSource = "OpenShift monitoring (Thanos Querier, namespace shop)"
+	}, Dependencies{Usage: healthyUsage(600)})
+	_, body := api.do(t, http.MethodGet, "/api/v1/settings/integrations", "alice", "")
+	for _, item := range body["items"].([]any) {
+		dependency := item.(map[string]any)
+		if dependency["name"] != "Prometheus" {
+			continue
+		}
+		detail := dependency["detail"].(string)
+		if dependency["healthy"] != true || !strings.Contains(detail, "thanos-querier.openshift-monitoring.svc:9092") ||
+			!strings.Contains(detail, "(OpenShift monitoring (Thanos Querier, namespace shop))") || strings.Contains(detail, "serviceaccount") {
+			t.Fatalf("Prometheus status = %v", dependency)
+		}
+		return
+	}
+	t.Fatalf("no Prometheus status: %v", body)
+}

@@ -184,3 +184,53 @@ func TestValidateGitOpsSettings(t *testing.T) {
 		}
 	}
 }
+
+func TestValidatePrometheusAccessSettings(t *testing.T) {
+	for name, test := range map[string]struct {
+		mutate func(*Config)
+		want   string
+	}{
+		"token without a URL":  {func(cfg *Config) { cfg.PrometheusBearerTokenFile = "/var/run/secrets/token" }, "require KUBERIGHT_PROMETHEUS_URL"},
+		"CA without a URL":     {func(cfg *Config) { cfg.PrometheusCAFile = "/etc/ca.crt" }, "require KUBERIGHT_PROMETHEUS_URL"},
+		"tenant without a URL": {func(cfg *Config) { cfg.PrometheusTenantNamespace = "shop" }, "require KUBERIGHT_PROMETHEUS_URL"},
+		"token over cleartext": {func(cfg *Config) {
+			cfg.PrometheusURL, cfg.AllowInsecureUpstreams, cfg.PrometheusBearerTokenFile = "http://prometheus:9090", true, "/token"
+		}, "never sent in cleartext"},
+		"token over HTTPS": {func(cfg *Config) {
+			cfg.PrometheusURL, cfg.PrometheusBearerTokenFile, cfg.PrometheusCAFile = "https://thanos:9091", "/token", "/ca.crt"
+		}, ""},
+		"tenant with HTTPS":      {func(cfg *Config) { cfg.PrometheusURL, cfg.PrometheusTenantNamespace = "https://thanos:9092", "shop" }, ""},
+		"no Prometheus is valid": {func(*Config) {}, ""},
+	} {
+		cfg := validConfig()
+		test.mutate(&cfg)
+		err := cfg.Validate()
+		if (test.want == "") != (err == nil) || (err != nil && !strings.Contains(err.Error(), test.want)) {
+			t.Fatalf("%s: error = %v", name, err)
+		}
+	}
+}
+
+func TestLoadReadsPrometheusAccessAndDiscovery(t *testing.T) {
+	t.Setenv("KUBERIGHT_AUTH_MODE", "static")
+	t.Setenv("KUBERIGHT_API_TOKEN", strings.Repeat("x", 32))
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.PrometheusDiscovery || cfg.PrometheusBearerTokenFile != "" {
+		t.Fatalf("defaults: discovery=%v token=%q", cfg.PrometheusDiscovery, cfg.PrometheusBearerTokenFile)
+	}
+	t.Setenv("KUBERIGHT_PROMETHEUS_URL", "https://thanos-querier.openshift-monitoring.svc:9092")
+	t.Setenv("KUBERIGHT_PROMETHEUS_BEARER_TOKEN_FILE", " /var/run/secrets/kubernetes.io/serviceaccount/token ")
+	t.Setenv("KUBERIGHT_PROMETHEUS_CA_FILE", "/var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt")
+	t.Setenv("KUBERIGHT_PROMETHEUS_TENANT_NAMESPACE", "shop")
+	t.Setenv("KUBERIGHT_PROMETHEUS_DISCOVERY", "false")
+	if cfg, err = Load(); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PrometheusDiscovery || cfg.PrometheusBearerTokenFile != "/var/run/secrets/kubernetes.io/serviceaccount/token" ||
+		cfg.PrometheusCAFile == "" || cfg.PrometheusTenantNamespace != "shop" {
+		t.Fatalf("loaded = %+v", cfg)
+	}
+}

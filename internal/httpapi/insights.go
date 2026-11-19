@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"net/http"
+	"net/url"
 	"sort"
 	"sync"
 	"time"
@@ -547,7 +548,7 @@ func (server *apiServer) dependencyStatuses(ctx context.Context) []dependencySta
 	checks := []check{
 		{status: dependencyStatus{Name: "Kubernetes inventory", Critical: true, Detail: "inventory provider is not configured"}, probe: server.provider, ready: "reading live workload inventory"},
 		{status: dependencyStatus{Name: "Recommendation store", Critical: true}, probe: server.repository, ready: server.repository.Kind() + " store is ready"},
-		{status: dependencyStatus{Name: "Prometheus", Detail: "KUBERIGHT_PROMETHEUS_URL is not set"}, probe: server.usage, ready: "usage history is queryable"},
+		{status: dependencyStatus{Name: "Prometheus", Detail: "KUBERIGHT_PROMETHEUS_URL is not set and no cluster monitoring stack was found"}, probe: server.usage, ready: server.prometheusReady()},
 		{status: dependencyStatus{Name: "Forecasting service", Detail: "KUBERIGHT_ML_URL is not set"}, probe: server.forecaster, ready: "forecasting service is ready"},
 	}
 	if server.repository.Kind() == "memory" {
@@ -712,4 +713,25 @@ func (server *apiServer) priceSourceLabel() string {
 		return "opencost_unit_prices"
 	}
 	return "configured_unit_prices"
+}
+
+// prometheusReady names where usage history comes from. The endpoint host
+// is shown; credentials never are.
+func (server *apiServer) prometheusReady() string {
+	detail := "usage history is queryable"
+	if host := upstreamHost(server.config.PrometheusURL); host != "" {
+		detail += " at " + host
+	}
+	if source := server.config.PrometheusSource; source != "" && source != "configured" {
+		detail += " (" + source + ")"
+	}
+	return detail
+}
+
+func upstreamHost(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return parsed.Host
 }

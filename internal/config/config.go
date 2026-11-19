@@ -28,27 +28,38 @@ type Config struct {
 	APIToken      string
 	// OIDC mode: an authenticating proxy (oauth2-proxy) in the same pod
 	// sets the identity headers; KubeRight must listen on loopback only.
-	OIDCUsernamePrefix     string
-	OIDCGroupsPrefix       string
-	TokenAudience          string
-	OperationMode          string
-	WebRoot                string
-	MaxBodyBytes           int64
-	RequestTimeout         time.Duration
-	ReadHeaderTimeout      time.Duration
-	ReadTimeout            time.Duration
-	WriteTimeout           time.Duration
-	IdleTimeout            time.Duration
-	ShutdownTimeout        time.Duration
-	KubernetesQPS          float32
-	KubernetesBurst        int
-	InventoryEnabled       bool
-	InventoryNamespace     string
-	InventoryResync        time.Duration
-	ClusterID              string
-	PrometheusURL          string
-	PrometheusTimeout      time.Duration
-	PrometheusMaxInFlight  int
+	OIDCUsernamePrefix    string
+	OIDCGroupsPrefix      string
+	TokenAudience         string
+	OperationMode         string
+	WebRoot               string
+	MaxBodyBytes          int64
+	RequestTimeout        time.Duration
+	ReadHeaderTimeout     time.Duration
+	ReadTimeout           time.Duration
+	WriteTimeout          time.Duration
+	IdleTimeout           time.Duration
+	ShutdownTimeout       time.Duration
+	KubernetesQPS         float32
+	KubernetesBurst       int
+	InventoryEnabled      bool
+	InventoryNamespace    string
+	InventoryResync       time.Duration
+	ClusterID             string
+	PrometheusURL         string
+	PrometheusTimeout     time.Duration
+	PrometheusMaxInFlight int
+	// PrometheusBearerTokenFile and PrometheusCAFile authenticate KubeRight
+	// to a protected Prometheus; PrometheusTenantNamespace is sent as the
+	// namespace parameter that multi-tenant query proxies require.
+	PrometheusBearerTokenFile string
+	PrometheusCAFile          string
+	PrometheusTenantNamespace string
+	// PrometheusDiscovery lets KubeRight find the cluster's monitoring stack
+	// when PrometheusURL is empty. PrometheusSource says where the endpoint
+	// came from; it is set at startup, not from the environment.
+	PrometheusDiscovery    bool
+	PrometheusSource       string
 	AllowInsecureUpstreams bool
 
 	// DatabaseURL is a secret PostgreSQL connection string. Empty selects
@@ -188,36 +199,42 @@ func (c Config) CostConfigured() bool {
 // internally inconsistent combinations.
 func Load() (Config, error) {
 	cfg := Config{
-		ListenAddress:      envOr("KUBERIGHT_LISTEN_ADDR", ":8080"),
-		AuthMode:           strings.ToLower(envOr("KUBERIGHT_AUTH_MODE", "kubernetes")),
-		APIToken:           os.Getenv("KUBERIGHT_API_TOKEN"),
-		OIDCUsernamePrefix: envOr("KUBERIGHT_OIDC_USERNAME_PREFIX", "oidc:"),
-		OIDCGroupsPrefix:   envOr("KUBERIGHT_OIDC_GROUPS_PREFIX", "oidc:"),
-		TokenAudience:      os.Getenv("KUBERIGHT_TOKEN_AUDIENCE"),
-		OperationMode:      strings.ToLower(envOr("KUBERIGHT_OPERATION_MODE", ModeRecommend)),
-		WebRoot:            os.Getenv("KUBERIGHT_WEB_ROOT"),
-		InventoryNamespace: os.Getenv("KUBERIGHT_INVENTORY_NAMESPACE"),
-		ClusterID:          envOr("KUBERIGHT_CLUSTER_ID", "local"),
-		PrometheusURL:      os.Getenv("KUBERIGHT_PROMETHEUS_URL"),
-		DatabaseURL:        strings.TrimSpace(os.Getenv("KUBERIGHT_DATABASE_URL")),
-		MLURL:              strings.TrimSpace(os.Getenv("KUBERIGHT_ML_URL")),
-		MLAPIKey:           os.Getenv("KUBERIGHT_ML_API_KEY"),
-		CostCurrency:       strings.ToUpper(envOr("KUBERIGHT_COST_CURRENCY", "USD")),
-		LatencyQuery:       strings.TrimSpace(os.Getenv("KUBERIGHT_LATENCY_QUERY")),
-		RequestRateQuery:   strings.TrimSpace(os.Getenv("KUBERIGHT_REQUEST_RATE_QUERY")),
-		WebhookURL:         strings.TrimSpace(os.Getenv("KUBERIGHT_WEBHOOK_URL")),
-		OpenCostURL:        strings.TrimSpace(os.Getenv("KUBERIGHT_OPENCOST_URL")),
-		WebhookSecret:      os.Getenv("KUBERIGHT_WEBHOOK_SECRET"),
-		WebhookFormat:      strings.ToLower(envOr("KUBERIGHT_WEBHOOK_FORMAT", "json")),
-		GitOpsProvider:     strings.ToLower(strings.TrimSpace(os.Getenv("KUBERIGHT_GITOPS_PROVIDER"))),
-		GitOpsURL:          strings.TrimSpace(os.Getenv("KUBERIGHT_GITOPS_URL")),
-		GitOpsToken:        os.Getenv("KUBERIGHT_GITOPS_TOKEN"),
-		GitOpsRepository:   strings.TrimSpace(os.Getenv("KUBERIGHT_GITOPS_REPOSITORY")),
-		GitOpsBaseBranch:   strings.TrimSpace(envOr("KUBERIGHT_GITOPS_BASE_BRANCH", "main")),
+		ListenAddress:             envOr("KUBERIGHT_LISTEN_ADDR", ":8080"),
+		AuthMode:                  strings.ToLower(envOr("KUBERIGHT_AUTH_MODE", "kubernetes")),
+		APIToken:                  os.Getenv("KUBERIGHT_API_TOKEN"),
+		OIDCUsernamePrefix:        envOr("KUBERIGHT_OIDC_USERNAME_PREFIX", "oidc:"),
+		OIDCGroupsPrefix:          envOr("KUBERIGHT_OIDC_GROUPS_PREFIX", "oidc:"),
+		TokenAudience:             os.Getenv("KUBERIGHT_TOKEN_AUDIENCE"),
+		OperationMode:             strings.ToLower(envOr("KUBERIGHT_OPERATION_MODE", ModeRecommend)),
+		WebRoot:                   os.Getenv("KUBERIGHT_WEB_ROOT"),
+		InventoryNamespace:        os.Getenv("KUBERIGHT_INVENTORY_NAMESPACE"),
+		ClusterID:                 envOr("KUBERIGHT_CLUSTER_ID", "local"),
+		PrometheusURL:             os.Getenv("KUBERIGHT_PROMETHEUS_URL"),
+		PrometheusBearerTokenFile: strings.TrimSpace(os.Getenv("KUBERIGHT_PROMETHEUS_BEARER_TOKEN_FILE")),
+		PrometheusCAFile:          strings.TrimSpace(os.Getenv("KUBERIGHT_PROMETHEUS_CA_FILE")),
+		PrometheusTenantNamespace: strings.TrimSpace(os.Getenv("KUBERIGHT_PROMETHEUS_TENANT_NAMESPACE")),
+		DatabaseURL:               strings.TrimSpace(os.Getenv("KUBERIGHT_DATABASE_URL")),
+		MLURL:                     strings.TrimSpace(os.Getenv("KUBERIGHT_ML_URL")),
+		MLAPIKey:                  os.Getenv("KUBERIGHT_ML_API_KEY"),
+		CostCurrency:              strings.ToUpper(envOr("KUBERIGHT_COST_CURRENCY", "USD")),
+		LatencyQuery:              strings.TrimSpace(os.Getenv("KUBERIGHT_LATENCY_QUERY")),
+		RequestRateQuery:          strings.TrimSpace(os.Getenv("KUBERIGHT_REQUEST_RATE_QUERY")),
+		WebhookURL:                strings.TrimSpace(os.Getenv("KUBERIGHT_WEBHOOK_URL")),
+		OpenCostURL:               strings.TrimSpace(os.Getenv("KUBERIGHT_OPENCOST_URL")),
+		WebhookSecret:             os.Getenv("KUBERIGHT_WEBHOOK_SECRET"),
+		WebhookFormat:             strings.ToLower(envOr("KUBERIGHT_WEBHOOK_FORMAT", "json")),
+		GitOpsProvider:            strings.ToLower(strings.TrimSpace(os.Getenv("KUBERIGHT_GITOPS_PROVIDER"))),
+		GitOpsURL:                 strings.TrimSpace(os.Getenv("KUBERIGHT_GITOPS_URL")),
+		GitOpsToken:               os.Getenv("KUBERIGHT_GITOPS_TOKEN"),
+		GitOpsRepository:          strings.TrimSpace(os.Getenv("KUBERIGHT_GITOPS_REPOSITORY")),
+		GitOpsBaseBranch:          strings.TrimSpace(envOr("KUBERIGHT_GITOPS_BASE_BRANCH", "main")),
 	}
 
 	var err error
 	if cfg.InventoryEnabled, err = parseBool("KUBERIGHT_INVENTORY_ENABLED", false); err != nil {
+		return Config{}, err
+	}
+	if cfg.PrometheusDiscovery, err = parseBool("KUBERIGHT_PROMETHEUS_DISCOVERY", true); err != nil {
 		return Config{}, err
 	}
 	if cfg.AllowInsecureUpstreams, err = parseBool("KUBERIGHT_ALLOW_INSECURE_UPSTREAMS", false); err != nil {
@@ -363,6 +380,12 @@ func (c Config) Validate() error {
 	}
 	if c.PrometheusMaxInFlight < 0 || c.PrometheusMaxInFlight > 1024 {
 		return errors.New("KUBERIGHT_PROMETHEUS_MAX_IN_FLIGHT must be between 1 and 1024 when set")
+	}
+	if c.PrometheusURL == "" && (c.PrometheusBearerTokenFile != "" || c.PrometheusCAFile != "" || c.PrometheusTenantNamespace != "") {
+		return errors.New("KUBERIGHT_PROMETHEUS_BEARER_TOKEN_FILE, KUBERIGHT_PROMETHEUS_CA_FILE and KUBERIGHT_PROMETHEUS_TENANT_NAMESPACE require KUBERIGHT_PROMETHEUS_URL")
+	}
+	if c.PrometheusBearerTokenFile != "" && strings.HasPrefix(strings.ToLower(c.PrometheusURL), "http://") {
+		return errors.New("KUBERIGHT_PROMETHEUS_BEARER_TOKEN_FILE requires an HTTPS KUBERIGHT_PROMETHEUS_URL; a token is never sent in cleartext")
 	}
 	if err := validateUpstream("KUBERIGHT_ML_URL", c.MLURL, c.AllowInsecureUpstreams || c.MLAllowHTTP, "KUBERIGHT_ML_ALLOW_HTTP=true"); err != nil {
 		return err

@@ -89,9 +89,11 @@ func main() {
 		// store. Production still warns because this state is process-local.
 		dependencies.Repository = repository.NewMemory(10_000)
 	}
+	cfg = resolvePrometheus(cfg, logger)
 	if cfg.PrometheusURL != "" {
 		client, clientErr := metrics.NewPrometheusClient(metrics.PrometheusOptions{
 			Endpoint: cfg.PrometheusURL, AllowHTTP: cfg.AllowInsecureUpstreams, Timeout: cfg.PrometheusTimeout, MaxInFlight: cfg.PrometheusMaxInFlight,
+			BearerTokenFile: cfg.PrometheusBearerTokenFile, CAFile: cfg.PrometheusCAFile, TenantNamespace: cfg.PrometheusTenantNamespace,
 		})
 		if clientErr != nil {
 			logger.Error("Prometheus client initialization failed", "error", clientErr)
@@ -308,4 +310,25 @@ func benchmarkTraces(path string) error {
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(benchmark.RunTraces(benchmark.TraceDatasets(series, config), config))
+}
+
+// resolvePrometheus picks the Prometheus endpoint: the configured URL, or
+// the cluster's monitoring stack when KubeRight can find it on its own.
+func resolvePrometheus(cfg config.Config, logger *slog.Logger) config.Config {
+	switch {
+	case cfg.PrometheusURL != "":
+		cfg.PrometheusSource = "configured"
+	case !cfg.PrometheusDiscovery:
+		logger.Warn("Prometheus is not configured and discovery is disabled; recommendations and forecasts are unavailable")
+	default:
+		found, ok := metrics.DiscoverPrometheus(metrics.ServiceAccountDir, cfg.InventoryNamespace)
+		if !ok {
+			logger.Warn("Prometheus is not configured and no cluster monitoring stack was found; set KUBERIGHT_PROMETHEUS_URL")
+			return cfg
+		}
+		cfg.PrometheusURL, cfg.PrometheusBearerTokenFile, cfg.PrometheusCAFile, cfg.PrometheusTenantNamespace = found.Endpoint, found.BearerTokenFile, found.CAFile, found.TenantNamespace
+		cfg.PrometheusSource = found.Source
+		logger.Info("Prometheus discovered", "source", found.Source, "endpoint", found.Endpoint)
+	}
+	return cfg
 }

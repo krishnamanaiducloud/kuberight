@@ -4,7 +4,6 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: kuberight
-
 ---
 # Source: kuberight/templates/networkpolicy.yaml
 apiVersion: networking.k8s.io/v1
@@ -40,7 +39,6 @@ spec:
       ports:
       - port: 8080
         protocol: TCP
-
 ---
 # Source: kuberight/templates/pdb.yaml
 apiVersion: policy/v1
@@ -62,7 +60,6 @@ spec:
       app.kubernetes.io/name: kuberight
       app.kubernetes.io/instance: kuberight
       app.kubernetes.io/component: server
-
 ---
 # Source: kuberight/templates/serviceaccount.yaml
 apiVersion: v1
@@ -78,7 +75,6 @@ metadata:
     app.kubernetes.io/version: "0.1.0-rc.4"
     app.kubernetes.io/component: server
 automountServiceAccountToken: true
-
 ---
 # Source: kuberight/templates/rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -100,7 +96,6 @@ rules:
   - apiGroups: ["authorization.k8s.io"]
     resources: ["subjectaccessreviews"]
     verbs: ["create"]
-
 ---
 # Source: kuberight/templates/rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -166,7 +161,6 @@ rules:
   - apiGroups: [""]
     resources: ["limitranges", "resourcequotas"]
     verbs: ["list"]
-
 ---
 # Source: kuberight/templates/rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -188,7 +182,6 @@ subjects:
   - kind: ServiceAccount
     name: kuberight
     namespace: kuberight
-
 ---
 # Source: kuberight/templates/rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -210,7 +203,29 @@ subjects:
   - kind: ServiceAccount
     name: kuberight
     namespace: kuberight
-
+---
+# Source: kuberight/templates/rbac.yaml
+# Thanos Querier answers PromQL for every namespace to cluster-monitoring-view,
+# a read-only role that OpenShift ships.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kuberight-8cde1ab2-monitoring-view
+  labels:
+    helm.sh/chart: kuberight-0.1.0-rc.4
+    app.kubernetes.io/name: kuberight
+    app.kubernetes.io/instance: kuberight
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "0.1.0-rc.4"
+    app.kubernetes.io/component: server
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-monitoring-view
+subjects:
+  - kind: ServiceAccount
+    name: kuberight
+    namespace: kuberight
 ---
 # Source: kuberight/templates/service.yaml
 apiVersion: v1
@@ -236,7 +251,6 @@ spec:
       port: 8080
       targetPort: http
       protocol: TCP
-
 ---
 # Source: kuberight/templates/deployment.yaml
 apiVersion: apps/v1
@@ -311,6 +325,10 @@ spec:
               value: "50"
             - name: KUBERIGHT_KUBERNETES_BURST
               value: "100"
+            - name: KUBERIGHT_PROMETHEUS_TIMEOUT
+              value: "10s"
+            - name: KUBERIGHT_PROMETHEUS_MAX_IN_FLIGHT
+              value: "8"
             - name: KUBERIGHT_RECOMMENDATION_WINDOW
               value: "168h"
             - name: KUBERIGHT_RECOMMENDATION_STEP
@@ -370,7 +388,6 @@ spec:
               app.kubernetes.io/component: server
       nodeSelector:
         kubernetes.io/os: linux
-
 ---
 # Source: kuberight/templates/route.yaml
 apiVersion: route.openshift.io/v1

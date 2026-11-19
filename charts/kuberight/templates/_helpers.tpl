@@ -116,6 +116,12 @@ app.kubernetes.io/component: ml
 {{- fail "auth.oidc URLs must use https; auth.oidc.insecureHTTP=true is for local development only" -}}
 {{- end -}}
 {{- end -}}
+{{- if and .Values.prometheus.bearerTokenFile (hasPrefix "http://" (lower .Values.prometheus.url)) -}}
+{{- fail "prometheus.bearerTokenFile requires an https prometheus.url; a token is never sent in cleartext" -}}
+{{- end -}}
+{{- if and (not .Values.prometheus.url) (or .Values.prometheus.bearerTokenFile .Values.prometheus.caFile .Values.prometheus.tenantNamespace) -}}
+{{- fail "prometheus.bearerTokenFile, caFile and tenantNamespace require prometheus.url; leave them empty to use discovery" -}}
+{{- end -}}
 {{- if and .Values.gitops.provider (not .Values.gitops.token.existingSecret) -}}
 {{- fail "gitops.token.existingSecret is required when gitops.provider is set" -}}
 {{- end -}}

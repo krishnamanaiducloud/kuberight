@@ -133,4 +133,55 @@ subjects:
     name: {{ include "kuberight.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
 {{- end }}
+{{- if .Values.prometheus.openshiftMonitoring }}
+---
+{{- if eq .Values.rbac.scope "cluster" }}
+# Thanos Querier answers PromQL for every namespace to cluster-monitoring-view,
+# a read-only role that OpenShift ships.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "kuberight.clusterScopedName" . }}-monitoring-view
+  labels:
+    {{- include "kuberight.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-monitoring-view
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "kuberight.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- else }}
+# The Thanos Querier tenancy port answers for one namespace to whoever may
+# read that namespace's pod metrics.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "kuberight.fullname" . }}-monitoring-view
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kuberight.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "kuberight.fullname" . }}-monitoring-view
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kuberight.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "kuberight.fullname" . }}-monitoring-view
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "kuberight.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- end }}
 {{- end }}

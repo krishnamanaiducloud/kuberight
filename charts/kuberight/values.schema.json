@@ -82,12 +82,17 @@
     "prometheus": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["url", "allowHTTP", "timeout", "maxInFlight"],
+      "required": ["url", "discovery", "allowHTTP", "bearerTokenFile", "caFile", "tenantNamespace", "timeout", "maxInFlight", "openshiftMonitoring"],
       "properties": {
         "url": { "type": "string", "pattern": "^$|^https?://[^/?#@]+(/[^?#]*)?$" },
+        "discovery": { "type": "boolean", "description": "Use the cluster's own monitoring stack when url is empty; on OpenShift, Thanos Querier." },
         "allowHTTP": { "type": "boolean" },
+        "bearerTokenFile": { "type": "string", "pattern": "^$|^/" },
+        "caFile": { "type": "string", "pattern": "^$|^/" },
+        "tenantNamespace": { "type": "string", "pattern": "^$|^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" },
         "timeout": { "$ref": "#/definitions/duration" },
-        "maxInFlight": { "type": "integer", "minimum": 1, "maximum": 1024 }
+        "maxInFlight": { "type": "integer", "minimum": 1, "maximum": 1024 },
+        "openshiftMonitoring": { "type": "boolean", "description": "Grant read-only access to OpenShift monitoring for the ServiceAccount." }
       }
     },
     "recommendations": { "$ref": "#/definitions/windowAndStep" },

@@ -131,11 +131,27 @@ spec:
             {{- with .Values.prometheus.url }}
             - name: KUBERIGHT_PROMETHEUS_URL
               value: {{ . | quote }}
-            - name: KUBERIGHT_PROMETHEUS_TIMEOUT
-              value: {{ $.Values.prometheus.timeout | quote }}
-            - name: KUBERIGHT_PROMETHEUS_MAX_IN_FLIGHT
-              value: {{ $.Values.prometheus.maxInFlight | quote }}
             {{- end }}
+            {{- if and .Values.prometheus.url .Values.prometheus.bearerTokenFile }}
+            - name: KUBERIGHT_PROMETHEUS_BEARER_TOKEN_FILE
+              value: {{ .Values.prometheus.bearerTokenFile | quote }}
+            {{- end }}
+            {{- if and .Values.prometheus.url .Values.prometheus.caFile }}
+            - name: KUBERIGHT_PROMETHEUS_CA_FILE
+              value: {{ .Values.prometheus.caFile | quote }}
+            {{- end }}
+            {{- if and .Values.prometheus.url .Values.prometheus.tenantNamespace }}
+            - name: KUBERIGHT_PROMETHEUS_TENANT_NAMESPACE
+              value: {{ .Values.prometheus.tenantNamespace | quote }}
+            {{- end }}
+            {{- if not .Values.prometheus.discovery }}
+            - name: KUBERIGHT_PROMETHEUS_DISCOVERY
+              value: "false"
+            {{- end }}
+            - name: KUBERIGHT_PROMETHEUS_TIMEOUT
+              value: {{ .Values.prometheus.timeout | quote }}
+            - name: KUBERIGHT_PROMETHEUS_MAX_IN_FLIGHT
+              value: {{ .Values.prometheus.maxInFlight | quote }}
             {{- if or (and .Values.prometheus.url .Values.prometheus.allowHTTP) (and .Values.cost.opencost.url .Values.cost.opencost.allowHTTP) (and .Values.gitops.apiURL .Values.gitops.allowHTTP) }}
             - name: KUBERIGHT_ALLOW_INSECURE_UPSTREAMS
               value: "true"

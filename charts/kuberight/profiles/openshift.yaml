@@ -1,5 +1,9 @@
 # OpenShift profile. The primary and ML images must support arbitrary non-root UIDs.
 replicaCount: 1
+# KubeRight finds OpenShift monitoring on its own (Thanos Querier, with the
+# pod's ServiceAccount token and service CA); this grants the read access.
+prometheus:
+  openshiftMonitoring: true
 autoscaling:
   enabled: false
 ml:

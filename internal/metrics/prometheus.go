@@ -144,10 +144,20 @@ type PrometheusOptions struct {
 	// for a slot remain cancellable through their request context.
 	MaxInFlight int
 	HTTPClient  *http.Client
+	// BearerTokenFile is sent as a bearer token, re-read as it rotates. It
+	// requires HTTPS.
+	BearerTokenFile string
+	// CAFile is a PEM bundle trusted in addition to the system roots.
+	CAFile string
+	// TenantNamespace is sent as the namespace query parameter, which
+	// multi-tenant query proxies such as OpenShift's Thanos Querier tenancy
+	// port require; they answer only for that namespace.
+	TenantNamespace string
 }
 
 // PrometheusClient is safe for concurrent use after construction.
 type PrometheusClient struct {
+	tenantNamespace  string
 	queryRangeURL    url.URL
 	httpClient       *http.Client
 	maxResponseBytes int64
@@ -206,10 +216,14 @@ func NewPrometheusClient(options PrometheusOptions) (*PrometheusClient, error) {
 	httpClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
 		return http.ErrUseLastResponse
 	}
+	if err := configureAccess(httpClient, endpoint.Scheme, options); err != nil {
+		return nil, err
+	}
 
 	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/api/v1/query_range"
 	endpoint.RawPath = ""
 	return &PrometheusClient{
+		tenantNamespace:  options.TenantNamespace,
 		queryRangeURL:    endpoint,
 		httpClient:       httpClient,
 		maxResponseBytes: maxResponseBytes,
@@ -247,6 +261,9 @@ func (client *PrometheusClient) QueryRange(ctx context.Context, query RangeQuery
 	parameters.Set("start", query.Start.UTC().Format(time.RFC3339Nano))
 	parameters.Set("end", query.End.UTC().Format(time.RFC3339Nano))
 	parameters.Set("step", strconv.FormatFloat(query.Step.Seconds(), 'f', -1, 64))
+	if client.tenantNamespace != "" {
+		parameters.Set("namespace", client.tenantNamespace)
+	}
 	requestURL.RawQuery = parameters.Encode()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL.String(), nil)
 	if err != nil {

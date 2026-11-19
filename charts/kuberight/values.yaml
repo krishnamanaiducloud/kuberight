@@ -60,12 +60,30 @@ database:
 # Prometheus with cAdvisor container metrics (and optionally
 # kube-state-metrics for restart and OOM history).
 prometheus:
+  # Existing Prometheus-compatible query endpoint. KubeRight never installs
+  # one. Empty with discovery enabled uses the cluster's own monitoring when
+  # KubeRight can find it: on OpenShift, Thanos Querier with the pod's
+  # ServiceAccount token and service CA (see openshiftMonitoring below).
   url: ""
-  # Permit an in-cluster http:// URL. Prefer HTTPS.
+  discovery: true
+  # Permit an in-cluster http:// URL. Prefer HTTPS. A bearer token is never
+  # sent over HTTP.
   allowHTTP: false
+  # Authentication and trust for a protected endpoint; used only with url.
+  # bearerTokenFile is re-read as it rotates, so the pod's ServiceAccount
+  # token (/var/run/secrets/kubernetes.io/serviceaccount/token) works.
+  bearerTokenFile: ""
+  # PEM bundle trusted in addition to the system roots.
+  caFile: ""
+  # Sent as the namespace parameter that multi-tenant query proxies require.
+  tenantNamespace: ""
   timeout: 10s
   # Global bound across all recommendation/signal requests in one API pod.
   maxInFlight: 8
+  # Lets the ServiceAccount query OpenShift monitoring: cluster-monitoring-view
+  # with rbac.scope=cluster, or pod metrics of the release namespace (the
+  # Thanos Querier tenancy port) with rbac.scope=namespace. Read-only.
+  openshiftMonitoring: false
 
 # Usage lookback and resolution for generated recommendations.
 recommendations:
