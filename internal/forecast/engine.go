@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"sort"
 	"time"
 )
 
@@ -22,7 +23,11 @@ const (
 	maximumHorizon = 2_160
 	// maximumOrigins bounds the rolling-origin validation and backtests.
 	validationOrigins = 3
-	maximumOrigins    = 10
+	// intervalOrigins is how many past origins, at most, supply the errors
+	// that intervals are built from. More errors make the tail quantiles
+	// trustworthy; selection still uses the newest validationOrigins.
+	intervalOrigins = 14
+	maximumOrigins  = 10
 	// winsorizeMADs is how far from the median, in robust standard
 	// deviations, a training value may lie before it is clipped for fitting.
 	winsorizeMADs = 8.0
@@ -366,13 +371,28 @@ func forecastSeries(values []float64, h int, interval time.Duration, level float
 		skill := round(1-best.score.MAE/baseline.score.MAE, 6)
 		result.skill = &skill
 	}
-	low, high := intervalOffsets(best.errors, h, level)
+	// The chosen model is replayed from older origins as well, so the
+	// interval quantiles rest on more errors than selection needed.
+	errorsByOrigin := best.errors
+	for origin := result.origins + 1; origin <= intervalOrigins; origin++ {
+		cut := n - origin*h
+		if cut < max(minimumTraining, best.model.minHistory) {
+			break
+		}
+		prediction := best.model.fit(fitValues[:cut])(h)
+		errs := make([]float64, h)
+		for step := range errs {
+			errs[step] = values[cut+step] - prediction[step]
+		}
+		errorsByOrigin = append(errorsByOrigin, errs)
+	}
+	low, high := intervalOffsets(errorsByOrigin, h, level)
 	result.lower, result.upper = applyOffsets(result.predictions, low, high)
-	result.calibration = &Calibration{Method: "empirical quantiles of rolling-origin errors", NominalCoverage: level, Factor: 1, EvaluationSamples: h}
-	if result.origins >= 2 {
+	result.calibration = &Calibration{Method: fmt.Sprintf("conformal quantiles of the chosen model's errors from %d past origins", len(errorsByOrigin)), NominalCoverage: level, Factor: 1, EvaluationSamples: h}
+	if len(errorsByOrigin) >= 2 {
 		// Intervals from the older origins, scored on the newest one, which
 		// they never saw.
-		heldLow, heldHigh := intervalOffsets(best.errors[1:], h, level)
+		heldLow, heldHigh := intervalOffsets(errorsByOrigin[1:], h, level)
 		cut := n - h
 		prediction := clampZero(best.model.fit(fitValues[:cut])(h))
 		lower, upper := applyOffsets(prediction, heldLow, heldHigh)
@@ -410,9 +430,12 @@ func fallbackForecast(result run, values, fitValues []float64, h int, level floa
 	return result
 }
 
-// intervalOffsets turns validation errors into lower and upper offsets for
-// each step. Steps are grouped in up to four ranges so each quantile rests
-// on several errors, and the interval never narrows further ahead.
+// intervalOffsets turns past forecast errors into lower and upper offsets
+// for each step. Steps are grouped in up to four ranges so each quantile
+// rests on several errors, and the interval never narrows further ahead.
+// The quantiles are conformal: order statistics at ranks that, for
+// exchangeable errors, cover at least the nominal share, instead of
+// interpolated quantiles that cover less when errors are few.
 func intervalOffsets(errorsByOrigin [][]float64, h int, level float64) (low, high []float64) {
 	buckets := min(4, h)
 	low, high = make([]float64, h), make([]float64, h)
@@ -423,8 +446,9 @@ func intervalOffsets(errorsByOrigin [][]float64, h int, level float64) (low, hig
 		for _, origin := range errorsByOrigin {
 			errs = append(errs, origin[from:to]...)
 		}
-		widestLow = math.Min(widestLow, math.Min(0, quantile(errs, (1-level)/2)))
-		widestHigh = math.Max(widestHigh, math.Max(0, quantile(errs, (1+level)/2)))
+		lowTail, highTail := conformalBounds(errs, level)
+		widestLow = math.Min(widestLow, math.Min(0, lowTail))
+		widestHigh = math.Max(widestHigh, math.Max(0, highTail))
 		for step := from; step < to; step++ {
 			low[step], high[step] = widestLow, widestHigh
 		}
@@ -524,4 +548,19 @@ func mustJSON(value any) json.RawMessage {
 		return nil
 	}
 	return encoded
+}
+
+// conformalBounds returns the order statistics that bound a two-sided
+// interval at level: with n errors, the ceil((n+1)(1+level)/2)-th smallest
+// above and the matching rank below. With too few errors for that rank it
+// returns the extremes.
+func conformalBounds(errs []float64, level float64) (low, high float64) {
+	sorted := append([]float64(nil), errs...)
+	sort.Float64s(sorted)
+	n := len(sorted)
+	rank := int(math.Ceil(float64(n+1) * (1 + level) / 2))
+	if rank > n {
+		return sorted[0], sorted[n-1]
+	}
+	return sorted[n-rank], sorted[rank-1]
 }

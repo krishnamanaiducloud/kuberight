@@ -276,3 +276,48 @@ func TestEngineBeatsSeasonalNaiveOutOfSample(t *testing.T) {
 		t.Fatalf("mean skill over seasonal naive = %.3f (%v)", average, skills)
 	}
 }
+
+func TestConformalBoundsUseCoveringRanks(t *testing.T) {
+	ascending := func(n int) []float64 {
+		out := make([]float64, n)
+		for index := range out {
+			out[index] = float64(index)
+		}
+		return out
+	}
+	// 99 errors at 90%: rank ceil(100 * 0.95) = 95, so the 5th and 95th
+	// smallest, not interpolated values between them.
+	if low, high := conformalBounds(ascending(99), 0.9); low != 4 || high != 94 {
+		t.Fatalf("99 errors: [%v, %v]", low, high)
+	}
+	// Too few errors for that rank: the extremes.
+	if low, high := conformalBounds(ascending(10), 0.9); low != 0 || high != 9 {
+		t.Fatalf("10 errors: [%v, %v]", low, high)
+	}
+}
+
+// TestIntervalsCoverHeavyTailedNoiseOutOfSample guards the defect the
+// Bitbrains backtest found: quantiles from a few dozen errors made 90%
+// intervals cover about 77% of held-out hours.
+func TestIntervalsCoverHeavyTailedNoiseOutOfSample(t *testing.T) {
+	var coverages []float64
+	for seed := int64(30); seed < 40; seed++ {
+		random := rand.New(rand.NewSource(seed))
+		samples := make([]float64, 28*24)
+		for index := range samples {
+			// Laplace noise: heavier tails than the Gaussian.
+			u := random.Float64() - 0.5
+			noise := -0.15 * math.Copysign(math.Log(1-2*math.Abs(u)), u)
+			samples[index] = math.Max(0, 1+0.4*math.Sin(2*math.Pi*float64(index%24)/24)+noise)
+		}
+		response, err := NewEngine(1).Backtest(context.Background(), BacktestRequest{Samples: samples, Horizon: 24, Origins: 5, IntervalSeconds: hour, Resource: "cpu", ConfidenceLevel: 0.9})
+		if err != nil {
+			t.Fatal(err)
+		}
+		coverages = append(coverages, response.Overall.Coverage)
+	}
+	t.Logf("held-out coverage of 90%% intervals per series: %v; mean %.3f", coverages, mean(coverages))
+	if average := mean(coverages); average < 0.89 {
+		t.Fatalf("mean coverage %.3f is well below the nominal 0.9", average)
+	}
+}
