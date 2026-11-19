@@ -1364,6 +1364,37 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "503": { $ref: "#/components/responses/DependencyUnavailable" }
 
+  /api/v1/diagnostics:
+    get:
+      tags: [Inventory]
+      operationId: listDiagnostics
+      summary: List observed workload and node health problems
+      description: |
+        Findings from live Kubernetes status, most severe first: crash loops,
+        image pull and container configuration errors, OOM kills (from each
+        container's last termination), repeated restarts, pods that cannot
+        be scheduled (with the scheduler's reason, such as insufficient CPU
+        or memory), evictions, pods running but not ready for over five
+        minutes, and, with a cluster-wide inventory, nodes that are not
+        ready or under memory, disk, or PID pressure. Every finding has
+        `evidence: observed`: Kubernetes keeps only the current state and the
+        last termination, so older causes are not reported. Requires `list`
+        on `diagnostics`.
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Cluster"
+        - $ref: "#/components/parameters/Filter"
+        - $ref: "#/components/parameters/Sort"
+        - $ref: "#/components/parameters/Order"
+      responses:
+        "200": { $ref: "#/components/responses/ObjectCollection" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/DependencyUnavailable" }
+
   /api/v1/approvals:
     get:
       tags: [Inventory]

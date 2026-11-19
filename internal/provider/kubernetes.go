@@ -127,6 +127,12 @@ func (provider *KubernetesProvider) List(ctx context.Context, resource string, q
 		records, warnings, err = provider.workloads(ctx, query.Namespace)
 	case "autoscalers":
 		records, warnings, err = provider.autoscalers(ctx, query.Namespace)
+	case "diagnostics":
+		records, warnings, err = provider.diagnostics(ctx, query.Namespace)
+		// Critical findings first unless the caller sorts otherwise.
+		if query.Sort == "" {
+			query.Sort = "rank"
+		}
 	default:
 		return httpapi.CollectionResult{
 			Items:  []map[string]any{},

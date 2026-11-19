@@ -235,7 +235,7 @@ test('keeps primary navigation usable at desktop and mobile widths', async ({ pa
 
 // Every primary view, audited against WCAG 2.0/2.1 A and AA at desktop and
 // mobile widths with the mocked control plane.
-const auditedRoutes = ['/', '/efficiency', '/hotspots', '/clusters', '/namespaces', '/workloads', '/utilization', '/correlation',
+const auditedRoutes = ['/', '/efficiency', '/hotspots', '/health', '/clusters', '/namespaces', '/workloads', '/utilization', '/correlation',
   '/recommendations/cpu', '/recommendations/memory', '/approvals', '/fleet', '/savings', '/forecasting',
   '/autoscalers', '/policies', '/gitops', '/audit', '/settings']
 

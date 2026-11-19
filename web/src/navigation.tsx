@@ -13,6 +13,7 @@ import AccountTreeOutlined from '@mui/icons-material/AccountTreeOutlined'
 import HistoryOutlined from '@mui/icons-material/HistoryOutlined'
 import SettingsOutlined from '@mui/icons-material/SettingsOutlined'
 import SpeedOutlined from '@mui/icons-material/SpeedOutlined'
+import MonitorHeartOutlined from '@mui/icons-material/MonitorHeartOutlined'
 import LocalFireDepartmentOutlined from '@mui/icons-material/LocalFireDepartmentOutlined'
 import PlaylistAddCheckCircleOutlined from '@mui/icons-material/PlaylistAddCheckCircleOutlined'
 import { Hotspots } from './pages/Hotspots'
@@ -47,6 +48,7 @@ export const navigation: NavItem[] = [
   { label: 'Overview', path: '/', endpoint: '/api/v1/overview', description: 'Verified fleet posture and optimization status', icon: <DashboardOutlined /> },
   { label: 'Efficiency', path: '/efficiency', endpoint: '/api/v1/efficiency', description: 'Requested versus used CPU and memory per namespace, reclaimable capacity, and containers without requests', icon: <SpeedOutlined />, render: (item) => <Efficiency title={item.label} description={item.description} /> },
   { label: 'CPU hotspots', path: '/hotspots', endpoint: '/api/v1/hotspots', description: 'Containers ranked by CPU throttling, usage capped at the limit, and frequent spikes', icon: <LocalFireDepartmentOutlined />, render: (item) => <Hotspots title={item.label} description={item.description} /> },
+  { label: 'Workload health', path: '/health', endpoint: '/api/v1/diagnostics', description: 'Observed OOM kills, crash loops, image pull failures, unschedulable pods, evictions, failing readiness, and node problems, most severe first, from live Kubernetes status', icon: <MonitorHeartOutlined />, columnKeys: ['severity', 'category', 'namespace', 'kind', 'workload', 'pod', 'container', 'message', 'restarts', 'since'] },
   { label: 'Clusters', path: '/clusters', endpoint: '/api/v1/clusters', description: 'Registered cluster inventory and scope', icon: <LanOutlined /> },
   { label: 'Namespaces', path: '/namespaces', endpoint: '/api/v1/namespaces', description: 'Namespace inventory confirmed by the Kubernetes API', icon: <FolderOutlined /> },
   { label: 'Workloads', path: '/workloads', endpoint: '/api/v1/workloads', description: 'Deployments, StatefulSets, DaemonSets, ReplicaSets, Jobs, and CronJobs. Select a workload for its containers, usage, and recommendations.', icon: <WorkspacesOutlined />, render: (item) => <Workloads title={item.label} description={item.description} /> },

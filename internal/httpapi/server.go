@@ -235,7 +235,7 @@ func (server *apiServer) routes() (http.Handler, error) {
 	mux.HandleFunc("GET /api/v1/notifications", server.listNotifications)
 	mux.HandleFunc("POST /api/v1/notifications/{id}/replay", server.replayNotification)
 	mux.HandleFunc("GET /api/v1/settings/integrations", server.integrations)
-	for _, resource := range []string{"clusters", "namespaces", "workloads", "autoscalers", "gitops/changes"} {
+	for _, resource := range []string{"clusters", "namespaces", "workloads", "autoscalers", "diagnostics", "gitops/changes"} {
 		resource := resource
 		mux.HandleFunc("GET /api/v1/"+resource, func(w http.ResponseWriter, r *http.Request) {
 			server.collection(w, r, resource)
