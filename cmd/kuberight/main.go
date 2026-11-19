@@ -187,6 +187,10 @@ func main() {
 			owner = "kuberight"
 		}
 		owner = fmt.Sprintf("%.96s-%d", owner, os.Getpid())
+		if err := httpapi.EnsureDefaultScanSchedule(ctx, cfg, dependencies.Repository, logger, time.Now()); err != nil {
+			// Not fatal: schedules can still be created from the dashboard.
+			logger.Warn("the default scan schedule could not be created", "error", err)
+		}
 		go fleet.NewScheduler(dependencies.Repository, logger).Run(ctx)
 		go fleet.NewWorker(dependencies.Repository, fleetExecutor, owner, logger).Run(ctx)
 	}

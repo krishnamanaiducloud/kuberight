@@ -281,6 +281,8 @@ spec:
               value: "168h"
             - name: KUBERIGHT_RECOMMENDATION_STEP
               value: "5m"
+            - name: KUBERIGHT_DEFAULT_SCAN_INTERVAL
+              value: "6h"
             - name: KUBERIGHT_FORECAST_WINDOW
               value: "336h"
             - name: KUBERIGHT_FORECAST_STEP

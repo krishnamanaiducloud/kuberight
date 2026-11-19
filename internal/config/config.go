@@ -100,6 +100,10 @@ type Config struct {
 	// VerificationEarlyInterval is how often changes in their first hour are
 	// rechecked for severe regressions. Zero leaves them to the full pass.
 	VerificationEarlyInterval time.Duration
+	// DefaultScanInterval is the interval of the scan schedule KubeRight
+	// creates when none exists, so recommendations appear without anyone
+	// queueing a scan. Zero creates none.
+	DefaultScanInterval time.Duration
 
 	// WebhookURL receives recommendation lifecycle events. WebhookSecret,
 	// when set, signs each body with HMAC-SHA256. WebhookFormat is json or
@@ -127,6 +131,7 @@ type Config struct {
 const (
 	DefaultRecommendationWindow      = 7 * 24 * time.Hour
 	DefaultVerificationInterval      = 15 * time.Minute
+	DefaultDefaultScanInterval       = 6 * time.Hour
 	DefaultVerificationEarlyInterval = 2 * time.Minute
 	DefaultRecommendationStep        = 5 * time.Minute
 	DefaultForecastWindow            = 14 * 24 * time.Hour
@@ -283,6 +288,7 @@ func Load() (Config, error) {
 		{"KUBERIGHT_FORECAST_STEP", DefaultForecastStep, time.Minute, 24 * time.Hour, &cfg.ForecastStep},
 		{"KUBERIGHT_VERIFICATION_INTERVAL", DefaultVerificationInterval, 0, 24 * time.Hour, &cfg.VerificationInterval},
 		{"KUBERIGHT_VERIFICATION_EARLY_INTERVAL", DefaultVerificationEarlyInterval, 0, time.Hour, &cfg.VerificationEarlyInterval},
+		{"KUBERIGHT_DEFAULT_SCAN_INTERVAL", DefaultDefaultScanInterval, 0, 30 * 24 * time.Hour, &cfg.DefaultScanInterval},
 	}
 	for _, item := range durations {
 		value, parseErr := parseDuration(item.name, item.defaultValue, item.minimum, item.maximum)
@@ -324,6 +330,9 @@ func (c Config) Validate() error {
 		}
 	default:
 		return errors.New("KUBERIGHT_AUTH_MODE must be kubernetes, openshift, oidc, or static")
+	}
+	if c.DefaultScanInterval != 0 && c.DefaultScanInterval < 5*time.Minute {
+		return errors.New("KUBERIGHT_DEFAULT_SCAN_INTERVAL must be 0 or at least 5m")
 	}
 	switch c.OperationMode {
 	case ModeObserve, ModeRecommend:

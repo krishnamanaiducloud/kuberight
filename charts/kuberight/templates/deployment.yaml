@@ -172,6 +172,8 @@ spec:
               value: {{ .Values.recommendations.window | quote }}
             - name: KUBERIGHT_RECOMMENDATION_STEP
               value: {{ .Values.recommendations.step | quote }}
+            - name: KUBERIGHT_DEFAULT_SCAN_INTERVAL
+              value: {{ .Values.defaultScanInterval | quote }}
             - name: KUBERIGHT_FORECAST_WINDOW
               value: {{ .Values.forecasting.window | quote }}
             - name: KUBERIGHT_FORECAST_STEP

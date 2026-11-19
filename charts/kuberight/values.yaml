@@ -92,6 +92,12 @@ recommendations:
   window: 168h
   step: 5m
 
+# KubeRight creates a scan schedule with this interval when none exists, so
+# recommendations appear without anyone queueing a scan. It scans every
+# namespace the inventory can see over recommendations.window. "0s" creates
+# none; once any schedule exists, schedules are managed from the dashboard.
+defaultScanInterval: 6h
+
 # Usage lookback and resolution sent to the forecasting service.
 forecasting:
   window: 336h
