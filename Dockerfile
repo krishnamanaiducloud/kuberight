@@ -29,7 +29,24 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     -ldflags="-s -w -X github.com/kuberight/kuberight/internal/httpapi.Version=${VERSION} -X github.com/kuberight/kuberight/internal/httpapi.Commit=${VCS_REF} -X github.com/kuberight/kuberight/internal/httpapi.BuildDate=${BUILD_DATE}" \
     -o /out/kuberight ./cmd/kuberight
 
-FROM gcr.io/distroless/static-debian13:nonroot@sha256:25ac8f0c3b2334a9eb05452266bd4697864a8c8ef0ef71e5e6480d7f92868329
+# Debug variant: the same binary and dashboard on distroless's debug base,
+# which adds a BusyBox shell (/busybox/sh) for troubleshooting, still as a
+# non-root user. Build it only on purpose: docker build --target debug.
+# The production image below has no shell; use it everywhere else.
+FROM gcr.io/distroless/static-debian13:debug-nonroot@sha256:7df9fac2f5d3927260696af33fc2391da26366825838a47337088ed78f854a0c AS debug
+ARG VERSION=dev
+ARG VCS_REF=unknown
+ARG BUILD_DATE=unknown
+LABEL org.opencontainers.image.title="KubeRight (debug)"       org.opencontainers.image.description="KubeRight with a BusyBox shell, for troubleshooting only"       org.opencontainers.image.version="${VERSION}"       org.opencontainers.image.revision="${VCS_REF}"       org.opencontainers.image.created="${BUILD_DATE}"       org.opencontainers.image.source="https://github.com/krishnamanaiducloud/kuberight"       org.opencontainers.image.licenses="Apache-2.0"
+WORKDIR /app
+COPY --from=go-build --chown=65532:65532 /out/kuberight /app/kuberight
+COPY --from=web-build --chown=65532:65532 /app/dist /app/web
+ENV KUBERIGHT_WEB_ROOT=/app/web
+USER 65532:65532
+EXPOSE 8080
+ENTRYPOINT ["/app/kuberight"]
+
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:25ac8f0c3b2334a9eb05452266bd4697864a8c8ef0ef71e5e6480d7f92868329 AS production
 ARG VERSION=dev
 ARG VCS_REF=unknown
 ARG BUILD_DATE=unknown

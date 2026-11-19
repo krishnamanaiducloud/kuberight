@@ -460,6 +460,28 @@ Real infrastructure found 13 defects that unit tests had not caught, and all are
 
 These were functional runs on a small cluster. Accuracy is evaluated separately, on [public production traces](#benchmarks).
 
+## Troubleshooting
+
+**Why is there only one KubeRight pod?** The API, dashboard, recommendation engine, diagnostics, and forecasting all run in one Deployment with one application container (OpenShift adds the oauth-proxy sidecar). There is no separate forecasting or ML service, and no agent or exporter. KubeRight reads the Kubernetes API and an existing Prometheus.
+
+**No recommendations?**
+
+1. Open **Integrations**. Prometheus must be healthy. On OpenShift, KubeRight finds Thanos Querier itself and needs the monitoring permission the OpenShift profile grants (`prometheus.openshiftMonitoring`). Elsewhere, set `prometheus.url`.
+2. Open **Fleet operations**. A default scan runs at startup and every 6 hours (`defaultScanInterval`). A failed scan shows its error there.
+3. A recommendation with the verdict `insufficient_data` names what is missing: usually too little history, replicas without metrics, or a recent restart or rollout. KubeRight holds advice rather than guessing.
+4. A namespace-scoped install sees only its own namespace. Use the cluster-wide manifest or `rbac.scope=cluster` to see every namespace.
+
+**No forecast?** A forecast needs at least 48 samples with no gap longer than three steps, and no fewer samples than the horizon. That is 48 hours for hourly forecasts and 48 days for 30- and 90-day forecasts. The error says how many samples exist. On OpenShift, platform Prometheus keeps 15 days by default.
+
+**A shell for debugging.** The production image has no shell. Build the debug variant, which adds a BusyBox shell (`/busybox/sh`) and still runs as non-root, with `docker build --target debug -t <registry>/kuberight:<version>-debug .`. Then attach it to the running pod without restarting it, or start a copy on OpenShift:
+
+```sh
+kubectl debug -n kuberight -it deploy/kuberight --image=<registry>/kuberight:<version>-debug --target=kuberight -- /busybox/sh
+oc debug -n kuberight deploy/kuberight --image=<registry>/kuberight:<version>-debug -- /busybox/sh
+```
+
+Ephemeral containers need permission to update `pods/ephemeralcontainers`. Never run the debug image as the regular Deployment.
+
 ## Repository map
 
 | Path | Purpose |
