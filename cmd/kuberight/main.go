@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -110,6 +111,10 @@ func main() {
 			os.Exit(1)
 		}
 		dependencies.Forecaster = client
+	} else {
+		// The built-in engine forecasts inside this process; it is bounded
+		// so forecasting cannot take every CPU the API has.
+		dependencies.Forecaster = forecast.NewEngine(max(2, runtime.GOMAXPROCS(0)))
 	}
 	// webhook is the notifier to close at shutdown: the in-memory queue, or
 	// the durable outbox dispatcher with the PostgreSQL store.

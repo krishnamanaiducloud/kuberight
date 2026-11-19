@@ -111,11 +111,13 @@ type BacktestRequest struct {
 
 // Score summarizes forecast errors against what actually happened.
 type Score struct {
-	Samples           int      `json:"samples"`
-	MAE               float64  `json:"mae"`
-	RMSE              float64  `json:"rmse"`
-	SMAPE             float64  `json:"smape"`
-	MAPE              *float64 `json:"mape"`
+	Samples int      `json:"samples"`
+	MAE     float64  `json:"mae"`
+	RMSE    float64  `json:"rmse"`
+	SMAPE   float64  `json:"smape"`
+	MAPE    *float64 `json:"mape"`
+	// WAPE is the total absolute error over the total actual value.
+	WAPE              *float64 `json:"wape,omitempty"`
 	Coverage          float64  `json:"coverage"`
 	MeanIntervalWidth float64  `json:"meanIntervalWidth"`
 	BaselineMAE       float64  `json:"baselineMAE"`
