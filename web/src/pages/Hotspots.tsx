@@ -12,6 +12,7 @@ import WarningAmberOutlined from '@mui/icons-material/WarningAmberOutlined'
 import { api, type ApiStatus, type HotspotRow, type Subject } from '../api'
 import { statusColors } from '../chartColors'
 import { GenerateDialog } from '../components/GenerateDialog'
+import { NamespaceSelect } from '../components/NamespaceSelect'
 import { RequestAlert } from '../components/RequestAlert'
 import { formatMillicores } from '../format'
 import { PageHeader } from './PageHeader'
@@ -51,8 +52,6 @@ export function Hotspots({ title, description }: { title: string; description: s
   const usageWindow = windows.some((option) => option.value === requestedWindow) ? requestedWindow : '24h'
   const namespace = searchParams.get('namespace') ?? ''
   const allNamespaces = searchParams.get('scope') === 'all'
-  const namespaceDraft = searchParams.get('namespaceDraft') ?? namespace
-  const validNamespace = namespaceDraft === '' || (namespaceDraft.length <= 63 && /^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/.test(namespaceDraft))
   const scopeReady = namespace !== '' || allNamespaces
   const [generateFor, setGenerateFor] = useState<Subject>()
   const query = useQuery({
@@ -62,47 +61,33 @@ export function Hotspots({ title, description }: { title: string; description: s
     retry: false,
   })
   const data = query.data
-  const updateScope = (fleetWide = false) => {
-    if (!fleetWide && (!namespaceDraft || !validNamespace)) return
+  const updateScope = (selectedNamespace?: string, fleetWide = false) => {
     setSearchParams((current) => {
       const next = new URLSearchParams(current)
       if (fleetWide) {
         next.delete('namespace')
-        next.delete('namespaceDraft')
         next.set('scope', 'all')
+      } else if (selectedNamespace) {
+        next.set('namespace', selectedNamespace)
+        next.delete('scope')
       } else {
-        next.set('namespace', namespaceDraft)
-        next.delete('namespaceDraft')
+        next.delete('namespace')
         next.delete('scope')
       }
       return next
-    })
+    }, { replace: true })
   }
   return (
     <Box sx={{ p: { xs: 2, md: 4 }, maxWidth: 1500, mx: 'auto' }}>
       <PageHeader eyebrow="CPU HEALTH" title={title} description={description}>
         <Stack direction={{ xs: 'column', sm: 'row' }} gap={1.5} sx={{ mt: 2 }}>
-          <TextField
-            size="small"
-            label="Namespace"
-            value={namespaceDraft}
-            onChange={(event) => {
-              const value = event.target.value.trim().toLowerCase()
-              setSearchParams((current) => {
-                const next = new URLSearchParams(current)
-                if (value === namespace) next.delete('namespaceDraft')
-                else next.set('namespaceDraft', value)
-                return next
-              }, { replace: true })
-            }}
-            onKeyDown={(event) => { if (event.key === 'Enter') updateScope() }}
-            error={!validNamespace}
-            helperText={!validNamespace ? 'Use a DNS-1123 namespace name.' : namespace ? `Scoped to ${namespace}` : allNamespaces ? 'All visible namespaces selected.' : 'Required before querying workloads.'}
-            inputProps={{ maxLength: 63 }}
+          <NamespaceSelect
+            value={namespace}
+            onChange={(selectedNamespace) => updateScope(selectedNamespace)}
+            helperText={namespace ? `Scoped to ${namespace}` : allNamespaces ? 'All visible namespaces selected.' : 'Choose from live inventory.'}
             sx={{ minWidth: 220 }}
           />
-          <Button variant="contained" onClick={() => updateScope()} disabled={!namespaceDraft || !validNamespace}>Apply</Button>
-          <Button variant="outlined" onClick={() => updateScope(true)}>All visible</Button>
+          <Button variant="outlined" onClick={() => updateScope(undefined, true)}>All visible</Button>
           <TextField select size="small" label="Window" value={usageWindow} onChange={(event) => {
             setSearchParams((current) => {
               const next = new URLSearchParams(current)

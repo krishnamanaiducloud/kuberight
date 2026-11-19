@@ -3,6 +3,10 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { vi } from 'vitest'
 import { Fleet } from './Fleet'
+import { chooseOption, namespacePage } from '../test/autocomplete'
+
+// Choosing from live-inventory dropdowns takes several seconds in jsdom.
+const dropdownTimeout = 15_000
 
 describe('Fleet', () => {
   afterEach(() => vi.unstubAllGlobals())
@@ -11,6 +15,9 @@ describe('Fleet', () => {
     const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
       if (init?.method === 'POST') {
         return { ok: true, status: 202, headers: new Headers(), json: async () => ({ id: 'fsn_created', status: 'queued' }) }
+      }
+      if (url.includes('/api/v1/namespaces')) {
+        return { ok: true, status: 200, headers: new Headers(), json: async () => namespacePage('payments', 'shop') }
       }
       if (url.includes('/fleet/schedules')) {
         return {
@@ -38,7 +45,8 @@ describe('Fleet', () => {
     expect(screen.getByText('one target unavailable')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'New scan' }))
-    fireEvent.change(screen.getByLabelText('Namespace (optional)'), { target: { value: 'payments' } })
+    // The namespace comes from live inventory, not free text.
+    await chooseOption(screen.getByRole('combobox', { name: 'Namespace (optional)' }), 'payments', 'pay')
     fireEvent.click(screen.getByRole('button', { name: 'Queue scan' }))
 
     await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(true))
@@ -46,5 +54,5 @@ describe('Fleet', () => {
     expect(call[0]).toBe('/api/v1/fleet/scans')
     expect(JSON.parse(call[1].body)).toMatchObject({ scope: { namespaces: ['payments'] }, windowSeconds: 604_800, maxAttempts: 3 })
     expect(new Headers(call[1].headers).get('Idempotency-Key')).toMatch(/^ui-/)
-  })
+  }, dropdownTimeout)
 })

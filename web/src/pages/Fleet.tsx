@@ -10,6 +10,7 @@ import PauseCircleOutline from '@mui/icons-material/PauseCircleOutline'
 import PlayCircleOutline from '@mui/icons-material/PlayCircleOutline'
 import RefreshIcon from '@mui/icons-material/Refresh'
 import { api, newIdempotencyKey, type ApiStatus } from '../api'
+import { NamespaceSelect } from '../components/NamespaceSelect'
 import { RequestAlert } from '../components/RequestAlert'
 
 type FleetSchedule = {
@@ -110,7 +111,6 @@ function ScanDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
       onClose()
     },
   })
-  const validNamespace = namespace === '' || /^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/.test(namespace)
   return (
     <Dialog open={open} onClose={mutation.isPending ? undefined : onClose} fullWidth maxWidth="sm">
       <DialogTitle>Queue an evidence scan</DialogTitle>
@@ -118,13 +118,12 @@ function ScanDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
         <Stack gap={2} sx={{ pt: 1 }}>
           <Alert severity="info">The scan reads Kubernetes and Prometheus evidence and creates recommendations. It never changes workloads.</Alert>
           {mutation.error && <RequestAlert error={mutation.error} resource="fleet scan" />}
-          <TextField
+          <NamespaceSelect
             label="Namespace (optional)"
             value={namespace}
-            onChange={(event) => setNamespace(event.target.value.trim().toLowerCase())}
-            error={!validNamespace}
-            helperText={validNamespace ? 'Leave empty only when you intend to scan every namespace your identity can access.' : 'Use a valid Kubernetes namespace.'}
-            inputProps={{ maxLength: 63 }}
+            onChange={setNamespace}
+            helperText="Leave empty only when you intend to scan every namespace your identity can access."
+            size="medium"
           />
           <TextField select label="Evidence window" value={windowDays} onChange={(event) => setWindowDays(Number(event.target.value))}>
             {[1, 3, 7, 14, 30].map((days) => <MenuItem key={days} value={days}>{days} day{days === 1 ? '' : 's'}</MenuItem>)}
@@ -136,7 +135,7 @@ function ScanDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose} disabled={mutation.isPending}>Cancel</Button>
-        <Button variant="contained" onClick={() => mutation.mutate()} disabled={!validNamespace || mutation.isPending} startIcon={<AddTaskOutlined />}>
+        <Button variant="contained" onClick={() => mutation.mutate()} disabled={mutation.isPending} startIcon={<AddTaskOutlined />}>
           {mutation.isPending ? 'Queueing…' : 'Queue scan'}
         </Button>
       </DialogActions>

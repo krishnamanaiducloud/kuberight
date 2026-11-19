@@ -10,6 +10,7 @@ import SearchIcon from '@mui/icons-material/Search'
 import RefreshIcon from '@mui/icons-material/Refresh'
 import { api, ApiError, type ApiRecord, type CollectionEnvelope } from '../api'
 import { formatCell } from '../format'
+import { NamespaceSelect } from './NamespaceSelect'
 import { RequestAlert } from './RequestAlert'
 
 const preferredColumns = ['name', 'cluster', 'namespace', 'kind', 'workload', 'container', 'resource', 'current', 'recommended', 'confidence', 'risk', 'source', 'status', 'health', 'updatedAt', 'createdAt']
@@ -63,8 +64,6 @@ type DataPageProps = {
   selection?: { selected: ReadonlySet<string>; onChange: (next: Set<string>) => void; isSelectable?: (item: ApiRecord) => boolean }
 }
 
-const dns1123Label = /^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/
-
 export function DataPage({ title, description, endpoint, columnKeys, actions, children, onRowClick, hideSort, namespaceScope, customColumns, selection }: DataPageProps) {
   const recommendationPage = endpoint.startsWith('/api/v1/recommendations') || endpoint.startsWith('/api/v1/approvals')
   const [searchParams, setSearchParams] = useSearchParams()
@@ -78,8 +77,6 @@ export function DataPage({ title, description, endpoint, columnKeys, actions, ch
   const page = Number.isSafeInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1
   const namespace = searchParams.get('namespace') ?? ''
   const allNamespaces = searchParams.get('scope') === 'all'
-  const namespaceDraft = searchParams.get('namespaceDraft') ?? namespace
-  const invalidNamespace = namespaceDraft !== '' && (namespaceDraft.length > 63 || !dns1123Label.test(namespaceDraft))
   const scopeReady = namespaceScope !== 'required' || namespace !== '' || allNamespaces
   const pageSize = 25
   const queryParameters = new URLSearchParams()
@@ -113,23 +110,25 @@ export function DataPage({ title, description, endpoint, columnKeys, actions, ch
     }, { replace: true })
   }
 
-  const applyNamespace = () => {
-    if (invalidNamespace || namespaceDraft === '') return
+  const selectNamespace = (selectedNamespace: string) => {
     setSearchParams((current) => {
       const next = new URLSearchParams(current)
-      next.set('namespace', namespaceDraft)
-      next.delete('namespaceDraft')
-      next.delete('scope')
+      if (selectedNamespace) {
+        next.set('namespace', selectedNamespace)
+        next.delete('scope')
+      } else {
+        next.delete('namespace')
+        next.delete('scope')
+      }
       next.delete('page')
       return next
-    })
+    }, { replace: true })
   }
 
   const applyFleetScope = () => {
     setSearchParams((current) => {
       const next = new URLSearchParams(current)
       next.delete('namespace')
-      next.delete('namespaceDraft')
       next.set('scope', 'all')
       next.delete('page')
       return next
@@ -160,29 +159,13 @@ export function DataPage({ title, description, endpoint, columnKeys, actions, ch
                 <Typography variant="subtitle2">Kubernetes namespace scope</Typography>
                 <Typography variant="body2" color="text.secondary">Start with the smallest scope your identity can access. Fleet-wide listing is always an explicit choice.</Typography>
               </Box>
-              <TextField
-                size="small"
-                label="Namespace"
-                value={namespaceDraft}
-                onChange={(event) => {
-                  const value = event.target.value.trim().toLowerCase()
-                  setSearchParams((current) => {
-                    const next = new URLSearchParams(current)
-                    if (value === namespace) next.delete('namespaceDraft')
-                    else next.set('namespaceDraft', value)
-                    return next
-                  }, { replace: true })
-                }}
-                onKeyDown={(event) => { if (event.key === 'Enter') applyNamespace() }}
-                error={invalidNamespace}
-                helperText={invalidNamespace ? 'Use a DNS-1123 namespace name.' : namespace ? `Scoped to ${namespace}` : allNamespaces ? 'All visible namespaces selected.' : 'No request sent yet.'}
-                inputProps={{ maxLength: 63, 'aria-label': 'Kubernetes namespace' }}
+              <NamespaceSelect
+                value={namespace}
+                onChange={selectNamespace}
+                helperText={namespace ? `Scoped to ${namespace}` : allNamespaces ? 'All visible namespaces selected.' : 'Choose from live inventory.'}
                 sx={{ minWidth: { md: 260 } }}
               />
-              <Stack direction="row" gap={1}>
-                <Button variant="contained" onClick={applyNamespace} disabled={invalidNamespace || namespaceDraft === ''}>Apply namespace</Button>
-                <Button variant="outlined" onClick={applyFleetScope}>All visible</Button>
-              </Stack>
+              <Button variant="outlined" onClick={applyFleetScope}>All visible</Button>
             </Stack>
           </CardContent>
         </Card>

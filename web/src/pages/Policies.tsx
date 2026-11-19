@@ -6,10 +6,12 @@ import {
 } from '@mui/material'
 import AddOutlined from '@mui/icons-material/AddOutlined'
 import {
-  api, type Policy, type PolicyLevel, type PolicyListItem, type PolicyProfile, type PolicyRecord, type PolicyResolution, type PolicyScope,
+  api, type Policy, type PolicyLevel, type PolicyListItem, type PolicyProfile, type PolicyRecord, type PolicyResolution, type PolicyScope, type Subject,
 } from '../api'
+import { NamespaceSelect } from '../components/NamespaceSelect'
 import { PolicyTuner } from '../components/PolicyTuner'
 import { RequestAlert } from '../components/RequestAlert'
+import { WorkloadPicker } from '../components/WorkloadPicker'
 import { formatDate, scopeLabel } from '../format'
 import { PageHeader } from './PageHeader'
 
@@ -80,7 +82,7 @@ function PolicyEditor({ record, profiles, onClose }: { record?: PolicyRecord; pr
           </Stack>
           {level !== 'global' && (
             <Stack direction={{ xs: 'column', sm: 'row' }} gap={1.5}>
-              <TextField label="Namespace" size="small" fullWidth required value={draft.scope.namespace ?? ''} onChange={(event) => updateScope({ namespace: event.target.value })} />
+              <NamespaceSelect fullWidth required value={draft.scope.namespace ?? ''} onChange={(namespace) => updateScope({ namespace })} />
               {(level === 'workload' || level === 'container') && (
                 <>
                   <TextField select label="Kind" size="small" fullWidth required value={draft.scope.kind ?? ''} onChange={(event) => updateScope({ kind: event.target.value })}>
@@ -110,9 +112,8 @@ function PolicyEditor({ record, profiles, onClose }: { record?: PolicyRecord; pr
 }
 
 function EffectivePolicy() {
-  const [subject, setSubject] = useState({ namespace: '', kind: 'Deployment', workload: '', container: '' })
-  const resolve = useMutation({ mutationFn: () => api.post<PolicyResolution>('/api/v1/policies:resolve', subject) })
-  const ready = Boolean(subject.namespace && subject.kind && subject.workload && subject.container)
+  const [subject, setSubject] = useState<Subject>()
+  const resolve = useMutation({ mutationFn: () => api.post<PolicyResolution>('/api/v1/policies:resolve', subject!) })
   const result = resolve.data
   return (
     <Card>
@@ -121,15 +122,8 @@ function EffectivePolicy() {
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
           Which policy a container gets: container, then workload, namespace, and global scope; a cluster-specific scope wins at the same level, then higher priority.
         </Typography>
-        <Stack direction={{ xs: 'column', md: 'row' }} gap={1.5}>
-          <TextField label="Namespace" size="small" fullWidth value={subject.namespace} onChange={(event) => setSubject({ ...subject, namespace: event.target.value })} />
-          <TextField select label="Kind" size="small" fullWidth value={subject.kind} onChange={(event) => setSubject({ ...subject, kind: event.target.value })}>
-            {kinds.map((kind) => <MenuItem key={kind} value={kind}>{kind}</MenuItem>)}
-          </TextField>
-          <TextField label="Workload" size="small" fullWidth value={subject.workload} onChange={(event) => setSubject({ ...subject, workload: event.target.value })} />
-          <TextField label="Container" size="small" fullWidth value={subject.container} onChange={(event) => setSubject({ ...subject, container: event.target.value })} />
-          <Button variant="outlined" onClick={() => resolve.mutate()} disabled={!ready || resolve.isPending} sx={{ flexShrink: 0 }}>Resolve</Button>
-        </Stack>
+        <WorkloadPicker value={subject} onChange={setSubject} />
+        <Button variant="outlined" onClick={() => resolve.mutate()} disabled={!subject || resolve.isPending} sx={{ mt: 1.5 }}>Resolve</Button>
         {resolve.error && <Box sx={{ mt: 1.5 }}><RequestAlert error={resolve.error} resource="the effective policy" /></Box>}
         {result && (
           <Box sx={{ mt: 1.5 }} aria-label="Resolution">
