@@ -2,7 +2,8 @@
 
 - Candidate: `v0.1.0-rc.4` (pending)
 - Branch: `fix/release-rc4`
-- Status: release candidate; see [production readiness](PRODUCTION-READINESS.md) (91/100)
+- Status: release candidate; see [production readiness](PRODUCTION-READINESS.md) (90/100)
+- Unreleased branch `feat/standalone-read-only`: read-only, one application Deployment, built-in forecasting. Verified locally only (below); not pushed or run in CI.
 
 ## CI on the candidate pull request
 
@@ -40,8 +41,21 @@ The immutable `v0.1.0-rc.3` tag is retained as a failed release attempt. Its rel
 | pip-audit | No known vulnerabilities |
 | npm audit (high) | Pass; nine moderate advisories in lint-only development dependencies |
 | Gitleaks over the full history | No leaks |
-| Trivy (HIGH/CRITICAL) on backend, ML, and oauth2-proxy images | 0 findings |
+| Trivy (HIGH/CRITICAL) on backend, ML, and oauth2-proxy images (rc.4; the ML image no longer exists) | 0 findings |
 | Multi-architecture build, SBOM, cosign sign/attest/verify (local registry) | Pass |
+
+## Local evidence on `feat/standalone-read-only` (2026-11-19)
+
+| Gate | Result |
+| --- | --- |
+| Go formatting, vet, race tests with PostgreSQL 18.7 (schema version 8) | Pass, 16 packages |
+| Dashboard typecheck, lint, unit tests | Pass; 57 tests |
+| OpenAPI | Valid; 53 operations in parity; no breaking `/api/v1` change since `v0.1.0-rc.4` |
+| Helm lint (every profile), standalone manifests, kubeconform | Pass; 45 resources valid, 2 skipped (Route, ServiceMonitor) |
+| Alert rules and dashboard queries in promtool | Pass |
+| Forecast backtest on 188 Bitbrains VMs | 90% intervals cover 92.3% (CPU) and 92.4% (memory) |
+| Live read-only install on kind (Kubernetes 1.35.1) | One Deployment; write permissions absent; default scan produced 19 recommendations; diagnostics reported an OOM kill, an image pull error, an unschedulable pod, and repeated restarts; in-cluster forecasts |
+| OpenShift | Not tested on OpenShift |
 
 ## Pending repository evidence
 
