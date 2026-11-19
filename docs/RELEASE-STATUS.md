@@ -49,7 +49,7 @@ The immutable `v0.1.0-rc.3` tag is retained as a failed release attempt. Its rel
 | Gate | Result |
 | --- | --- |
 | Go formatting, vet, race tests with PostgreSQL 18.7 (schema version 8) | Pass, 16 packages |
-| Dashboard typecheck, lint, unit tests | Pass; 57 tests |
+| Dashboard typecheck, lint, unit tests | Pass; 60 tests |
 | OpenAPI | Valid; 53 operations in parity; no breaking `/api/v1` change since `v0.1.0-rc.4` |
 | Helm lint (every profile), standalone manifests, kubeconform | Pass; 45 resources valid, 2 skipped (Route, ServiceMonitor) |
 | Alert rules and dashboard queries in promtool | Pass |
