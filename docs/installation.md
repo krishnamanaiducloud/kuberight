@@ -181,6 +181,35 @@ helm upgrade --install kuberight charts/kuberight -n kuberight --create-namespac
   --set-string image.digest='sha256:<verified-backend-digest>'
 ```
 
+The OpenShift profile keeps the least-privilege, namespace-scoped inventory
+default. To discover workloads across every namespace, combine it with the
+cluster-wide read-only profile:
+
+```sh
+helm template kuberight charts/kuberight -n kuberight \
+  -f charts/kuberight/profiles/openshift.yaml \
+  -f charts/kuberight/profiles/cluster-wide.yaml \
+  > /tmp/kuberight-openshift-cluster-wide.yaml
+oc apply --server-side --dry-run=server \
+  -f /tmp/kuberight-openshift-cluster-wide.yaml
+helm upgrade --install kuberight charts/kuberight -n kuberight --create-namespace \
+  -f charts/kuberight/profiles/openshift.yaml \
+  -f charts/kuberight/profiles/cluster-wide.yaml \
+  --set-string image.digest='sha256:<verified-backend-digest>'
+```
+
+This grants cluster-wide read-only inventory access and does not enable apply
+mode. Confirm it and the all-namespaces workload permissions:
+
+```sh
+oc auth can-i \
+  --as=system:serviceaccount:kuberight:kuberight \
+  list namespaces
+oc auth can-i \
+  --as=system:serviceaccount:kuberight:kuberight \
+  list deployments.apps --all-namespaces
+```
+
 EKS, AKS, and GKE use the standard chart; there are no provider-specific integrations or completed provider certification tests. Supply the platform's ingress class, DNS/TLS, storage class, registry authentication, NetworkPolicy rules, and monitoring labels. Cloud workload identity is not a replacement for the in-cluster service-account token used with the Kubernetes API.
 
 ## Standalone manifests
@@ -192,7 +221,21 @@ kubectl apply --server-side --dry-run=server -f deploy/manifests/kuberight.yaml
 kubectl apply --server-side -f deploy/manifests/kuberight.yaml
 ```
 
-The production manifest does not include Prometheus Operator resources by default. The OpenShift manifest needs the Route API.
+For cluster-wide read-only inventory on OpenShift:
+
+```sh
+oc apply --server-side --dry-run=server \
+  -f deploy/manifests/kuberight-openshift-cluster-wide.yaml
+oc apply --server-side \
+  -f deploy/manifests/kuberight-openshift-cluster-wide.yaml
+oc rollout status deployment/kuberight -n kuberight
+```
+
+The production manifest does not include Prometheus Operator resources by
+default. Both OpenShift manifests need the Route API. Use
+`kuberight-openshift.yaml` for namespace-scoped inventory or
+`kuberight-openshift-cluster-wide.yaml` for read-only inventory across all
+namespaces.
 
 ## Upgrade, rollback, and removal
 

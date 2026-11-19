@@ -233,6 +233,10 @@ jobs:
           helm template kuberight charts/kuberight --namespace kuberight -f charts/kuberight/profiles/development.yaml > /tmp/rendered/development.yaml
           helm template kuberight charts/kuberight --namespace kuberight -f charts/kuberight/profiles/production.yaml > /tmp/rendered/production.yaml
           helm template kuberight charts/kuberight --namespace kuberight -f charts/kuberight/profiles/openshift.yaml > /tmp/rendered/openshift.yaml
+          helm template kuberight charts/kuberight --namespace kuberight \
+            -f charts/kuberight/profiles/openshift.yaml \
+            -f charts/kuberight/profiles/cluster-wide.yaml \
+            > /tmp/rendered/openshift-cluster-wide.yaml
           helm template kuberight charts/kuberight --namespace kuberight -f charts/kuberight/profiles/cluster-wide.yaml > /tmp/rendered/cluster-wide.yaml
           helm template kuberight charts/kuberight --namespace kuberight \
             --set ml.enabled=true \
@@ -290,7 +294,8 @@ jobs:
           docker run --rm -v /tmp/rendered:/manifests:ro \
             ghcr.io/yannh/kubeconform:v0.8.0@sha256:faffaf43f95aa6425306e1ab8d6fcad72acb9049158f38e574c085ea1ec0f64e \
             -strict -summary -ignore-missing-schemas -kubernetes-version 1.35.0 \
-            /manifests/production.yaml /manifests/openshift.yaml
+            /manifests/production.yaml /manifests/openshift.yaml \
+            /manifests/openshift-cluster-wide.yaml
       - uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
         with:
           cluster_name: kuberight-schema

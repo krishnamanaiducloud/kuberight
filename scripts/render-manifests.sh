@@ -5,8 +5,9 @@ usage() {
   cat <<'EOF'
 Usage: scripts/render-manifests.sh [--check] [--namespace NAME]
 
-Renders deterministic default, production, and OpenShift standalone manifests
-from the Helm chart. --check exits non-zero when committed output is stale.
+Renders deterministic default, production, OpenShift, and cluster-wide OpenShift
+standalone manifests from the Helm chart. --check exits non-zero when committed
+output is stale.
 EOF
 }
 
@@ -49,6 +50,9 @@ render() {
 render kuberight
 render kuberight-production -f "$chart/profiles/production.yaml"
 render kuberight-openshift -f "$chart/profiles/openshift.yaml"
+render kuberight-openshift-cluster-wide \
+  -f "$chart/profiles/openshift.yaml" \
+  -f "$chart/profiles/cluster-wide.yaml"
 
 if $check; then
   status=0
