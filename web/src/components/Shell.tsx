@@ -59,7 +59,7 @@ export function Shell({ children }: { children: ReactNode }) {
       <Divider />
       <List component="nav" aria-label="Primary navigation" sx={{ px: 1.25, py: 1.5, overflowY: 'auto' }}>
         {navigation.map((item) => {
-          const active = item.path === '/' ? location.pathname === '/' : location.pathname === item.path || location.pathname.startsWith(`${item.path}/`)
+          const active = location.pathname === item.path || location.pathname.startsWith(`${item.path}/`)
           return (
             <ListItemButton
               key={item.path}

@@ -12,8 +12,11 @@ export function App() {
     <Shell>
       <RouteErrorBoundary resetKey={location.pathname}>
         <Routes>
-          <Route path="/" element={<Overview />} />
-          {navigation.filter((item) => item.path !== '/').map((item) => (
+          {/* Recommendations are the landing view; the overview has its own route. */}
+          <Route path="/" element={<Navigate to="/recommendations/cpu" replace />} />
+          <Route path="/recommendations" element={<Navigate to="/recommendations/cpu" replace />} />
+          <Route path="/overview" element={<Overview />} />
+          {navigation.filter((item) => item.path !== '/overview').map((item) => (
             <Route key={item.path} path={item.path} element={item.render ? item.render(item) : <DataPage key={item.path} title={item.label} description={item.description} endpoint={item.endpoint!} columnKeys={item.columnKeys} />} />
           ))}
           <Route path="/workloads/:namespace/:kind/:name" element={<WorkloadDetail />} />

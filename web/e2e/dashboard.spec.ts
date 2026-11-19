@@ -169,9 +169,17 @@ test.beforeEach(async ({ page }) => {
   await mockControlPlane(page)
 })
 
-test('renders verified fleet posture without browser or accessibility failures', async ({ page }, testInfo) => {
+test('opens on CPU recommendations', async ({ page }) => {
   const failures = captureRuntimeFailures(page)
   await page.goto('/')
+  await expect(page).toHaveURL(/\/recommendations\/cpu$/)
+  await expect(page.getByRole('heading', { level: 1, name: 'CPU recommendations' })).toBeVisible()
+  expect(failures).toEqual([])
+})
+
+test('renders verified fleet posture without browser or accessibility failures', async ({ page }, testInfo) => {
+  const failures = captureRuntimeFailures(page)
+  await page.goto('/overview')
   await expect(page.getByRole('heading', { level: 1, name: 'Rightsize with evidence, not instinct.' })).toBeVisible()
   await expect(page.getByText('148')).toBeVisible()
   await expect(page.getByText('7')).toBeVisible()
@@ -235,7 +243,7 @@ test('keeps primary navigation usable at desktop and mobile widths', async ({ pa
 
 // Every primary view, audited against WCAG 2.0/2.1 A and AA at desktop and
 // mobile widths with the mocked control plane.
-const auditedRoutes = ['/', '/efficiency', '/hotspots', '/health', '/clusters', '/namespaces', '/workloads', '/utilization', '/correlation',
+const auditedRoutes = ['/overview', '/efficiency', '/hotspots', '/health', '/clusters', '/namespaces', '/workloads', '/utilization', '/correlation',
   '/recommendations/cpu', '/recommendations/memory', '/approvals', '/fleet', '/savings', '/forecasting',
   '/autoscalers', '/policies', '/gitops', '/audit', '/settings']
 
