@@ -3910,6 +3910,30 @@ components:
           $ref: "#/components/schemas/Pagination"
         status:
           $ref: "#/components/schemas/Availability"
+        metricCoverage:
+          type: array
+          description: >-
+            Which metric families KubeRight reads are present in Prometheus, counted over the last
+            10 minutes. Absent when Prometheus is not configured. Missing metrics are reported as
+            unavailable and never treated as zero usage.
+          items:
+            $ref: "#/components/schemas/MetricCoverage"
+
+    MetricCoverage:
+      type: object
+      additionalProperties: false
+      required: [signal, metric, source, state, series, usedFor]
+      properties:
+        signal: { type: string, examples: ["CPU throttling"] }
+        metric: { type: string, examples: ["container_cpu_cfs_throttled_periods_total"] }
+        source: { type: string, description: The exporter expected to provide the metric., examples: ["cAdvisor (kubelet)"] }
+        state:
+          type: string
+          enum: [available, unavailable, unknown]
+          description: unknown means Prometheus did not answer in time or the series cannot be seen with this access scope.
+        series: { type: integer, minimum: 0, description: Series scraped in the last 10 minutes. }
+        usedFor: { type: string, description: The KubeRight features that depend on the metric. }
+        note: { type: string, description: A limit on what the count covers, such as namespace-scoped access. }
 
     PullRequestResult:
       type: object

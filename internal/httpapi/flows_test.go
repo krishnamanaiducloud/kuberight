@@ -989,3 +989,42 @@ func TestForecastReachesThirtyAndNinetyDaysWithDailySteps(t *testing.T) {
 		t.Fatalf("short daily history: status=%d body=%s", response.Code, response.Body.String())
 	}
 }
+
+type coverageUsage struct {
+	*fakeUsage
+	coverage []usage.MetricCoverage
+}
+
+func (source coverageUsage) MetricCoverage(context.Context) []usage.MetricCoverage {
+	return append([]usage.MetricCoverage(nil), source.coverage...)
+}
+
+func TestIntegrationsReportMetricCoverage(t *testing.T) {
+	rows := []usage.MetricCoverage{
+		{Signal: "CPU usage", Metric: "container_cpu_usage_seconds_total", State: usage.CoverageAvailable, Series: 40},
+		{Signal: "Node conditions", Metric: "kube_node_status_condition", State: usage.CoverageUnavailable},
+	}
+	api := newTestAPI(t, nil, Dependencies{Usage: coverageUsage{fakeUsage: healthyUsage(600), coverage: rows}})
+	_, body := api.do(t, http.MethodGet, "/api/v1/settings/integrations", "alice", "")
+	coverage, ok := body["metricCoverage"].([]any)
+	if !ok || len(coverage) != 2 || coverage[1].(map[string]any)["state"] != "unavailable" || coverage[0].(map[string]any)["series"] != float64(40) {
+		t.Fatalf("metric coverage = %v", body["metricCoverage"])
+	}
+
+	// Through namespace-scoped access, absent node series are unknown, not missing.
+	api = newTestAPI(t, func(cfg *config.Config) {
+		cfg.PrometheusURL = "https://thanos-querier.openshift-monitoring.svc:9092"
+		cfg.PrometheusTenantNamespace = "shop"
+	}, Dependencies{Usage: coverageUsage{fakeUsage: healthyUsage(600), coverage: rows}})
+	_, body = api.do(t, http.MethodGet, "/api/v1/settings/integrations", "alice", "")
+	node := body["metricCoverage"].([]any)[1].(map[string]any)
+	if node["state"] != "unknown" || !strings.Contains(node["note"].(string), "namespace-scoped") {
+		t.Fatalf("node coverage through tenancy = %v", node)
+	}
+
+	// Without a coverage-capable source, the field is absent, not empty.
+	api = newTestAPI(t, nil, Dependencies{})
+	if _, body = api.do(t, http.MethodGet, "/api/v1/settings/integrations", "alice", ""); body["metricCoverage"] != nil {
+		t.Fatalf("coverage without Prometheus = %v", body["metricCoverage"])
+	}
+}

@@ -39,7 +39,8 @@ KubeRight is a Kubernetes resource-inventory and right-sizing project. It is a s
   - A development-only static token.
 - Every request is authorized with `SubjectAccessReview`. Verified identities and decisions are cached briefly; see [Single sign-on](#single-sign-on).
 - [GitOps pull requests](#gitops-pull-requests): an approved recommendation can be proposed as a pull request (GitHub, Gitea/Forgejo) or merge request (GitLab) that edits the workload's manifest.
-- A dashboard backed by the versioned Go API. It passes an automated WCAG 2.1 AA audit on every view. Views whose integrations are unavailable display that state instead of fabricated data.
+- A dashboard backed by the versioned Go API. It opens on CPU recommendations; the fleet overview is at `/overview`. It passes an automated WCAG 2.1 AA audit on every view. Views whose integrations are unavailable display that state instead of fabricated data.
+- Prometheus metric coverage on the Integrations page: whether CPU usage, memory usage, CPU throttling, kube-state-metrics, and node condition series are present, counted over the last 10 minutes, and which features need each. Missing metrics are reported as missing, never treated as zero.
 - Secure-by-default workload settings in a Helm chart, plus development, production-shaped, OpenShift, and cluster-wide rendering profiles.
 
 KubeRight does **not**:
@@ -466,7 +467,7 @@ These were functional runs on a small cluster. Accuracy is evaluated separately,
 
 **No recommendations?**
 
-1. Open **Integrations**. Prometheus must be healthy. On OpenShift, KubeRight finds Thanos Querier itself and needs the monitoring permission the OpenShift profile grants (`prometheus.openshiftMonitoring`). Elsewhere, set `prometheus.url`.
+1. Open **Integrations**. Prometheus must be healthy, and **Prometheus metric coverage** must show CPU usage, memory usage, and kube-state-metrics as available: without kube-state-metrics, usage cannot be attributed to workloads. On OpenShift, KubeRight finds Thanos Querier itself and needs the monitoring permission the OpenShift profile grants (`prometheus.openshiftMonitoring`). Elsewhere, set `prometheus.url`.
 2. Open **Fleet operations**. A default scan runs at startup and every 6 hours (`defaultScanInterval`). A failed scan shows its error there.
 3. A recommendation with the verdict `insufficient_data` names what is missing: usually too little history, replicas without metrics, or a recent restart or rollout. KubeRight holds advice rather than guessing.
 4. A namespace-scoped install sees only its own namespace. Use the cluster-wide manifest or `rbac.scope=cluster` to see every namespace.

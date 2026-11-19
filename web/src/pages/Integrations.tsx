@@ -1,9 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
-import { Alert, Box, Card, CardContent, Chip, Skeleton, Stack, Typography } from '@mui/material'
+import { Alert, Box, Card, CardContent, Chip, Divider, Skeleton, Stack, Typography } from '@mui/material'
 import CheckCircleOutline from '@mui/icons-material/CheckCircleOutline'
 import ErrorOutline from '@mui/icons-material/ErrorOutline'
 import RemoveCircleOutline from '@mui/icons-material/RemoveCircleOutline'
-import { api, ApiError, type DependencyStatus } from '../api'
+import HelpOutline from '@mui/icons-material/HelpOutline'
+import { api, ApiError, type DependencyStatus, type MetricCoverage } from '../api'
 import { PageHeader } from './PageHeader'
 
 function state(dependency: DependencyStatus) {
@@ -12,10 +13,50 @@ function state(dependency: DependencyStatus) {
   return { label: 'Unavailable', color: dependency.critical ? 'error' as const : 'warning' as const, icon: <ErrorOutline fontSize="small" /> }
 }
 
+function coverageState(item: MetricCoverage) {
+  if (item.state === 'available') return { label: 'Available', color: 'success' as const, icon: <CheckCircleOutline fontSize="small" /> }
+  if (item.state === 'unavailable') return { label: 'Missing', color: 'warning' as const, icon: <ErrorOutline fontSize="small" /> }
+  return { label: 'Unknown', color: 'default' as const, icon: <HelpOutline fontSize="small" /> }
+}
+
+function MetricCoverageCard({ coverage }: { coverage: MetricCoverage[] }) {
+  return (
+    <Card sx={{ mt: 3 }}>
+      <CardContent>
+        <Typography variant="h6" component="h2">Prometheus metric coverage</Typography>
+        <Typography color="text.secondary" variant="body2" sx={{ mb: 1 }}>
+          Series scraped in the last 10 minutes. Missing metrics are shown as missing; KubeRight never treats them as zero usage, and recommendations that need them report insufficient data.
+        </Typography>
+        <Stack divider={<Divider flexItem />}>
+          {coverage.map((item) => {
+            const current = coverageState(item)
+            return (
+              <Stack key={item.metric} direction={{ xs: 'column', sm: 'row' }} gap={{ xs: 0.5, sm: 2 }} sx={{ py: 1.25 }} alignItems={{ sm: 'center' }}>
+                <Box sx={{ minWidth: { sm: 200 } }}>
+                  <Typography fontWeight={600}>{item.signal}</Typography>
+                  <Typography variant="caption" color="text.secondary">{item.source}</Typography>
+                </Box>
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Typography variant="body2" sx={{ fontFamily: 'monospace', overflowWrap: 'anywhere' }}>{item.metric}</Typography>
+                  <Typography variant="caption" color="text.secondary">Used for {item.usedFor}{item.note ? `. ${item.note}` : ''}</Typography>
+                </Box>
+                <Stack direction="row" gap={1} alignItems="center" sx={{ minWidth: { sm: 210 }, justifyContent: { sm: 'flex-end' } }}>
+                  {item.state === 'available' && <Typography variant="body2" color="text.secondary">{item.series.toLocaleString()} series</Typography>}
+                  <Chip size="small" variant="outlined" icon={current.icon} label={current.label} color={current.color} />
+                </Stack>
+              </Stack>
+            )
+          })}
+        </Stack>
+      </CardContent>
+    </Card>
+  )
+}
+
 export function Integrations({ title, description }: { title: string; description: string }) {
   const query = useQuery({
     queryKey: ['resource', 'integrations'],
-    queryFn: ({ signal }) => api.get<{ items: DependencyStatus[] }>('/api/v1/settings/integrations', { signal }),
+    queryFn: ({ signal }) => api.get<{ items: DependencyStatus[]; metricCoverage?: MetricCoverage[] }>('/api/v1/settings/integrations', { signal }),
     refetchInterval: 30_000,
   })
   return (
@@ -40,6 +81,7 @@ export function Integrations({ title, description }: { title: string; descriptio
           )
         })}
       </Box>
+      {query.data?.metricCoverage && <MetricCoverageCard coverage={query.data.metricCoverage} />}
     </Box>
   )
 }

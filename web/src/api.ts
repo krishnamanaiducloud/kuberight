@@ -466,6 +466,16 @@ export type DependencyStatus = {
   detail: string
 }
 
+export type MetricCoverage = {
+  signal: string
+  metric: string
+  source: string
+  state: 'available' | 'unavailable' | 'unknown'
+  series: number
+  usedFor: string
+  note?: string
+}
+
 export type Policy = {
   cpuSafetyMargin: number
   memorySafetyMargin: number

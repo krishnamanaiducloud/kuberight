@@ -615,11 +615,52 @@ func (server *apiServer) integrations(w http.ResponseWriter, r *http.Request) {
 	if !server.authorize(w, r, AccessAttributes{Verb: "list", Resource: "integrations"}) {
 		return
 	}
+	var (
+		wait     sync.WaitGroup
+		coverage []usage.MetricCoverage
+	)
+	if reporter, ok := server.usage.(coverageReporter); ok {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			coverage = server.metricCoverage(r.Context(), reporter)
+		}()
+	}
 	items := server.dependencyStatuses(r.Context())
-	respondJSON(w, http.StatusOK, map[string]any{
+	wait.Wait()
+	body := map[string]any{
 		"items": items, "pagination": map[string]int{"page": 1, "pageSize": len(items), "total": len(items)},
 		"status": Availability{Available: true, Source: "runtime_configuration"},
-	})
+	}
+	if coverage != nil {
+		body["metricCoverage"] = coverage
+	}
+	respondJSON(w, http.StatusOK, body)
+}
+
+// coverageReporter is implemented by usage sources that can say which metric
+// families Prometheus holds.
+type coverageReporter interface {
+	MetricCoverage(context.Context) []usage.MetricCoverage
+}
+
+// metricCoverage probes metric families with the dependency timeout. Through
+// a namespace-scoped (tenancy) endpoint, cluster-level series such as node
+// conditions are not visible, which is noted rather than reported as absent.
+func (server *apiServer) metricCoverage(ctx context.Context, reporter coverageReporter) []usage.MetricCoverage {
+	checkContext, cancel := context.WithTimeout(ctx, dependencyTimeout)
+	defer cancel()
+	coverage := reporter.MetricCoverage(checkContext)
+	if tenant := server.config.PrometheusTenantNamespace; tenant != "" {
+		for index := range coverage {
+			coverage[index].Note = "counted in namespace " + tenant + " only (namespace-scoped Prometheus access)"
+			if coverage[index].Metric == "kube_node_status_condition" && coverage[index].State == usage.CoverageUnavailable {
+				coverage[index].State = usage.CoverageUnknown
+				coverage[index].Note = "node series carry no namespace, so namespace-scoped Prometheus access cannot see them"
+			}
+		}
+	}
+	return coverage
 }
 
 func (server *apiServer) inventoryCount(ctx context.Context, resource string) (int, bool) {
