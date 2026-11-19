@@ -162,7 +162,7 @@ func (engine *Engine) Backtest(ctx context.Context, request BacktestRequest) (Ba
 	response := BacktestResponse{Method: "rolling-origin", Horizon: request.Horizon, NominalCoverage: level, GeneratedAt: engine.now().UTC(),
 		Warning: "Each origin is forecast only from the history before it, with the same model selection as live forecasts."}
 	var actual, predicted, lower, upper, baseline []float64
-	daily := period(24*time.Hour, interval)
+	daily, weekly := period(24*time.Hour, interval), period(7*24*time.Hour, interval)
 	for origin := request.Origins; origin >= 1; origin-- {
 		if err := ctx.Err(); err != nil {
 			return BacktestResponse{}, fmt.Errorf("%w: %v", ErrBusy, err)
@@ -170,7 +170,7 @@ func (engine *Engine) Backtest(ctx context.Context, request BacktestRequest) (Ba
 		cut := len(values) - origin*request.Horizon
 		train, future := values[:cut], values[cut:cut+request.Horizon]
 		result := forecastSeries(train, request.Horizon, interval, level)
-		reference := baselineFor(train, daily)(request.Horizon)
+		reference := baselineFor(train, daily, weekly)(request.Horizon)
 		response.Origins = append(response.Origins, BacktestOrigin{
 			OriginIndex: cut, Model: result.model, Calibrated: result.calibration != nil && result.calibration.Calibrated,
 			Score: score(future, result.predictions, result.lower, result.upper, reference),
@@ -283,16 +283,30 @@ func period(season, interval time.Duration) int {
 	return int(season / interval)
 }
 
-func baselineName(n, daily int) string {
-	if daily >= 2 && n >= 2*daily {
-		return "seasonal_naive_daily"
+// season is the shortest seasonal cycle the sampling interval can show: a
+// day for sub-daily samples, a week for daily ones, or none.
+func season(daily, weekly int) (name string, length int) {
+	switch {
+	case daily >= 2:
+		return "daily", daily
+	case weekly >= 2:
+		return "weekly", weekly
+	}
+	return "", 0
+}
+
+// baselineName is the seasonal-naive baseline every model must beat, or
+// naive when the history holds fewer than two seasons.
+func baselineName(n, daily, weekly int) string {
+	if name, length := season(daily, weekly); length >= 2 && n >= 2*length {
+		return "seasonal_naive_" + name
 	}
 	return "naive"
 }
 
-func baselineFor(train []float64, daily int) predictor {
-	if baselineName(len(train), daily) == "seasonal_naive_daily" {
-		return seasonalNaive(daily)(train)
+func baselineFor(train []float64, daily, weekly int) predictor {
+	if _, length := season(daily, weekly); baselineName(len(train), daily, weekly) != "naive" {
+		return seasonalNaive(length)(train)
 	}
 	return fitNaive(train)
 }
@@ -332,7 +346,7 @@ func forecastSeries(values []float64, h int, interval time.Duration, level float
 		return fallbackForecast(result, values, fitValues, h, level)
 	}
 	oldest := n - result.origins*h
-	result.baseline = baselineName(oldest, result.daily)
+	result.baseline = baselineName(oldest, result.daily, result.weekly)
 	type evaluated struct {
 		model  model
 		errors [][]float64
@@ -407,13 +421,13 @@ func forecastSeries(values []float64, h int, interval time.Duration, level float
 // with intervals from its own one-step errors, reported as uncalibrated.
 func fallbackForecast(result run, values, fitValues []float64, h int, level float64) run {
 	n := len(values)
-	result.baseline = baselineName(n, result.daily)
+	result.baseline = baselineName(n, result.daily, result.weekly)
 	result.model = result.baseline
 	result.fallback = []string{fmt.Sprintf("%d samples are too few to validate any model against a %d-step horizon; a %s forecast with unmeasured accuracy is shown", n, h, result.model)}
-	result.predictions = clampZero(baselineFor(fitValues, result.daily)(h))
+	result.predictions = clampZero(baselineFor(fitValues, result.daily, result.weekly)(h))
 	lag := 1
-	if result.model == "seasonal_naive_daily" {
-		lag = result.daily
+	if _, length := season(result.daily, result.weekly); result.model != "naive" {
+		lag = length
 	}
 	differences := make([]float64, 0, n-lag)
 	for index := lag; index < n; index++ {

@@ -38,6 +38,12 @@ func candidates(daily, weekly int) []model {
 	)
 	if daily >= 2 {
 		models = append(models, model{name: "holt_winters_daily", minHistory: 3 * daily, fit: holtWinters(daily)})
+	} else if weekly >= 2 {
+		// Daily samples: the week is the season.
+		models = append(models,
+			model{name: "seasonal_profile_weekly", minHistory: 2 * weekly, fit: seasonalProfile(weekly)},
+			model{name: "holt_winters_weekly", minHistory: 3 * weekly, fit: holtWinters(weekly)},
+		)
 	}
 	return models
 }

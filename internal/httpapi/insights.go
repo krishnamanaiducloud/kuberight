@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"net/http"
 	"net/url"
@@ -10,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kuberight/kuberight/internal/config"
 	"github.com/kuberight/kuberight/internal/forecast"
 	"github.com/kuberight/kuberight/internal/repository"
 	"github.com/kuberight/kuberight/internal/usage"
@@ -110,13 +112,16 @@ func (server *apiServer) forecastStatus(w http.ResponseWriter, r *http.Request) 
 }
 
 type forecastRequestBody struct {
-	Namespace       string  `json:"namespace"`
-	Kind            string  `json:"kind"`
-	Workload        string  `json:"workload"`
-	Container       string  `json:"container"`
-	Resource        string  `json:"resource"`
-	Horizon         int     `json:"horizon,omitempty"`
-	Window          string  `json:"window,omitempty"`
+	Namespace string `json:"namespace"`
+	Kind      string `json:"kind"`
+	Workload  string `json:"workload"`
+	Container string `json:"container"`
+	Resource  string `json:"resource"`
+	Horizon   int    `json:"horizon,omitempty"`
+	Window    string `json:"window,omitempty"`
+	// Step is "1h" (the default, up to 168 steps) or "24h" (up to 90 steps)
+	// for 30- and 90-day horizons.
+	Step            string  `json:"step,omitempty"`
 	ConfidenceLevel float64 `json:"confidenceLevel,omitempty"`
 }
 
@@ -145,8 +150,20 @@ func (server *apiServer) createForecast(w http.ResponseWriter, r *http.Request) 
 	if request.Horizon == 0 {
 		request.Horizon = 24
 	}
-	if request.Horizon < 1 || request.Horizon > 168 {
-		respondError(w, r, http.StatusBadRequest, "invalid_request", "horizon must be between 1 and 168 steps")
+	step, defaultWindow, maximumHorizon := server.config.ForecastStep, server.config.ForecastWindow, 168
+	switch request.Step {
+	case "", "1h":
+	case "24h":
+		// Daily steps reach 30 and 90 days ahead. The engine needs 48
+		// samples and never forecasts further than the history behind it.
+		step, maximumHorizon = 24*time.Hour, 90
+		defaultWindow = time.Duration(max(48, 2*request.Horizon)) * 24 * time.Hour
+	default:
+		respondError(w, r, http.StatusBadRequest, "invalid_request", "step must be 1h or 24h")
+		return
+	}
+	if request.Horizon < 1 || request.Horizon > maximumHorizon {
+		respondError(w, r, http.StatusBadRequest, "invalid_request", fmt.Sprintf("horizon must be between 1 and %d steps of %s", maximumHorizon, step))
 		return
 	}
 	if request.ConfidenceLevel == 0 {
@@ -156,8 +173,7 @@ func (server *apiServer) createForecast(w http.ResponseWriter, r *http.Request) 
 		respondError(w, r, http.StatusBadRequest, "invalid_request", "confidenceLevel must be 0.8, 0.9, or 0.95")
 		return
 	}
-	step := server.config.ForecastStep
-	window, err := parseWindow(request.Window, server.config.ForecastWindow, step, 48*time.Hour)
+	window, err := parseForecastWindow(request.Window, defaultWindow, step)
 	if err != nil {
 		respondError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		return
@@ -179,8 +195,10 @@ func (server *apiServer) createForecast(w http.ResponseWriter, r *http.Request) 
 	if request.Resource == "memory" {
 		series, scale = history.Memory, 1
 	}
-	if len(series.Points) < minimumForecastInput {
-		respondError(w, r, http.StatusUnprocessableEntity, "insufficient_history", "at least 48 usage samples are required for a forecast; widen the window or wait for more history")
+	if len(series.Points) < minimumForecastInput || len(series.Points) < request.Horizon {
+		respondError(w, r, http.StatusUnprocessableEntity, "insufficient_history", fmt.Sprintf(
+			"collecting history: %d samples of %s exist, and a %d-step forecast needs at least %d; widen the window, wait for more history, or check Prometheus retention",
+			len(series.Points), step, request.Horizon, max(minimumForecastInput, request.Horizon)))
 		return
 	}
 	if len(series.Points) > maximumForecastInput {
@@ -734,4 +752,26 @@ func upstreamHost(raw string) string {
 		return ""
 	}
 	return parsed.Host
+}
+
+// parseForecastWindow bounds a forecast's lookback: 48 hours to 30 days at
+// hourly steps, and up to 180 days at daily steps, so a 90-day horizon can
+// be backed by as much history as it reaches ahead.
+func parseForecastWindow(raw string, fallback, step time.Duration) (time.Duration, error) {
+	window := fallback
+	if raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil {
+			return 0, errors.New("window must be a duration such as 336h")
+		}
+		window = parsed
+	}
+	maximum := 30 * 24 * time.Hour
+	if step >= 24*time.Hour {
+		maximum = 180 * 24 * time.Hour
+	}
+	if window < 48*time.Hour || window > maximum || window/step+1 > config.MaximumQueryPoints {
+		return 0, fmt.Errorf("window must be between 48h and %s at %s steps", maximum, step)
+	}
+	return window, nil
 }

@@ -112,6 +112,9 @@ func main() {
 		client, clientErr := metrics.NewPrometheusClient(metrics.PrometheusOptions{
 			Endpoint: cfg.PrometheusURL, AllowHTTP: cfg.AllowInsecureUpstreams, Timeout: cfg.PrometheusTimeout, MaxInFlight: cfg.PrometheusMaxInFlight,
 			BearerTokenFile: cfg.PrometheusBearerTokenFile, CAFile: cfg.PrometheusCAFile, TenantNamespace: cfg.PrometheusTenantNamespace,
+			// Daily-step forecasts look back up to 180 days; the point bound
+			// still stops a long range at a fine step.
+			MaxRange: 180 * 24 * time.Hour,
 		})
 		if clientErr != nil {
 			logger.Error("Prometheus client initialization failed", "error", clientErr)

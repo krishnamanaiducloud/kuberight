@@ -3346,10 +3346,18 @@ components:
           minimum: 1
           maximum: 168
           default: 24
-          description: Number of forecast steps.
+          description: Number of forecast steps; at most 168 at 1h steps and 90 at 24h steps.
+        step:
+          type: string
+          enum: ["1h", "24h"]
+          default: "1h"
+          description: |
+            Forecast resolution. `24h` forecasts daily mean CPU and daily peak
+            memory for 30- and 90-day horizons; it needs at least 48 days of
+            Prometheus history and no fewer days than the horizon.
         window:
           type: string
-          description: Go duration from 48h to 720h. Defaults to KUBERIGHT_FORECAST_WINDOW.
+          description: Go duration from 48h to 720h at 1h steps, or to 4320h at 24h steps. Defaults to KUBERIGHT_FORECAST_WINDOW at 1h steps and to twice the horizon (at least 48 days) at 24h steps.
         confidenceLevel:
           type: number
           enum: [0.8, 0.9, 0.95]

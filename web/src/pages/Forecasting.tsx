@@ -8,14 +8,22 @@ import { WorkloadPicker } from '../components/WorkloadPicker'
 import { formatBytes, formatMillicores } from '../format'
 import { PageHeader } from './PageHeader'
 
-const horizons = [6, 12, 24, 48, 72, 168]
+// Hourly horizons up to a week; daily horizons reach 30 and 90 days and need
+// at least as many days of Prometheus history (48 at minimum).
+const horizons = [
+  { label: '6 hours', horizon: 6, step: '1h' }, { label: '12 hours', horizon: 12, step: '1h' },
+  { label: '24 hours', horizon: 24, step: '1h' }, { label: '48 hours', horizon: 48, step: '1h' },
+  { label: '72 hours', horizon: 72, step: '1h' }, { label: '7 days', horizon: 168, step: '1h' },
+  { label: '30 days', horizon: 30, step: '24h' }, { label: '90 days', horizon: 90, step: '24h' },
+]
 
 export function Forecasting({ title, description }: { title: string; description: string }) {
   const [subject, setSubject] = useState<Subject>()
   const [resource, setResource] = useState<'cpu' | 'memory'>('cpu')
-  const [horizon, setHorizon] = useState(24)
+  const [choice, setChoice] = useState('24 hours')
+  const selected = horizons.find((item) => item.label === choice) ?? horizons[2]
   const mutation = useMutation({
-    mutationFn: () => api.post<ForecastResponse>('/api/v1/forecasts', { ...subject, resource, horizon }),
+    mutationFn: () => api.post<ForecastResponse>('/api/v1/forecasts', { ...subject, resource, horizon: selected.horizon, step: selected.step }),
   })
   const result = mutation.data
   const format = result?.unit === 'bytes' ? formatBytes : formatMillicores
@@ -41,8 +49,8 @@ export function Forecasting({ title, description }: { title: string; description
                 <ToggleButton value="cpu">CPU</ToggleButton>
                 <ToggleButton value="memory">Memory</ToggleButton>
               </ToggleButtonGroup>
-              <TextField select size="small" label="Horizon" value={horizon} onChange={(event) => setHorizon(Number(event.target.value))} sx={{ minWidth: 160 }}>
-                {horizons.map((value) => <MenuItem key={value} value={value}>{value} hours</MenuItem>)}
+              <TextField select size="small" label="Horizon" value={choice} onChange={(event) => { setChoice(event.target.value); mutation.reset() }} sx={{ minWidth: 160 }}>
+                {horizons.map((item) => <MenuItem key={item.label} value={item.label}>{item.label}</MenuItem>)}
               </TextField>
               <Box sx={{ flexGrow: 1 }} />
               <Button variant="contained" disabled={!subject || mutation.isPending} onClick={() => mutation.mutate()} startIcon={mutation.isPending ? <CircularProgress size={16} /> : undefined}>Forecast</Button>
@@ -51,7 +59,7 @@ export function Forecasting({ title, description }: { title: string; description
         </CardContent>
       </Card>
       {mutation.error && <Alert severity="error" sx={{ mb: 2 }}>{mutation.error instanceof ApiError ? mutation.error.message : 'The forecast could not be produced.'}</Alert>}
-      {!result && !mutation.error && <Alert severity="info">Forecasts use hourly Prometheus history and KubeRight's built-in engine, which picks its model by testing it on this history. They are advisory and never change recommendations or workloads.</Alert>}
+      {!result && !mutation.error && <Alert severity="info">Forecasts use Prometheus history and KubeRight's built-in engine, which picks its model by testing it on this history. Hourly forecasts reach a week; 30- and 90-day forecasts use daily history and need at least 48 days of it. Forecasts are advisory and never change recommendations or workloads.</Alert>}
       {result && (
         <Stack gap={2}>
           <Card>

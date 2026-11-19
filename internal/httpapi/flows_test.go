@@ -946,3 +946,46 @@ func TestIntegrationsNameTheDiscoveredPrometheus(t *testing.T) {
 	}
 	t.Fatalf("no Prometheus status: %v", body)
 }
+
+func TestForecastReachesThirtyAndNinetyDaysWithDailySteps(t *testing.T) {
+	source := healthyUsage(120)
+	forecaster := &fakeForecaster{}
+	api := newTestAPI(t, nil, Dependencies{Provider: fakeInventory{spec: checkoutSpec()}, Usage: source, Forecaster: forecaster})
+	response, body := api.do(t, http.MethodPost, "/api/v1/forecasts", "alice", `{"namespace":"shop","kind":"Deployment","workload":"checkout","container":"api","resource":"cpu","horizon":30,"step":"24h"}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	window := source.windows[len(source.windows)-1]
+	// The default lookback is twice the horizon, and at least 48 days.
+	if forecaster.request.IntervalSeconds != 86_400 || forecaster.request.Horizon != 30 || window.Step != 24*time.Hour || window.Duration != 60*24*time.Hour || body["step"] != "24h0m0s" {
+		t.Fatalf("request=%+v window=%+v step=%v", forecaster.request, window, body["step"])
+	}
+	points := body["forecast"].([]any)
+	last := source.history.CPU.Points[len(source.history.CPU.Points)-1].Timestamp
+	if len(points) != 30 || points[29].(map[string]any)["timestamp"] != last.Add(30*24*time.Hour).Format(time.RFC3339) {
+		t.Fatalf("points=%d last=%v", len(points), points[len(points)-1])
+	}
+	if response, _ := api.do(t, http.MethodPost, "/api/v1/forecasts", "alice", `{"namespace":"shop","kind":"Deployment","workload":"checkout","container":"api","resource":"cpu","horizon":90,"step":"24h","window":"4320h"}`); response.Code != http.StatusOK {
+		t.Fatalf("90 days over 180 days of history: status=%d body=%s", response.Code, response.Body.String())
+	}
+	for name, test := range map[string]struct {
+		body   string
+		status int
+		reason string
+	}{
+		"unknown step":               {`"horizon":30,"step":"1w"`, http.StatusBadRequest, "step must be 1h or 24h"},
+		"beyond 90 days":             {`"horizon":91,"step":"24h"`, http.StatusBadRequest, "between 1 and 90 steps"},
+		"hourly window over 30 days": {`"horizon":24,"window":"1000h"`, http.StatusBadRequest, "between 48h and 720h"},
+	} {
+		response, _ := api.do(t, http.MethodPost, "/api/v1/forecasts", "alice", `{"namespace":"shop","kind":"Deployment","workload":"checkout","container":"api","resource":"cpu",`+test.body+`}`)
+		if response.Code != test.status || !strings.Contains(response.Body.String(), test.reason) {
+			t.Fatalf("%s: status=%d body=%s", name, response.Code, response.Body.String())
+		}
+	}
+	// Daily history shorter than the horizon: still collecting.
+	short := newTestAPI(t, nil, Dependencies{Provider: fakeInventory{spec: checkoutSpec()}, Usage: healthyUsage(60), Forecaster: &fakeForecaster{}})
+	response, _ = short.do(t, http.MethodPost, "/api/v1/forecasts", "alice", `{"namespace":"shop","kind":"Deployment","workload":"checkout","container":"api","resource":"cpu","horizon":90,"step":"24h"}`)
+	if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "collecting history: 60 samples") {
+		t.Fatalf("short daily history: status=%d body=%s", response.Code, response.Body.String())
+	}
+}

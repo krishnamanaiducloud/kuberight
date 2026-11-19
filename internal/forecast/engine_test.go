@@ -321,3 +321,44 @@ func TestIntervalsCoverHeavyTailedNoiseOutOfSample(t *testing.T) {
 		t.Fatalf("mean coverage %.3f is well below the nominal 0.9", average)
 	}
 }
+
+func TestEngineUsesTheWeekForDailySamples(t *testing.T) {
+	random := rand.New(rand.NewSource(50))
+	samples := make([]float64, 140)
+	for index := range samples {
+		weekday := 1.0
+		if index%7 >= 5 {
+			weekday = 0.4 // weekends are quiet
+		}
+		samples[index] = weekday + 0.003*float64(index) + random.NormFloat64()*0.03
+	}
+	response, err := NewEngine(1).Forecast(context.Background(), Request{Samples: samples, Horizon: 30, IntervalSeconds: 24 * hour, Resource: "cpu", ConfidenceLevel: 0.9})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var validation struct {
+		BaselineModel string `json:"baselineModel"`
+	}
+	if err := json.Unmarshal(response.Validation, &validation); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(response.Model, "weekly") || validation.BaselineModel != "seasonal_naive_weekly" {
+		t.Fatalf("daily samples: model=%s baseline=%s", response.Model, validation.BaselineModel)
+	}
+	// The forecast keeps the weekly shape: weekends stay below weekdays.
+	weekend, weekday := math.Inf(-1), math.Inf(1)
+	for step, prediction := range response.Predictions {
+		if (len(samples)+step)%7 >= 5 {
+			weekend = math.Max(weekend, prediction)
+		} else {
+			weekday = math.Min(weekday, prediction)
+		}
+	}
+	if weekend >= weekday {
+		t.Fatalf("weekends (max %.2f) are not below weekdays (min %.2f)", weekend, weekday)
+	}
+	// Ninety days ahead needs more history than this.
+	if _, err := NewEngine(1).Forecast(context.Background(), Request{Samples: samples[:80], Horizon: 90, IntervalSeconds: 24 * hour, Resource: "cpu", ConfidenceLevel: 0.9}); !errors.Is(err, ErrRejected) {
+		t.Fatalf("a 90-day horizon on 80 days of history was accepted: %v", err)
+	}
+}
