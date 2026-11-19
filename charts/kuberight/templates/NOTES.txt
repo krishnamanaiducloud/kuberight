@@ -19,3 +19,8 @@ Inventory RBAC is namespace scoped to {{ .Release.Namespace }}.
 {{- if or (gt (int .Values.replicaCount) 1) .Values.autoscaling.enabled }}
 WARNING: API horizontal scaling is unsupported in this preview. Recommendation, idempotency, and audit state is process-local, so replicas do not share a consistent store.
 {{- end }}
+{{- if eq .Values.auth.mode "openshift" }}
+Users sign in at the Route with their OpenShift account. To let a user in, grant read access to the KubeRight Service and RBAC for the virtual kuberight.io resources, for example:
+  oc adm policy add-role-to-user view <user> -n {{ .Release.Namespace }}
+The OpenShift login needs the Route's HTTPS host; KubeRight's ServiceAccount is the OAuth client.
+{{- end }}

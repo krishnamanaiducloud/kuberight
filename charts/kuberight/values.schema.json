@@ -211,9 +211,9 @@
     "auth": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["mode", "staticToken", "oidc"],
+      "required": ["mode", "staticToken", "oidc", "openshift"],
       "properties": {
-        "mode": { "type": "string", "enum": ["kubernetes", "oidc", "static"] },
+        "mode": { "type": "string", "enum": ["kubernetes", "openshift", "oidc", "static"] },
         "staticToken": {
           "type": "object",
           "additionalProperties": false,
@@ -241,6 +241,37 @@
             "groupsPrefix": { "type": "string", "maxLength": 64 },
             "insecureHTTP": { "type": "boolean" },
             "image": { "$ref": "#/definitions/image" },
+            "resources": { "$ref": "#/definitions/resources" },
+            "extraArgs": { "type": "array", "items": { "type": "string", "pattern": "^--" } }
+          }
+        },
+        "openshift": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["imageStreamTrigger", "image", "signInVerb", "cookieSecret", "resources", "extraArgs"],
+          "properties": {
+            "imageStreamTrigger": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["enabled", "namespace", "name", "tag"],
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "namespace": { "$ref": "#/definitions/requiredName" },
+                "name": { "$ref": "#/definitions/requiredName" },
+                "tag": { "type": "string", "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$" }
+              }
+            },
+            "image": { "$ref": "#/definitions/image" },
+            "signInVerb": { "type": "string", "enum": ["get", "list", "update"] },
+            "cookieSecret": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["existingSecret", "key"],
+              "properties": {
+                "existingSecret": { "$ref": "#/definitions/optionalName" },
+                "key": { "$ref": "#/definitions/requiredName" }
+              }
+            },
             "resources": { "$ref": "#/definitions/resources" },
             "extraArgs": { "type": "array", "items": { "type": "string", "pattern": "^--" } }
           }

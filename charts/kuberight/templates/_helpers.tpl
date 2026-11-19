@@ -87,6 +87,15 @@ app.kubernetes.io/component: server
 {{- fail "auth.oidc URLs must use https; auth.oidc.insecureHTTP=true is for local development only" -}}
 {{- end -}}
 {{- end -}}
+{{- if and (eq .Values.auth.mode "openshift") (not .Values.route.enabled) -}}
+{{- fail "auth.mode=openshift requires route.enabled: the OpenShift login returns users to the Route" -}}
+{{- end -}}
+{{- if and (eq .Values.auth.mode "openshift") (not .Values.serviceAccount.create) -}}
+{{- fail "auth.mode=openshift requires serviceAccount.create: KubeRight annotates its ServiceAccount as the OAuth client" -}}
+{{- end -}}
+{{- if and (eq .Values.auth.mode "openshift") .Values.route.enabled (not .Values.route.tls.enabled) -}}
+{{- fail "auth.mode=openshift requires route.tls.enabled: OpenShift accepts only HTTPS OAuth redirects" -}}
+{{- end -}}
 {{- if and .Values.prometheus.bearerTokenFile (hasPrefix "http://" (lower .Values.prometheus.url)) -}}
 {{- fail "prometheus.bearerTokenFile requires an https prometheus.url; a token is never sent in cleartext" -}}
 {{- end -}}
@@ -146,12 +155,17 @@ app.kubernetes.io/component: server
 
 {{/* The port probes use: the API itself, or the oauth2-proxy in oidc mode. */}}
 {{- define "kuberight.probePort" -}}
-{{- if eq .Values.auth.mode "oidc" }}4180{{ else }}http{{ end -}}
+{{- if include "kuberight.behindProxy" . }}4180{{ else }}http{{ end -}}
+{{- end }}
+
+{{/* Non-empty when a sign-in proxy sidecar fronts the API. */}}
+{{- define "kuberight.behindProxy" -}}
+{{- if has .Values.auth.mode (list "oidc" "openshift") }}true{{ end -}}
 {{- end }}
 
 {{/* The port the Service and NetworkPolicy expose. */}}
 {{- define "kuberight.httpPort" -}}
-{{- if eq .Values.auth.mode "oidc" }}4180{{ else }}8080{{ end -}}
+{{- if include "kuberight.behindProxy" . }}4180{{ else }}8080{{ end -}}
 {{- end }}
 
 {{/*
@@ -215,4 +229,51 @@ the API on loopback with X-Forwarded-User, -Email, and -Groups.
     periodSeconds: 10
   resources:
     {{- toYaml $oidc.resources | nindent 4 }}
+{{- end }}
+
+{{/* OpenShift's oauth-proxy: signs users in with OpenShift and forwards their token. */}}
+{{- define "kuberight.openshiftProxyContainer" -}}
+{{- $openshift := .Values.auth.openshift -}}
+{{- $service := dict "namespace" .Release.Namespace "resource" "services" "resourceName" (include "kuberight.fullname" .) "verb" $openshift.signInVerb -}}
+{{- $delegate := dict "/api/" (dict "namespace" .Release.Namespace "resource" "services" "name" (include "kuberight.fullname" .) "verb" $openshift.signInVerb) -}}
+- name: oauth-proxy
+  image: {{ printf "%s%s" $openshift.image.repository (ternary (printf "@%s" $openshift.image.digest) (printf ":%s" $openshift.image.tag) (ne $openshift.image.digest "")) | quote }}
+  imagePullPolicy: {{ $openshift.image.pullPolicy }}
+  securityContext:
+    {{- toYaml .Values.securityContext | nindent 4 }}
+  args:
+    - --provider=openshift
+    - --openshift-service-account={{ include "kuberight.serviceAccountName" . }}
+    - --http-address=0.0.0.0:4180
+    - --https-address=
+    - --upstream=http://127.0.0.1:8080/
+    - --cookie-secret-file=/var/run/kuberight-proxy/cookie-secret
+    - --cookie-name=_kuberight
+    - --cookie-secure=true
+    - --cookie-expire=8h0m0s
+    # KubeRight verifies this token and authorizes each request itself.
+    - --pass-access-token=true
+    - --skip-auth-regex=^/(healthz|readyz|metrics)$
+    # Who may sign in at all.
+    - {{ printf "--openshift-sar=%s" (toJson $service) | squote }}
+    # API clients with their own bearer token skip the browser login.
+    - {{ printf "--openshift-delegate-urls=%s" (toJson $delegate) | squote }}
+    {{- with $openshift.extraArgs }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  ports:
+    - name: http
+      containerPort: 4180
+      protocol: TCP
+  readinessProbe:
+    httpGet:
+      path: /oauth/healthz
+      port: 4180
+    periodSeconds: 10
+  volumeMounts:
+    - name: proxy-session
+      mountPath: /var/run/kuberight-proxy
+      readOnly: true
+  resources:
+    {{- toYaml $openshift.resources | nindent 4 }}
 {{- end }}

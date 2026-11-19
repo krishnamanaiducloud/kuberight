@@ -35,6 +35,15 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) == 3 && os.Args[1] == "cookie-secret" {
+		// Run as an init container: creates the session-cookie secret of the
+		// authenticating proxy sidecar, so no Secret has to be made by hand.
+		if err := httpapi.WriteCookieSecret(os.Args[2]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) == 2 && os.Args[1] == "benchmark" {
 		// The accuracy benchmark is offline and reproducible; it needs no
 		// cluster, Prometheus, or configuration.
@@ -65,7 +74,7 @@ func main() {
 		return
 	}
 	if len(os.Args) > 1 && (len(os.Args) != 2 || os.Args[1] != "migrate") {
-		fmt.Fprintln(os.Stderr, "usage: kuberight [healthcheck|migrate|benchmark [--traces FILE | --forecast-traces FILE]]")
+		fmt.Fprintln(os.Stderr, "usage: kuberight [healthcheck|migrate|cookie-secret FILE|benchmark [--traces FILE | --forecast-traces FILE]]")
 		os.Exit(2)
 	}
 

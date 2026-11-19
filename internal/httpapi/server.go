@@ -352,6 +352,18 @@ func (server *apiServer) withAuthentication(next http.Handler) http.Handler {
 			return
 		}
 		bearer, ok := extractBearer(r.Header.Get("Authorization"))
+		if server.config.AuthMode == "openshift" {
+			// A browser session arrives with the token the OpenShift login
+			// issued; an API client sends its own bearer token. Both are
+			// verified with TokenReview, so a forged header gains nothing.
+			if token := strings.TrimSpace(r.Header.Get(openShiftTokenHeader)); token != "" && len(token) <= 16_384 {
+				bearer, ok = token, true
+			}
+			if !ok {
+				respondError(w, r, http.StatusUnauthorized, "unauthorized", "sign in through the OpenShift login")
+				return
+			}
+		}
 		if !ok {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="kuberight"`)
 			respondError(w, r, http.StatusUnauthorized, "unauthorized", "a bearer token is required")

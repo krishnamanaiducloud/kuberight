@@ -1,5 +1,5 @@
 {{- if .Values.rbac.create }}
-{{- if and (has .Values.auth.mode (list "kubernetes" "oidc")) .Values.rbac.authReviews }}
+{{- if and (has .Values.auth.mode (list "kubernetes" "openshift" "oidc")) .Values.rbac.authReviews }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -7,7 +7,7 @@ metadata:
   labels:
     {{- include "kuberight.labels" . | nindent 4 }}
 rules:
-  {{- if eq .Values.auth.mode "kubernetes" }}
+  {{- if has .Values.auth.mode (list "kubernetes" "openshift") }}
   - apiGroups: ["authentication.k8s.io"]
     resources: ["tokenreviews"]
     verbs: ["create"]

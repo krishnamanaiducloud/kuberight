@@ -31,13 +31,13 @@ spec:
         - podSelector: {}
       ports:
         - protocol: TCP
-          port: 8080
+          port: 4180
     - from:
       - namespaceSelector:
           matchLabels:
             network.openshift.io/policy-group: ingress
       ports:
-      - port: 8080
+      - port: 4180
         protocol: TCP
 ---
 # Source: kuberight/templates/pdb.yaml
@@ -74,6 +74,8 @@ metadata:
     app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/version: "0.1.0-rc.4"
     app.kubernetes.io/component: server
+  annotations:
+    serviceaccounts.openshift.io/oauth-redirectreference.primary: '{"apiVersion":"v1","kind":"OAuthRedirectReference","reference":{"kind":"Route","name":"kuberight"}}'
 automountServiceAccountToken: true
 ---
 # Source: kuberight/templates/rbac.yaml
@@ -260,6 +262,8 @@ metadata:
     app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/version: "0.1.0-rc.4"
     app.kubernetes.io/component: server
+  annotations:
+    image.openshift.io/triggers: '[{"fieldPath":"spec.template.spec.containers[?(@.name==\"oauth-proxy\")].image","from":{"kind":"ImageStreamTag","name":"oauth-proxy:v4.4","namespace":"openshift"}}]'
 spec:
   replicas: 1
   revisionHistoryLimit: 5
@@ -289,6 +293,28 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       terminationGracePeriodSeconds: 30
+      initContainers:
+        # Generates the proxy's session-cookie secret in memory, so no
+        # Secret has to be created by hand.
+        - name: proxy-cookie-secret
+          image: "mohankrishna999/kuberight:0.1.0-rc.4"
+          imagePullPolicy: IfNotPresent
+          args: ["cookie-secret", "/var/run/kuberight-proxy/cookie-secret"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 32Mi
+          volumeMounts:
+            - name: proxy-session
+              mountPath: /var/run/kuberight-proxy
       containers:
         - name: kuberight
           image: "mohankrishna999/kuberight:0.1.0-rc.4"
@@ -300,14 +326,15 @@ spec:
               - ALL
             readOnlyRootFilesystem: true
           ports:
-            - name: http
+            - name: api
               containerPort: 8080
               protocol: TCP
           env:
             - name: KUBERIGHT_LISTEN_ADDR
-              value: ":8080"
+              # Only the sign-in proxy sidecar in this pod can reach the API.
+              value: "127.0.0.1:8080"
             - name: KUBERIGHT_AUTH_MODE
-              value: "kubernetes"
+              value: "openshift"
             - name: KUBERIGHT_OPERATION_MODE
               value: "recommend"
             - name: KUBERIGHT_INVENTORY_ENABLED
@@ -341,13 +368,13 @@ spec:
           startupProbe:
             httpGet:
               path: /healthz
-              port: http
+              port: 4180
             failureThreshold: 30
             periodSeconds: 2
           readinessProbe:
             httpGet:
               path: /readyz
-              port: http
+              port: 4180
             initialDelaySeconds: 2
             periodSeconds: 10
             timeoutSeconds: 2
@@ -355,7 +382,7 @@ spec:
           livenessProbe:
             httpGet:
               path: /healthz
-              port: http
+              port: 4180
             initialDelaySeconds: 10
             periodSeconds: 20
             timeoutSeconds: 2
@@ -370,10 +397,59 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+        - name: oauth-proxy
+          image: "registry.redhat.io/openshift4/ose-oauth-proxy-rhel9:latest"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+          args:
+            - --provider=openshift
+            - --openshift-service-account=kuberight
+            - --http-address=0.0.0.0:4180
+            - --https-address=
+            - --upstream=http://127.0.0.1:8080/
+            - --cookie-secret-file=/var/run/kuberight-proxy/cookie-secret
+            - --cookie-name=_kuberight
+            - --cookie-secure=true
+            - --cookie-expire=8h0m0s
+            # KubeRight verifies this token and authorizes each request itself.
+            - --pass-access-token=true
+            - --skip-auth-regex=^/(healthz|readyz|metrics)$
+            # Who may sign in at all.
+            - '--openshift-sar={"namespace":"kuberight","resource":"services","resourceName":"kuberight","verb":"get"}'
+            # API clients with their own bearer token skip the browser login.
+            - '--openshift-delegate-urls={"/api/":{"name":"kuberight","namespace":"kuberight","resource":"services","verb":"get"}}'
+          ports:
+            - name: http
+              containerPort: 4180
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /oauth/healthz
+              port: 4180
+            periodSeconds: 10
+          volumeMounts:
+            - name: proxy-session
+              mountPath: /var/run/kuberight-proxy
+              readOnly: true
+          resources:
+            limits:
+              memory: 128Mi
+            requests:
+              cpu: 10m
+              memory: 32Mi
       volumes:
         - name: tmp
           emptyDir:
             sizeLimit: 64Mi
+        - name: proxy-session
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname

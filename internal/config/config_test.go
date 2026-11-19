@@ -232,3 +232,21 @@ func TestLoadRunsReadOnlyWhenApplyModeIsRequested(t *testing.T) {
 		t.Fatal("apply mode passed validation")
 	}
 }
+
+func TestOpenShiftAuthModeNeedsTheProxyInFront(t *testing.T) {
+	cfg := validConfig()
+	cfg.AuthMode, cfg.APIToken = "openshift", ""
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "loopback") {
+		t.Fatalf("openshift mode on every interface: %v", err)
+	}
+	cfg.ListenAddress = "127.0.0.1:8080"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("openshift mode behind the proxy: %v", err)
+	}
+	t.Setenv("KUBERIGHT_AUTH_MODE", "openshift")
+	t.Setenv("KUBERIGHT_LISTEN_ADDR", "127.0.0.1:8080")
+	loaded, err := Load()
+	if err != nil || !loaded.RequireDistinctApprover {
+		t.Fatalf("openshift mode must separate creator and approver by default: %+v err=%v", loaded.RequireDistinctApprover, err)
+	}
+}

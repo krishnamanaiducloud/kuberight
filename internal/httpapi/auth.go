@@ -173,9 +173,10 @@ func configuredAccess(cfg config.Config) (AccessController, error) {
 	switch cfg.AuthMode {
 	case "static":
 		return newStaticAccess(cfg.APIToken)
-	case "kubernetes", "oidc":
-		// In oidc mode authentication comes from the proxy's headers, and
-		// Kubernetes RBAC still authorizes every request.
+	case "kubernetes", "oidc", "openshift":
+		// In oidc mode authentication comes from the proxy's headers; in
+		// openshift mode from the OpenShift token the proxy forwards. Either
+		// way Kubernetes RBAC authorizes every request.
 		restConfig, err := rest.InClusterConfig()
 		if err != nil {
 			return nil, err
@@ -209,6 +210,10 @@ func contains(values []string, expected string) bool {
 	}
 	return false
 }
+
+// openShiftTokenHeader carries the signed-in user's OpenShift access token,
+// set by OpenShift's oauth-proxy (--pass-access-token).
+const openShiftTokenHeader = "X-Forwarded-Access-Token"
 
 // Headers set by oauth2-proxy (--pass-user-headers) after an OIDC login.
 const (

@@ -355,6 +355,19 @@ The permission is `create` on `recommendations/pullrequest` in the `kuberight.io
 
 ## Single sign-on
 
+### OpenShift
+
+The OpenShift profile and manifests sign users in with their OpenShift account: nobody pastes a token. `auth.mode=openshift` runs OpenShift's oauth-proxy as a sidecar behind the Route.
+
+- **Sign-in:** the proxy sends users through the OpenShift login and admits those who may `get` KubeRight's Service in its namespace (the `view` role grants that): `oc adm policy add-role-to-user view <user> -n kuberight`.
+- **Identity:** the proxy forwards the user's OpenShift token. KubeRight verifies it with TokenReview and authorizes every request with SubjectAccessReview, so a forged header gains nothing. The API listens on loopback only.
+- **API clients:** a request to `/api/` with its own bearer token skips the browser login and is checked the same way.
+- **No manual setup:** KubeRight's ServiceAccount is the OAuth client, and an init container generates the session-cookie secret in memory. With several replicas, set `auth.openshift.cookieSecret.existingSecret` or rely on the Route's default sticky sessions.
+- **Image:** OpenShift ships oauth-proxy as the `openshift/oauth-proxy:v4.4` ImageStream tag for third-party use. An `image.openshift.io/triggers` annotation lets the cluster set its own release-matched image, which also works in disconnected clusters. Set `auth.openshift.imageStreamTrigger.enabled=false` and `auth.openshift.image` to pin an image instead.
+- **Not yet tested on OpenShift.** The rendered manifests are schema-checked and the token handling is unit-tested; the login flow has not run on a real cluster.
+
+### Any OIDC provider
+
 `auth.mode=oidc` adds an [oauth2-proxy](https://oauth2-proxy.github.io/oauth2-proxy/) sidecar for browser sign-in with Entra ID, Okta, Google, Keycloak, Dex, or any other OIDC provider:
 
 ```sh

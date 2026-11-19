@@ -11,7 +11,7 @@ import KeyOutlined from '@mui/icons-material/KeyOutlined'
 import ShieldOutlined from '@mui/icons-material/ShieldOutlined'
 import { useTheme } from '@mui/material/styles'
 import { navigation } from '../navigation'
-import { api, tokenStore } from '../api'
+import { api, ApiError, tokenStore } from '../api'
 
 const drawerWidth = 272
 
@@ -25,10 +25,14 @@ export function Shell({ children }: { children: ReactNode }) {
 	const modeQuery = useQuery({
 		queryKey: ['version'],
 		queryFn: ({ signal }) => api.get<{ mode?: string }>('/api/v1/version', { signal }),
-		enabled: Boolean(tokenStore.get()),
 		retry: false,
 		staleTime: 60_000,
 	})
+	// Behind a sign-in proxy (OpenShift or OIDC) the browser session already
+	// authenticates every request, so there is no token to ask for. The token
+	// control appears only when the server asked for one, or one is set.
+	const signedInBySession = modeQuery.isSuccess && !tokenStore.get()
+	const tokenRequired = modeQuery.error instanceof ApiError && modeQuery.error.status === 401
 	const operationalMode = modeQuery.data?.mode
 	const modeLabel = operationalMode ? `${operationalMode[0].toUpperCase()}${operationalMode.slice(1)}` : 'Unconfirmed'
 	const modeDescription = operationalMode === 'observe'
@@ -99,9 +103,11 @@ export function Shell({ children }: { children: ReactNode }) {
             <Typography sx={{ fontWeight: 750 }}>Verified signals only</Typography>
           </Box>
           <Chip icon={<ShieldOutlined />} label={`${modeLabel} mode`} color="warning" variant="outlined" sx={{ mr: 1, display: { xs: 'none', sm: 'flex' } }} />
-          <Tooltip title="Set a Kubernetes, OIDC, or static development bearer token">
-            <Button color="inherit" startIcon={<KeyOutlined />} onClick={() => setAuthOpen(true)}>{tokenStore.get() ? 'Update access' : 'Connect'}</Button>
-          </Tooltip>
+          {!signedInBySession && (tokenRequired || tokenStore.get() !== '') && (
+            <Tooltip title="Set a Kubernetes or static development bearer token">
+              <Button color="inherit" startIcon={<KeyOutlined />} onClick={() => setAuthOpen(true)}>{tokenStore.get() ? 'Update access' : 'Connect'}</Button>
+            </Tooltip>
+          )}
         </Toolbar>
       </AppBar>
       <Box component="aside" sx={{ width: { lg: drawerWidth }, flexShrink: { lg: 0 } }}>

@@ -232,6 +232,45 @@ auth:
       limits:
         memory: 128Mi
     extraArgs: []
+  # mode: openshift signs users in with their OpenShift account through
+  # OpenShift's oauth-proxy, as a sidecar behind the Route; nobody pastes a
+  # token. The proxy forwards each user's OpenShift token, which KubeRight
+  # verifies with TokenReview before authorizing every request with
+  # SubjectAccessReview. API clients can still send a bearer token. Needs
+  # route.enabled; KubeRight's ServiceAccount becomes the OAuth client.
+  openshift:
+    # OpenShift ships oauth-proxy as the openshift/oauth-proxy:v4.4
+    # ImageStream tag for third-party use. With imageStreamTrigger the
+    # cluster resolves it to its own release-matched (and, when
+    # disconnected, mirrored) image; image below is then only the initial
+    # value. Set imageStreamTrigger.enabled=false to pin image instead.
+    imageStreamTrigger:
+      enabled: true
+      namespace: openshift
+      name: oauth-proxy
+      tag: v4.4
+    image:
+      repository: registry.redhat.io/openshift4/ose-oauth-proxy-rhel9
+      tag: latest
+      digest: ""
+      pullPolicy: IfNotPresent
+    # Who may sign in: users allowed to get KubeRight's Service in its
+    # namespace (OpenShift's view role grants that). Every API request is
+    # still authorized with SubjectAccessReview.
+    signInVerb: get
+    # Session cookie secret. Empty: an init container generates one in
+    # memory for each pod, so sessions do not survive a pod restart and, with
+    # several replicas, need the Route's default sticky sessions.
+    cookieSecret:
+      existingSecret: ""
+      key: session-secret
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        memory: 128Mi
+    extraArgs: []
 
 service:
   type: ClusterIP

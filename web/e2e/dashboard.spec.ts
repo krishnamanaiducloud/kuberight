@@ -137,12 +137,6 @@ async function mockControlPlane(page: Page) {
           assumptions: ['Pods are packed by requests with first-fit-decreasing onto existing node shapes, largest first.'],
         }
         break
-      case '/api/v1/automation':
-        body = {
-          mode: 'recommend', enabled: false, dryRun: true, window: '', windowOpen: true, maxChangesPerRun: 5,
-          evaluatedAt: '2026-11-03T15:00:00Z', evaluated: 0, eligible: 0, applied: 0, rolledBack: 0, deferred: 0, failed: 0, decisions: [],
-        }
-        break
       default:
         body = { items: [], pagination: { page: 1, pageSize: 25, total: 0 }, status: { available: true, source: 'browser-smoke' } }
     }
@@ -242,7 +236,7 @@ test('keeps primary navigation usable at desktop and mobile widths', async ({ pa
 // Every primary view, audited against WCAG 2.0/2.1 A and AA at desktop and
 // mobile widths with the mocked control plane.
 const auditedRoutes = ['/', '/efficiency', '/hotspots', '/clusters', '/namespaces', '/workloads', '/utilization', '/correlation',
-  '/recommendations/cpu', '/recommendations/memory', '/approvals', '/automation', '/fleet', '/savings', '/forecasting',
+  '/recommendations/cpu', '/recommendations/memory', '/approvals', '/fleet', '/savings', '/forecasting',
   '/autoscalers', '/policies', '/gitops', '/audit', '/settings']
 
 for (const route of auditedRoutes) {

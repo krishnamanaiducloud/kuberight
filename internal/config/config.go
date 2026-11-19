@@ -235,7 +235,7 @@ func Load() (Config, error) {
 	}
 	// Static mode has a single shared identity, so separation of duties is
 	// only meaningful, and therefore only on by default, with Kubernetes auth.
-	if cfg.RequireDistinctApprover, err = parseBool("KUBERIGHT_REQUIRE_DISTINCT_APPROVER", cfg.AuthMode == "kubernetes" || cfg.AuthMode == "oidc"); err != nil {
+	if cfg.RequireDistinctApprover, err = parseBool("KUBERIGHT_REQUIRE_DISTINCT_APPROVER", cfg.AuthMode != "static"); err != nil {
 		return Config{}, err
 	}
 	if cfg.DatabaseMaxConns, err = parseInt("KUBERIGHT_DATABASE_MAX_CONNS", 10, 1, 100); err != nil {
@@ -313,15 +313,17 @@ func (c Config) Validate() error {
 		if len(c.APIToken) < 32 {
 			return errors.New("KUBERIGHT_API_TOKEN must contain at least 32 characters in static auth mode")
 		}
-	case "oidc":
-		// Identity headers are trusted only because nothing but the
-		// authenticating proxy in the same pod can reach the listener.
+	case "oidc", "openshift":
+		// In oidc mode identity headers are trusted only because nothing but
+		// the authenticating proxy in the same pod can reach the listener. In
+		// openshift mode the proxy forwards the user's token, which is still
+		// verified, but the API must not be reachable around the login.
 		host, _, _ := net.SplitHostPort(c.ListenAddress)
 		if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
-			return errors.New("KUBERIGHT_AUTH_MODE=oidc requires KUBERIGHT_LISTEN_ADDR on a loopback address, such as 127.0.0.1:8080, behind the authenticating proxy")
+			return fmt.Errorf("KUBERIGHT_AUTH_MODE=%s requires KUBERIGHT_LISTEN_ADDR on a loopback address, such as 127.0.0.1:8080, behind the authenticating proxy", c.AuthMode)
 		}
 	default:
-		return errors.New("KUBERIGHT_AUTH_MODE must be kubernetes, oidc, or static")
+		return errors.New("KUBERIGHT_AUTH_MODE must be kubernetes, openshift, oidc, or static")
 	}
 	switch c.OperationMode {
 	case ModeObserve, ModeRecommend:
