@@ -98,7 +98,7 @@ func (server *apiServer) forecastStatus(w http.ResponseWriter, r *http.Request) 
 	status := Availability{Available: server.forecaster != nil && server.usage != nil, Source: "forecasting"}
 	switch {
 	case server.forecaster == nil:
-		status.Reason = "the forecasting service is not configured"
+		status.Reason = "forecasting is not configured"
 	case server.usage == nil:
 		status.Reason = "forecasts require Prometheus usage history, which is not configured"
 	default:
@@ -166,7 +166,7 @@ func (server *apiServer) createForecast(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if server.forecaster == nil || server.usage == nil {
-		respondError(w, r, http.StatusServiceUnavailable, "integration_not_configured", "forecasting requires both the forecasting service and Prometheus to be configured")
+		respondError(w, r, http.StatusServiceUnavailable, "integration_not_configured", "forecasting requires Prometheus usage history, which is not configured")
 		return
 	}
 	history, err := server.usage.History(r.Context(), subject, usage.Window{Duration: window, Step: step, End: server.now()})
@@ -175,7 +175,7 @@ func (server *apiServer) createForecast(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	series := history.CPU
-	scale := 1000.0 // Forecasting service CPU units are cores.
+	scale := 1000.0 // The engine forecasts CPU in cores.
 	if request.Resource == "memory" {
 		series, scale = history.Memory, 1
 	}
@@ -184,7 +184,7 @@ func (server *apiServer) createForecast(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if len(series.Points) > maximumForecastInput {
-		respondError(w, r, http.StatusBadRequest, "invalid_request", "the window contains more samples than the forecasting service accepts; shorten it")
+		respondError(w, r, http.StatusBadRequest, "invalid_request", "the window contains more samples than the forecasting engine accepts; shorten it")
 		return
 	}
 	samples := make([]float64, len(series.Points))
@@ -204,19 +204,19 @@ func (server *apiServer) createForecast(w http.ResponseWriter, r *http.Request) 
 	response, err := server.forecaster.Forecast(r.Context(), forecast.Request{
 		Samples: samples, Timestamps: timestamps, Horizon: request.Horizon,
 		IntervalSeconds: int(step / time.Second), Resource: request.Resource, ConfidenceLevel: request.ConfidenceLevel,
-		SeriesID: seriesID, Persist: seriesID != "",
+		SeriesID: seriesID,
 	})
 	switch {
 	case errors.Is(err, forecast.ErrBusy):
 		w.Header().Set("Retry-After", "1")
-		respondError(w, r, http.StatusTooManyRequests, "forecasting_busy", "the forecasting service is at capacity; retry shortly")
+		respondError(w, r, http.StatusTooManyRequests, "forecasting_busy", "the forecasting engine is at capacity; retry shortly")
 		return
 	case errors.Is(err, forecast.ErrRejected):
 		respondError(w, r, http.StatusUnprocessableEntity, "forecast_rejected", err.Error())
 		return
 	case err != nil:
 		server.logger.Error("forecast failed", "request_id", requestIDFromContext(r.Context()), "error", err)
-		respondError(w, r, http.StatusServiceUnavailable, "dependency_unavailable", "the forecasting service is unavailable")
+		respondError(w, r, http.StatusServiceUnavailable, "dependency_unavailable", "forecasting is unavailable")
 		return
 	}
 	last := series.Points[len(series.Points)-1].Timestamp
@@ -549,7 +549,7 @@ func (server *apiServer) dependencyStatuses(ctx context.Context) []dependencySta
 		{status: dependencyStatus{Name: "Kubernetes inventory", Critical: true, Detail: "inventory provider is not configured"}, probe: server.provider, ready: "reading live workload inventory"},
 		{status: dependencyStatus{Name: "Recommendation store", Critical: true}, probe: server.repository, ready: server.repository.Kind() + " store is ready"},
 		{status: dependencyStatus{Name: "Prometheus", Detail: "KUBERIGHT_PROMETHEUS_URL is not set and no cluster monitoring stack was found"}, probe: server.usage, ready: server.prometheusReady()},
-		{status: dependencyStatus{Name: "Forecasting service", Detail: "KUBERIGHT_ML_URL is not set"}, probe: server.forecaster, ready: "forecasting service is ready"},
+		{status: dependencyStatus{Name: "Forecasting", Detail: "forecasting is not configured"}, probe: server.forecaster, ready: "built-in engine " + forecast.EngineVersion + "; forecasts need Prometheus usage history"},
 	}
 	if server.repository.Kind() == "memory" {
 		checks[1].ready = "in-process store is ready; data is lost on restart and not shared between replicas"

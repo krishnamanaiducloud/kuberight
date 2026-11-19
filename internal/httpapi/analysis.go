@@ -117,7 +117,7 @@ func forecastPeak(response forecast.Response) (peak, upper float64) {
 	return peak, upper
 }
 
-// demandForecast asks the forecasting service for CPU and memory over the
+// demandForecast forecasts CPU and memory over the
 // trend horizon. It is optional: any failure leaves sizing to history and
 // trends and is reported as a warning.
 func (server *apiServer) demandForecast(ctx context.Context, history usage.History, horizonDays int, spec WorkloadSpec, container string) (*optimizer.ForecastContext, string) {
@@ -130,7 +130,7 @@ func (server *apiServer) demandForecast(ctx context.Context, history usage.Histo
 	cpuSeriesID := forecastSeriesID(spec, container, "cpu")
 	cpuResponse, err := server.forecaster.Forecast(ctx, forecast.Request{
 		Samples: cpu, Timestamps: cpuTimes, Horizon: horizon, IntervalSeconds: 3600, Resource: "cpu", ConfidenceLevel: forecastIntervalLevel,
-		SeriesID: cpuSeriesID, Persist: cpuSeriesID != "",
+		SeriesID: cpuSeriesID,
 	})
 	if err != nil {
 		return nil, "the demand forecast was unavailable (" + forecastFailure(err) + "); sizing used history and trends only"
@@ -138,7 +138,7 @@ func (server *apiServer) demandForecast(ctx context.Context, history usage.Histo
 	memorySeriesID := forecastSeriesID(spec, container, "memory")
 	memoryResponse, err := server.forecaster.Forecast(ctx, forecast.Request{
 		Samples: memory, Timestamps: memoryTimes, Horizon: horizon, IntervalSeconds: 3600, Resource: "memory", ConfidenceLevel: forecastIntervalLevel,
-		SeriesID: memorySeriesID, Persist: memorySeriesID != "",
+		SeriesID: memorySeriesID,
 	})
 	if err != nil {
 		return nil, "the memory forecast was unavailable (" + forecastFailure(err) + "); sizing used history and trends only"
@@ -161,9 +161,9 @@ func (server *apiServer) demandForecast(ctx context.Context, history usage.Histo
 	return result, ""
 }
 
-// forecastSeriesID deliberately hashes the live workload UID and its complete
-// scope. The forecasting service can persist this opaque identity without
-// leaking names, and a deleted/recreated workload receives a different model.
+// forecastSeriesID hashes the live workload UID and its complete scope into
+// an opaque identity, so logs never carry names and a recreated workload is
+// a different series.
 func forecastSeriesID(spec WorkloadSpec, container, resource string) string {
 	if strings.TrimSpace(spec.UID) == "" || strings.TrimSpace(container) == "" || (resource != "cpu" && resource != "memory") {
 		return ""
@@ -176,11 +176,11 @@ func forecastSeriesID(spec WorkloadSpec, container, resource string) string {
 func forecastFailure(err error) string {
 	switch {
 	case errors.Is(err, forecast.ErrRejected):
-		return "the history does not meet the forecasting service's requirements"
+		return "the history does not meet the forecasting engine's requirements"
 	case errors.Is(err, forecast.ErrBusy):
-		return "the forecasting service is busy"
+		return "the forecasting engine is busy"
 	default:
-		return "the forecasting service did not respond"
+		return "forecasting failed"
 	}
 }
 
@@ -212,7 +212,7 @@ type ForecastEvaluation struct {
 func (server *apiServer) forecastEvaluation(ctx context.Context, subject usage.Subject, end time.Time) ForecastEvaluation {
 	replayer, ok := server.forecaster.(backtester)
 	if server.forecaster == nil || !ok {
-		return ForecastEvaluation{Reason: "the forecasting service is not configured"}
+		return ForecastEvaluation{Reason: "forecasting is not configured"}
 	}
 	history, err := server.usage.History(ctx, subject, usage.Window{Duration: server.config.ForecastWindow, Step: time.Hour, End: end})
 	if err != nil {

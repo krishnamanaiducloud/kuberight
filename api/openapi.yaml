@@ -1332,9 +1332,10 @@ paths:
       operationId: createForecast
       summary: Forecast one container's CPU or memory usage
       description: |
-        Sends Prometheus history at the configured forecast step to the
-        forecasting service. Results are experimental and advisory; they never
-        change recommendations or workloads. CPU values are millicores and
+        Forecasts Prometheus history at the configured forecast step with the
+        built-in engine, which selects its model by rolling-origin validation
+        and reports that validation in `diagnostics`. Results are advisory;
+        they never change recommendations or workloads. CPU values are millicores and
         memory values are bytes. Requires the `create` verb on `forecasts` in
         the namespace.
       requestBody:
@@ -1355,7 +1356,7 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
         "429":
-          description: The forecasting service is at capacity. Retry after the `Retry-After` interval.
+          description: The forecasting engine is at capacity. Retry after the `Retry-After` interval.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
@@ -1630,7 +1631,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/ErrorResponse" }
     DependencyUnavailable:
-      description: Authentication, authorization, or a configured dependency (Kubernetes inventory, Prometheus, the forecasting service, or the recommendation store) is unavailable or not configured.
+      description: Authentication, authorization, or a configured dependency (Kubernetes inventory, Prometheus, or the recommendation store) is unavailable or not configured.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ErrorResponse" }
@@ -3164,6 +3165,7 @@ components:
         rmse: { type: number, minimum: 0 }
         smape: { type: number, minimum: 0 }
         mape: { type: [number, "null"], minimum: 0 }
+        wape: { type: [number, "null"], minimum: 0, description: Total absolute error over the total actual value. }
         coverage: { type: number, minimum: 0, maximum: 1 }
         meanIntervalWidth: { type: number, minimum: 0 }
         baselineMAE: { type: number, minimum: 0 }
@@ -3399,7 +3401,7 @@ components:
         confidenceLevel: { type: number }
         diagnostics:
           type: object
-          description: Model metadata and diagnostics passed through from the forecasting service.
+          description: The selected model, its rolling-origin validation against a seasonal-naive baseline, interval calibration, and data quality.
           additionalProperties: true
           properties:
             model: { type: string }

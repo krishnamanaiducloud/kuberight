@@ -51,7 +51,7 @@ export function Forecasting({ title, description }: { title: string; description
         </CardContent>
       </Card>
       {mutation.error && <Alert severity="error" sx={{ mb: 2 }}>{mutation.error instanceof ApiError ? mutation.error.message : 'The forecast could not be produced.'}</Alert>}
-      {!result && !mutation.error && <Alert severity="info">Forecasts use hourly Prometheus history and the forecasting service. They are advisory and never change recommendations or workloads.</Alert>}
+      {!result && !mutation.error && <Alert severity="info">Forecasts use hourly Prometheus history and KubeRight's built-in engine, which picks its model by testing it on this history. They are advisory and never change recommendations or workloads.</Alert>}
       {result && (
         <Stack gap={2}>
           <Card>

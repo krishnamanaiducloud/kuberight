@@ -75,11 +75,6 @@ func TestValidateIntegrationSettings(t *testing.T) {
 		valid  bool
 	}{
 		"defaults":                    {func(*Config) {}, true},
-		"https ml":                    {func(c *Config) { c.MLURL = "https://ml.example:8443" }, true},
-		"http ml without opt-in":      {func(c *Config) { c.MLURL = "http://kuberight-ml:8081" }, false},
-		"http ml with opt-in":         {func(c *Config) { c.MLURL = "http://kuberight-ml:8081"; c.MLAllowHTTP = true }, true},
-		"ml credentials in url":       {func(c *Config) { c.MLURL = "https://user:pw@ml" }, false},
-		"short ml key":                {func(c *Config) { c.MLAPIKey = "short" }, false},
 		"postgres url":                {func(c *Config) { c.DatabaseURL = "postgres://kuberight@db:5432/kuberight?sslmode=verify-full" }, true},
 		"non postgres url":            {func(c *Config) { c.DatabaseURL = "mysql://db/kuberight" }, false},
 		"too many connections":        {func(c *Config) { c.DatabaseMaxConns = 101 }, false},
@@ -133,7 +128,7 @@ func TestLoadAppliesIntegrationDefaults(t *testing.T) {
 
 func TestNormalizedFillsUnsetValues(t *testing.T) {
 	cfg := validConfig().Normalized()
-	if cfg.RecommendationStep != DefaultRecommendationStep || cfg.ForecastWindow != DefaultForecastWindow || cfg.MLTimeout == 0 || cfg.CostCurrency != "USD" {
+	if cfg.RecommendationStep != DefaultRecommendationStep || cfg.ForecastWindow != DefaultForecastWindow || cfg.CostCurrency != "USD" {
 		t.Fatalf("Normalized() = %#v", cfg)
 	}
 }
@@ -232,5 +227,19 @@ func TestLoadReadsPrometheusAccessAndDiscovery(t *testing.T) {
 	if cfg.PrometheusDiscovery || cfg.PrometheusBearerTokenFile != "/var/run/secrets/kubernetes.io/serviceaccount/token" ||
 		cfg.PrometheusCAFile == "" || cfg.PrometheusTenantNamespace != "shop" {
 		t.Fatalf("loaded = %+v", cfg)
+	}
+}
+
+func TestLoadReportsRemovedForecastingSettings(t *testing.T) {
+	t.Setenv("KUBERIGHT_AUTH_MODE", "static")
+	t.Setenv("KUBERIGHT_API_TOKEN", strings.Repeat("x", 32))
+	t.Setenv("KUBERIGHT_ML_URL", "http://kuberight-ml:8081")
+	t.Setenv("KUBERIGHT_ML_API_KEY", "an-old-shared-key")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("an old forecasting setting must not stop startup: %v", err)
+	}
+	if strings.Join(cfg.RemovedSettings, ",") != "KUBERIGHT_ML_URL,KUBERIGHT_ML_API_KEY" {
+		t.Fatalf("removed settings = %v", cfg.RemovedSettings)
 	}
 }

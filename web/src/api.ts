@@ -345,7 +345,7 @@ export type CorrelationReport = {
   caveats: string[]
 }
 
-export type ForecastScore = { samples: number; mae: number; rmse: number; smape: number; mape?: number | null; coverage: number; meanIntervalWidth: number; baselineMAE: number; skill?: number | null }
+export type ForecastScore = { samples: number; mae: number; rmse: number; smape: number; mape?: number | null; wape?: number | null; coverage: number; meanIntervalWidth: number; baselineMAE: number; skill?: number | null }
 
 export type ForecastEvaluation = {
   available: boolean

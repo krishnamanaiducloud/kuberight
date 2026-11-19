@@ -72,16 +72,6 @@ spec:
           port: {{ . }}
         {{- end }}
     {{- end }}
-    {{- if .Values.ml.enabled }}
-    # The forecasting service in this release.
-    - to:
-        - podSelector:
-            matchLabels:
-              {{- include "kuberight.mlSelectorLabels" . | nindent 14 }}
-      ports:
-        - protocol: TCP
-          port: 8081
-    {{- end }}
     {{- with .Values.networkPolicy.egress }}
     {{- toYaml . | nindent 4 }}
     {{- end }}

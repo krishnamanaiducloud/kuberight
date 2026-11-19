@@ -1,6 +1,6 @@
 # KubeRight
 
-KubeRight is a Kubernetes resource-inventory and right-sizing project. It combines a Go API, a React dashboard, an optional Python forecasting service, and a Helm chart.
+KubeRight is a Kubernetes resource-inventory and right-sizing project. It is a single Go service that serves the API, the React dashboard, recommendations, diagnostics, and a built-in forecasting engine, installed with a Helm chart or standalone manifests. It needs only an existing Prometheus.
 
 > **Release candidate:** the source candidate passes its pull-request quality gates, but no signed release has been published yet. A source checkout, chart version, or Dockerfile is not evidence that an image exists. Verify a signed release and its digest before deploying.
 
@@ -29,7 +29,7 @@ KubeRight is a Kubernetes resource-inventory and right-sizing project. It combin
 - Prometheus usage history per container, charted against current requests and limits.
 - A review workflow: recommendations are approved or rejected, individually or in bulk, with optional separation of duties, and every decision is audited. Prometheus-generated advice carries workload/specification identity, observation/query/policy provenance, and a 24-hour expiry; approval fails if that advice is expired or no longer matches the live workload and resources. Approval records a decision. Changes are applied only by opt-in [continuous rightsizing](#continuous-rightsizing). Otherwise the dashboard shows a `kubectl` command or a strategic-merge YAML patch for each approved change, and exports approved changes as a patch file for GitOps or `kubectl patch`.
 - Durable PostgreSQL storage for recommendations, reviews, idempotency keys, and audit events. Embedded checksummed migrations run transactionally under an advisory lock; the chart uses a bounded pre-install/pre-upgrade migration Job while serving pods verify the exact schema without DDL. An append-only trigger rejects audit-table mutation. Without a database, a bounded in-process store is used.
-- Forecasts from the forecasting service using Prometheus history, with confidence intervals and model diagnostics.
+- Forecasts from a built-in engine using Prometheus history. Each forecast chooses its model by testing candidates on the series' own past against a seasonal-naive baseline, and reports that accuracy with its prediction interval.
 - Request-based monthly cost estimates priced per namespace from [OpenCost](#cost-and-opencost) when configured, or from operator-configured unit prices. Every savings item names its price source. Node impact keeps three amounts apart: the request reduction, the feasible savings from removing the nodes the packing frees, and the bill, which KubeRight does not measure.
 - Persistent scoped policies (global, namespace, workload, container) with deterministic precedence. A cluster-specific scope wins over an all-clusters scope at the same level, then higher priority wins. Duplicate enabled scopes with equal priority are rejected, and resolution lists every applicable policy in order.
 - Authentication:
@@ -46,7 +46,7 @@ KubeRight does **not**:
 - ingest cloud billing or provide a complete FinOps ledger;
 - register remote clusters.
 
-It never changes workloads unless `operationMode=apply` is set and a namespace opts in. With the PostgreSQL store, webhook delivery is durable; without it, the delivery queue is process-local. Persisted ML models are signed, and the forecasting service refuses any model file whose signature does not verify. See [known limitations](docs/known-limitations.md) before evaluating it for production.
+It never changes workloads unless `operationMode=apply` is set and a namespace opts in. With the PostgreSQL store, webhook delivery is durable; without it, the delivery queue is process-local. See [known limitations](docs/known-limitations.md) before evaluating it for production.
 
 ## Quick start from source
 
@@ -81,7 +81,7 @@ Each integration is independent. An unconfigured or unreachable one is reported 
 | `KUBERIGHT_PROMETHEUS_BEARER_TOKEN_FILE`, `KUBERIGHT_PROMETHEUS_CA_FILE`, `KUBERIGHT_PROMETHEUS_TENANT_NAMESPACE` | Access to a protected Prometheus: a bearer token file, re-read every minute so a rotating ServiceAccount token keeps working; a PEM bundle trusted in addition to the system roots; and the `namespace` query parameter that multi-tenant proxies require. A token is only ever sent over HTTPS, and redirects are refused. |
 | `KUBERIGHT_PROMETHEUS_DISCOVERY` | With no URL set (default `true`), KubeRight uses the cluster's own monitoring when it can find it. On OpenShift, recognised by the service CA that OpenShift mounts next to every ServiceAccount token, that is Thanos Querier with the pod's token and service CA: port 9091 for a cluster-wide inventory, which needs the `cluster-monitoring-view` role, or the tenancy port 9092 for a namespace-scoped one. Elsewhere there is no endpoint all installations share, so set the URL. The Integrations page names the endpoint in use. |
 | `KUBERIGHT_RECOMMENDATION_WINDOW`, `KUBERIGHT_RECOMMENDATION_STEP` | Usage lookback and resolution for generated recommendations (defaults `168h` and `5m`). |
-| `KUBERIGHT_ML_URL`, `KUBERIGHT_ML_API_KEY` | Forecasting service base URL and optional shared key. HTTP URLs also need `KUBERIGHT_ML_ALLOW_HTTP=true`. `KUBERIGHT_FORECAST_WINDOW` and `KUBERIGHT_FORECAST_STEP` default to `336h` and `1h`. |
+| `KUBERIGHT_FORECAST_WINDOW`, `KUBERIGHT_FORECAST_STEP` | Usage lookback and resolution for forecasts (defaults `336h` and `1h`). Forecasting runs inside KubeRight; there is no service to deploy or URL to set. The removed `KUBERIGHT_ML_*` settings are ignored with a startup warning. |
 | `KUBERIGHT_COST_CPU_CORE_HOUR`, `KUBERIGHT_COST_MEMORY_GIB_HOUR`, `KUBERIGHT_COST_CURRENCY` | Unit prices for savings estimates. Set both prices or neither. |
 | `KUBERIGHT_REQUIRE_DISTINCT_APPROVER` | Rejects reviews by the identity that created a recommendation. Defaults to `true` with Kubernetes authentication and `false` in static-token mode. |
 | `KUBERIGHT_LATENCY_QUERY` | One-line PromQL template in seconds, using `$namespace`, `$workload`, or `$container`, for example a p95 from an HTTP server or service-mesh histogram. Enables latency correlation. |
@@ -98,7 +98,7 @@ Each integration is independent. An unconfigured or unreachable one is reported 
 - **Autoscaler awareness:** HPA, KEDA, and VPA settings are read and respected per container.
 - **Platforms:** linux/amd64 and linux/arm64 images; profiles for production, OpenShift, and cluster-wide inventory; spot capacity labels recognized on EKS, GKE, AKS, and Karpenter. Pods default to `kubernetes.io/os: linux` so mixed Windows and Linux clusters schedule them correctly. The API binary also builds and runs on Windows and macOS for development.
 
-Generating recommendations from Prometheus requires the in-cluster inventory, which provides each container's current identity, requests, and limits. The Helm chart exposes these settings as `database`, `prometheus`, `recommendations`, `forecasting`, `cost`, `approvals`, `latencyQuery`, `requestRateQuery`, `verification.interval`, and `ml.apiKey` values. It never deploys PostgreSQL or Prometheus. It refuses `replicaCount > 1` or API autoscaling unless `database.enabled=true`, and rejects ML scaling while model storage remains local. The production-shaped profile enables two API replicas and an HPA, so it requires a pre-created external PostgreSQL Secret, a safe migration credential, and environment-specific topology, network, TLS, backup, and monitoring configuration.
+Generating recommendations from Prometheus requires the in-cluster inventory, which provides each container's current identity, requests, and limits. The Helm chart exposes these settings as `database`, `prometheus`, `recommendations`, `forecasting`, `cost`, `approvals`, `latencyQuery`, `requestRateQuery`, and `verification.interval` values. It never deploys PostgreSQL or Prometheus. It refuses `replicaCount > 1` or API autoscaling unless `database.enabled=true`. The production-shaped profile enables two API replicas and an HPA, so it requires a pre-created external PostgreSQL Secret, a safe migration credential, and environment-specific topology, network, TLS, backup, and monitoring configuration.
 
 For Kubernetes installation, required RBAC, immutable-image guidance, and platform notes, use the [installation guide](docs/installation.md). In Kubernetes authentication mode, users also need RBAC for the virtual `kuberight.io` resources. Reviewing requires `update` on `recommendations/approval`, generating forecasts requires `create` on `forecasts`, the efficiency views require `list` on `efficiency`, node impact requires `list` on `capacity`, and the webhook outbox requires `list` on `notifications` and `update` on `notifications/replay`:
 
@@ -233,7 +233,7 @@ The datasets are synthetic and reproducible, generated from a fixed seed, and th
 
 ```sh
 go run ./cmd/kuberight benchmark            # optimizer: JSON report with methodology
-python -m ml.benchmark --output report.json # forecasting service
+go run ./cmd/kuberight benchmark --forecast-traces FILE # forecasting engine on a measured trace
 ```
 
 **Optimizer benchmark (`internal/benchmark`).**
@@ -278,37 +278,21 @@ python -m ml.benchmark --output report.json # forecasting service
 - **Defect found and fixed:** the first run found that a fixed 10% memory-limit headroom above the training peak let 9.1% of evaluations regress. Next week's memory peaks were 1.2 to 1.5× this week's. The headroom is now three coefficients of variation of the daily peaks, between 10% and 50%. This rule was chosen on the first week of each VM and confirmed on the two held-out weeks (1.7%).
 - **Limitations:** these are virtual machines, not containers, and the memory baseline is assumed. Treat the numbers as evidence about the sizing rules, not as a prediction for your clusters.
 
-**Forecast benchmark (`ml/benchmark.py`).**
+**Forecast accuracy on real traces.** `kuberight benchmark --forecast-traces FILE` backtests the built-in forecasting engine on hourly means of a measured trace. Each forecast sees only earlier hours and chooses its model and interval exactly as live forecasts do. The published run uses the Bitbrains fastStorage trace: 200 VMs drawn at random, of which 188 were scored (12 had gaps longer than three hours), 3 origins with a 24-hour horizon, 90% intervals, and 95% bootstrap intervals over VMs.
 
-- **Datasets:** the same 11 archetypes, 336 hourly samples each.
-- **Method:** a rolling-origin backtest with 3 origins and a 24-hour horizon. Each forecast sees only earlier samples.
-- **Scoring:** 792 held-out samples in total, measured against a seasonal-naive baseline.
-
-Results:
-
-- **Coverage:** mean interval coverage was 94.3% against a nominal 90%. 10 of 11 datasets met the nominal level.
-- **Against the baseline:** 7 of 11 beat it (skill > 0). On the GC-sawtooth, KEDA-scaled, and CronJob datasets the service selected the seasonal-naive model itself.
-- **Weak case:** a level shift (the recent-rollout dataset) reached 75% coverage and was worse than the baseline. KubeRight therefore sizes from post-rollout samples only, shortens validity to 6 hours, and uses a forecast for sizing only when it is calibrated.
-
-**Forecasts on real traces.** `python -m ml.benchmark --traces FILE --limit 200` runs the same backtest on hourly means of the Bitbrains trace: 200 random VMs, 3 origins with a 24-hour horizon, and 95% bootstrap intervals over VMs.
-
-- **CPU:** 90% intervals covered 91.4% (89.7–93.2) of held-out hours. On the same VMs they covered 89.6% (87.4–91.5) before naive-baseline intervals were taken from the baseline's own lagged errors. The service's point forecast beat seasonal-naive on 23% of VMs (median skill 0), because it usually selects that model itself.
-- **Memory:** intervals covered 93.1% (91.7–94.3), down from 93.8% and so slightly tighter. The service beat seasonal-naive on 49% of VMs.
-- KubeRight uses a forecast for sizing only when its own calibration check passes, and a forecast can only raise a recommendation.
-
-**Quantile accuracy.** `scripts/benchmark-quantile.py FILE --limit 200` scores quantile forecasts on the same VMs, origins, and horizon. It compares seasonal-naive with empirical quantiles, the forecasting service, and LightGBM quantile regression with and without split-conformal calibration. LightGBM is a benchmark-only dependency. The score is pinball loss scaled by each VM's mean, averaged over 195 VMs with 95% bootstrap intervals.
-
-| P95 forecast | CPU coverage | CPU pinball | Memory coverage | Memory pinball |
+| Resource | Interval coverage (nominal 90%) | Beats seasonal-naive | Median skill | Median WAPE, engine / seasonal-naive |
 | --- | ---: | ---: | ---: | ---: |
-| Seasonal-naive | 95.1% | 0.132 | 94.6% | 0.086 |
-| Forecasting service | 95.8% | 0.212 (0.133–0.333) | 95.8% | 0.128 |
-| LightGBM, conformal | 91.0% (90.0–92.1) | 0.102 (0.066–0.152) | 91.9% | 0.072 |
+| CPU | 92.3% (91.0–93.6) | 60% of VMs (53–68) | 0.06 | 14.6% / 12.9% |
+| Memory | 92.4% (91.2–93.5) | 81% of VMs (75–86) | 0.20 | 17.2% / 20.9% |
 
-- The service's P95 forecast is still less accurate than seasonal-naive on most VMs: it wins on 43% for CPU and 41% for memory. When the service selects a naive model, its intervals now come from that model's own past errors at each lag, with conformal ranks, instead of a widened residual pool. That raised the share of VMs where the P95 wins from 40% to 43% (CPU) and from 37% to 41% (memory), and cut memory pinball loss from 0.134 to 0.128, with coverage still above 95%. Its P50 wins on 38% of VMs for CPU and 53% for memory. On a sample of 60 VMs, 22% of CPU and 13% of memory forecasts used the conservative fallback for low-confidence series, which reports recent highs instead of a median.
-- LightGBM with conformal calibration has the lowest P95 loss and beats seasonal-naive on 73% (CPU) and 72% (memory) of VMs. It under-covers, though: 91–92% at P95 and 96–97% at P99, so it is not yet safe to size from.
-- Seasonal-naive is the best calibrated: 95% at P95 and 98.6–98.7% at P99.
+- **Intervals:** conformal quantiles of the chosen model's errors over up to 14 past origins. The first version used interpolated quantiles from 3 origins and covered only 76.7% (CPU) and 82.3% (memory) of held-out hours; this run measured the fix.
+- **CPU is the harder case:** the engine beats seasonal-naive on most VMs, but where it loses it loses by more, so its median WAPE is higher.
+- **Models chosen:** naive, seasonal profiles, and weekly seasonal-naive were picked most often for CPU; exponential smoothing and seasonal profiles for memory. The full counts are in the JSON report.
+- **The engine replaced a separate Python forecasting service.** On a different random sample of 200 VMs from the same trace, that service covered 91.4% (CPU) and 93.1% (memory) and beat seasonal-naive on 23% and 49% of VMs.
+- **Sizing:** KubeRight uses a forecast for sizing only when its own held-out coverage is within 10 points of the nominal level, and a forecast can only raise a recommendation.
+- **Synthetic check:** on eight noisy synthetic daily-cycle series, the engine's out-of-sample error is 18.7% lower than seasonal-naive on average (`internal/forecast` tests).
 
-`POST /api/v1/backtest` on the forecasting service runs the same rolling-origin evaluation on your own history. The Correlation analysis page shows its result for the selected container.
+The Correlation analysis page runs the same rolling-origin backtest on the selected container's own history.
 
 ## Continuous rightsizing
 
@@ -422,7 +406,6 @@ In token mode, verified identities are cached for up to 2 minutes (never past th
 
 - **Upgrades:** every schema version since the first is upgraded to the current one with data in place, and every down migration is applied in reverse and re-applied, in the PostgreSQL test suite.
 - **Backups:** back up the database with `pg_dump -Fc`. A live restore with `pg_restore` into a new database reproduced every table byte for byte (row counts and content hashes). A second KubeRight release pointed at the restore served the same recommendations and audit trail, and the audit log stayed append-only.
-- **ML models:** set `ml.persistence.signingKey.existingSecret`, which the chart requires with `ml.persistence.enabled`. Each model file is signed with HMAC-SHA256 and verified before it is loaded. A file that does not verify is never deserialized, and the model is retrained.
 
 ## Cost and OpenCost
 
@@ -477,8 +460,7 @@ The chart was installed in apply mode on a two-node kind cluster running Kuberne
 | Backup and restore | The `pg_dump`/`pg_restore` restore was identical to the source on every table. A second release served the same recommendations and audit trail from it. |
 | GitOps | Against a real Gitea, an approved recommendation opened a mergeable pull request. The diff changed only the four resource values and kept the comments and the second document. A repeated request returned the same pull request. |
 | Single sign-on | Through Dex and the chart's oauth2-proxy sidecar, a browser signed in and used the API under `oidc:alice@example.com`. A write sent with forged `X-Forwarded-*` headers for another user and `system:masters` was still recorded as alice's. Requests without a session got 401. |
-| ML models | A persisted model was reused after its pod was replaced. After one byte was appended to the file on the volume, it was refused before unpickling ("signature does not match") and retrained. |
-| OpenShift conditions | Under Pod Security `restricted`, with arbitrary UIDs (1000680000 and 1000680001, GID 0), read-only root filesystems, and OpenShift's Route CRD: both pods ran, the Route validated, and the ML service wrote signed models. |
+| OpenShift conditions | Under Pod Security `restricted`, with arbitrary UIDs (1000680000 and 1000680001, GID 0), read-only root filesystems, and OpenShift's Route CRD: the API pod and the then-separate forecasting pod ran, and the Route validated. This was a simulation on kind, not OpenShift. |
 
 Real infrastructure found 13 defects that unit tests had not caught, and all are fixed:
 
@@ -502,7 +484,7 @@ These were functional runs on a small cluster. Accuracy is evaluated separately,
 
 | Path | Purpose |
 | --- | --- |
-| `cmd/kuberight`, `internal/` | Go API, authentication, inventory, Prometheus usage, forecasting client, recommendations, reviews, and storage |
+| `cmd/kuberight`, `internal/` | Go API, authentication, inventory, Prometheus usage, forecasting engine, recommendations, reviews, and storage |
 | `internal/usage/attribution.go` | Historical pod attribution and time-aware replica coverage |
 | `internal/optimizer/stability.go`, `runtime.go` | Hysteresis, cooldown, oscillation, and confirmation controls; JVM memory rules |
 | `internal/automation/`, `internal/httpapi/automation.go` | Opt-in continuous rightsizing and rollback |
@@ -512,7 +494,6 @@ These were functional runs on a small cluster. Accuracy is evaluated separately,
 | `scripts/verify-monitoring.sh`, `charts/kuberight/dashboards/` | promtool tests for the alerts and dashboard queries; the Grafana dashboard |
 | `internal/repository/postgres/migrations/` | Embedded, checksummed PostgreSQL schema migrations |
 | `web/` | React and TypeScript dashboard |
-| `ml/` | Independent FastAPI forecasting service |
 | `charts/kuberight/` | Helm chart and profiles |
 | `deploy/manifests/` | Generated standalone manifests; do not edit by hand |
 | `api/openapi.yaml` | Go API contract artifact; it is not served by the process |

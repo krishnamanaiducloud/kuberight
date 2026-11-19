@@ -86,10 +86,10 @@ jobs:
           path: coverage-go.out
           if-no-files-found: error
 
-  python:
-    name: Python lint, types, tests
+  api-contract:
+    name: API contract
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -99,14 +99,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: |
-            ml/requirements.txt
-            ml/requirements-dev.txt
+          cache-dependency-path: scripts/requirements.txt
       - run: python -m pip install --upgrade pip
-      - run: python -m pip install -r ml/requirements-dev.txt
-      - run: python -m ruff format --check ml
-      - run: python -m ruff check ml
-      - run: python -m mypy --config-file ml/pyproject.toml ml
+      - run: python -m pip install -r scripts/requirements.txt
       - name: Validate OpenAPI contract
         run: |
           openapi-spec-validator api/openapi.yaml
@@ -124,13 +119,6 @@ jobs:
           fi
           git show "${base_tag}:api/openapi.yaml" > /tmp/kuberight-openapi-base.yaml
           python scripts/check-openapi-compat.py /tmp/kuberight-openapi-base.yaml api/openapi.yaml
-      - name: Unit tests with coverage
-        run: python -m pytest ml --cov=ml --cov-report=term-missing --cov-report=xml:coverage-python.xml --cov-fail-under=90
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: python-coverage
-          path: coverage-python.xml
-          if-no-files-found: error
 
   frontend:
     name: Frontend lint, types, tests, build
@@ -185,9 +173,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: ml/requirements.txt
+          cache-dependency-path: scripts/requirements.txt
       - run: python -m pip install pip-audit==2.10.1
-      - run: python -m pip_audit -r ml/requirements-dev.txt --strict
+      - run: python -m pip_audit -r scripts/requirements.txt --strict
 
   dependency-review:
     name: Pull request dependency review
@@ -239,10 +227,6 @@ jobs:
             > /tmp/rendered/openshift-cluster-wide.yaml
           helm template kuberight charts/kuberight --namespace kuberight -f charts/kuberight/profiles/cluster-wide.yaml > /tmp/rendered/cluster-wide.yaml
           helm template kuberight charts/kuberight --namespace kuberight \
-            --set ml.enabled=true \
-            > /tmp/rendered/ml-enabled.yaml
-          helm template kuberight charts/kuberight --namespace kuberight \
-            --set ml.enabled=true --set ml.apiKey.existingSecret=kuberight-ml \
             --set database.enabled=true --set database.existingSecret=kuberight-db --set replicaCount=2 \
             --set prometheus.url=http://prometheus.monitoring.svc:9090 --set prometheus.allowHTTP=true \
             --set cost.cpuCoreHour=0.031 --set cost.memoryGiBHour=0.004 \
@@ -263,8 +247,8 @@ jobs:
           reject --set cost.currency=usd
           reject --set serviceAccount.create=false
           reject --set serviceAccount.automountServiceAccountToken=false
-          reject --set ml.enabled=true --set ml.replicaCount=2
-          reject --set ml.enabled=true --set ml.autoscaling.enabled=true
+          reject --set prometheus.url=http://prometheus.monitoring.svc:9090 --set prometheus.allowHTTP=true --set prometheus.bearerTokenFile=/var/run/secrets/kubernetes.io/serviceaccount/token
+          reject --set prometheus.caFile=/etc/ca.crt
           reject --set autoscaling.enabled=true --set autoscaling.minReplicas=3 --set autoscaling.maxReplicas=2 --set database.enabled=true --set database.existingSecret=kuberight-db
           reject --set prometheus.url=http://prometheus.monitoring.svc:9090
           reject --set misspelledTopLevelValue=true
@@ -288,7 +272,7 @@ jobs:
             ghcr.io/yannh/kubeconform:v0.8.0@sha256:faffaf43f95aa6425306e1ab8d6fcad72acb9049158f38e574c085ea1ec0f64e \
             -strict -summary -kubernetes-version 1.35.0 \
             /manifests/default.yaml /manifests/development.yaml \
-            /manifests/cluster-wide.yaml /manifests/ml-enabled.yaml /manifests/integrations.yaml
+            /manifests/cluster-wide.yaml /manifests/integrations.yaml
       - name: Validate profiles containing extension APIs
         run: |
           docker run --rm -v /tmp/rendered:/manifests:ro \
@@ -311,7 +295,7 @@ jobs:
     name: Build, scan, SBOM, smoke, Kind
     needs:
       - go
-      - python
+      - api-contract
       - frontend
       - dependencies
       - secrets
@@ -331,20 +315,11 @@ jobs:
           push: false
           tags: kuberight:ci
           provenance: false
-      - name: Build ML image
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
-        with:
-          context: ./ml
-          file: ./ml/Dockerfile
-          load: true
-          push: false
-          tags: kuberight-ml:ci
-          provenance: false
       - name: Enforce non-root image users
         shell: bash
         run: |
           set -euo pipefail
-          for image in kuberight:ci kuberight-ml:ci; do
+          for image in kuberight:ci; do
             configured_user="$(docker image inspect --format '{{.Config.User}}' "$image")"
             configured_uid="${configured_user%%:*}"
             if [[ ! "$configured_uid" =~ ^[1-9][0-9]*$ ]]; then
@@ -352,23 +327,10 @@ jobs:
               exit 1
             fi
           done
-      - name: Verify ML runtime packaging tools are absent
-        run: |
-          docker run --rm --entrypoint /usr/bin/python3 kuberight-ml:ci \
-            -c "import importlib.util; from pathlib import Path; assert importlib.util.find_spec('pip') is None; assert importlib.util.find_spec('ensurepip') is None; assert not Path('/usr/bin/pebble').exists(); assert 'Package: libstdc++6' in Path('/var/lib/dpkg/status.d/libstdc++6').read_text(); assert Path('/usr/share/doc/libstdc++6/copyright').is_file(); import fastapi, joblib, numpy, pydantic, scipy, sklearn, uvicorn"
       - name: Scan backend/dashboard image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: kuberight:ci
-          format: table
-          exit-code: "1"
-          severity: HIGH,CRITICAL
-          vuln-type: os,library
-          version: v0.76.2
-      - name: Scan ML image
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: kuberight-ml:ci
           format: table
           exit-code: "1"
           severity: HIGH,CRITICAL
@@ -381,17 +343,6 @@ jobs:
           format: spdx-json
           output-file: kuberight.spdx.json
           artifact-name: kuberight-ci-sbom.spdx.json
-      - name: Generate ML SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
-        with:
-          image: kuberight-ml:ci
-          format: spdx-json
-          output-file: kuberight-ml.spdx.json
-          artifact-name: kuberight-ml-ci-sbom.spdx.json
-      - name: Verify ML SBOM identifies copied C++ runtime
-        shell: bash
-        run: |
-          jq -e 'any(.packages[]; .name == "libstdc++6" and (.versionInfo | length > 0))' kuberight-ml.spdx.json
       - name: Container smoke tests
         shell: bash
         run: |
@@ -400,13 +351,9 @@ jobs:
             -e KUBERIGHT_AUTH_MODE=static -e KUBERIGHT_API_TOKEN=ci-smoke-token-at-least-32-characters \
             -e KUBERIGHT_INVENTORY_ENABLED=false \
             -p 18080:8080 kuberight:ci
-          docker run -d --name kuberight-ml-smoke --read-only --tmpfs /tmp:rw,noexec,nosuid,size=256m \
-            -p 18081:8081 kuberight-ml:ci
-          trap 'docker logs kuberight-smoke || true; docker logs kuberight-ml-smoke || true; docker rm -f kuberight-smoke kuberight-ml-smoke || true' EXIT
+          trap 'docker logs kuberight-smoke || true; docker rm -f kuberight-smoke || true' EXIT
           for _ in {1..30}; do curl --fail --silent http://127.0.0.1:18080/healthz && break; sleep 1; done
           curl --fail --silent http://127.0.0.1:18080/readyz
-          for _ in {1..30}; do curl --fail --silent http://127.0.0.1:18081/healthz && break; sleep 1; done
-          curl --fail --silent http://127.0.0.1:18081/readyz
       - uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
         with:
           cluster_name: kuberight-integration
@@ -418,18 +365,14 @@ jobs:
           kubectl create namespace kuberight
           kubectl -n kuberight create secret generic kuberight-e2e-auth \
             --from-literal=token=ci-live-browser-token-at-least-32-characters
-          kind load docker-image kuberight:ci kuberight-ml:ci --name kuberight-integration
+          kind load docker-image kuberight:ci --name kuberight-integration
           helm upgrade --install kuberight charts/kuberight \
             --namespace kuberight --wait --timeout 5m \
             --set image.repository=kuberight --set image.tag=ci --set image.pullPolicy=Never \
             --set replicaCount=1 --set podDisruptionBudget.enabled=false \
             --set topologySpreadConstraints.enabled=false \
-            --set auth.mode=static --set auth.staticToken.existingSecret=kuberight-e2e-auth \
-            --set ml.enabled=true --set ml.image.repository=kuberight-ml \
-            --set ml.image.tag=ci --set ml.image.pullPolicy=Never \
-            --set ml.replicaCount=1 --set ml.podDisruptionBudget.enabled=false
+            --set auth.mode=static --set auth.staticToken.existingSecret=kuberight-e2e-auth
           kubectl -n kuberight rollout status deployment/kuberight --timeout=2m
-          kubectl -n kuberight rollout status deployment/kuberight-ml --timeout=2m
           kubectl -n kuberight get pods,services
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -489,22 +432,12 @@ jobs:
           push: false
           tags: kuberight:ci-arm64
           provenance: false
-      - name: Build ARM64 ML image
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
-        with:
-          context: ./ml
-          file: ./ml/Dockerfile
-          platforms: linux/arm64
-          load: true
-          push: false
-          tags: kuberight-ml:ci-arm64
-          provenance: false
       - name: Verify ARM64 platforms and non-root users
         shell: bash
         run: |
           set -euo pipefail
           test "$(uname -m)" = x86_64
-          for image in kuberight:ci-arm64 kuberight-ml:ci-arm64; do
+          for image in kuberight:ci-arm64; do
             platform="$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")"
             test "$platform" = linux/arm64 || {
               echo "Expected linux/arm64 image, got $platform for $image" >&2
@@ -517,26 +450,10 @@ jobs:
               exit 1
             fi
           done
-      - name: Verify ARM64 ML runtime
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker run --rm --platform linux/arm64 \
-            --entrypoint /usr/bin/python3 kuberight-ml:ci-arm64 \
-            -c "import importlib.util, platform; from pathlib import Path; machine = platform.machine(); print(machine); assert machine in {'aarch64', 'arm64'}, machine; assert importlib.util.find_spec('pip') is None; assert importlib.util.find_spec('ensurepip') is None; assert not Path('/usr/bin/pebble').exists(); assert 'Package: libstdc++6' in Path('/var/lib/dpkg/status.d/libstdc++6').read_text(); assert Path('/usr/share/doc/libstdc++6/copyright').is_file(); import fastapi, joblib, numpy, pydantic, scipy, sklearn, uvicorn"
       - name: Scan ARM64 backend/dashboard image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: kuberight:ci-arm64
-          format: table
-          exit-code: "1"
-          severity: HIGH,CRITICAL
-          vuln-type: os,library
-          version: v0.76.2
-      - name: Scan ARM64 ML image
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: kuberight-ml:ci-arm64
           format: table
           exit-code: "1"
           severity: HIGH,CRITICAL
@@ -548,8 +465,7 @@ jobs:
           set -euo pipefail
           cleanup() {
             docker logs kuberight-arm64-smoke || true
-            docker logs kuberight-ml-arm64-smoke || true
-            docker rm -f kuberight-arm64-smoke kuberight-ml-arm64-smoke >/dev/null 2>&1 || true
+            docker rm -f kuberight-arm64-smoke >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
           docker run --platform linux/arm64 -d --name kuberight-arm64-smoke \
@@ -558,9 +474,6 @@ jobs:
             -e KUBERIGHT_API_TOKEN=ci-smoke-token-at-least-32-characters \
             -e KUBERIGHT_INVENTORY_ENABLED=false \
             -p 18082:8080 kuberight:ci-arm64
-          docker run --platform linux/arm64 -d --name kuberight-ml-arm64-smoke \
-            --read-only --tmpfs /tmp:rw,noexec,nosuid,size=256m \
-            -p 18083:8081 kuberight-ml:ci-arm64
           wait_for_url() {
             local url="$1"
             for _ in {1..60}; do
@@ -574,15 +487,13 @@ jobs:
           }
           wait_for_url http://127.0.0.1:18082/healthz
           curl --fail --silent --show-error http://127.0.0.1:18082/readyz
-          wait_for_url http://127.0.0.1:18083/healthz
-          curl --fail --silent --show-error http://127.0.0.1:18083/readyz
 
   complete:
     name: All mandatory gates passed
     if: always()
     needs:
       - go
-      - python
+      - api-contract
       - frontend
       - dependencies
       - dependency-review
@@ -595,7 +506,7 @@ jobs:
       - name: Require every mandatory result
         env:
           GO_RESULT: ${{ needs.go.result }}
-          PYTHON_RESULT: ${{ needs.python.result }}
+          API_CONTRACT_RESULT: ${{ needs.api-contract.result }}
           FRONTEND_RESULT: ${{ needs.frontend.result }}
           DEPENDENCIES_RESULT: ${{ needs.dependencies.result }}
           DEPENDENCY_REVIEW_RESULT: ${{ needs.dependency-review.result }}
@@ -605,7 +516,7 @@ jobs:
           ARM64_CONTAINERS_RESULT: ${{ needs.containers_arm64.result }}
         run: |
           test "$GO_RESULT" = success
-          test "$PYTHON_RESULT" = success
+          test "$API_CONTRACT_RESULT" = success
           test "$FRONTEND_RESULT" = success
           test "$DEPENDENCIES_RESULT" = success
           if [[ "${{ github.event_name }}" = pull_request ]]; then

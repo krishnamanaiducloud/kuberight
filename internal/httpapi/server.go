@@ -67,7 +67,7 @@ type UsageSource interface {
 	Ready(context.Context) error
 }
 
-// Forecaster calls the forecasting service.
+// Forecaster forecasts a usage series; the built-in engine implements it.
 type Forecaster interface {
 	Forecast(context.Context, forecast.Request) (forecast.Response, error)
 	Ready(context.Context) error

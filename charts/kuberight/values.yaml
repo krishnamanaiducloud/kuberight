@@ -376,8 +376,8 @@ networkPolicy:
       matchLabels:
         kubernetes.io/metadata.name: monitoring
     podSelector: {}
-  # Egress isolation. When enabled, DNS (the pods selected by dns) and, with
-  # ml.enabled, this release's forecasting service are allowed automatically.
+  # Egress isolation. When enabled, DNS (the pods selected by dns) is allowed
+  # automatically.
   # The Kubernetes API server must be listed in kubernetesAPI.cidrs (its
   # endpoint addresses, for example from
   # `kubectl get endpointslices -n default -l kubernetes.io/service-name=kubernetes`),
@@ -418,79 +418,6 @@ metrics:
     labels:
       grafana_dashboard: "1"
     annotations: {}
-
-ml:
-  enabled: false
-  # Optional shared API key. The same Secret is mounted into the Go API and
-  # the forecasting service.
-  apiKey:
-    existingSecret: ""
-    key: api-key
-  # A single ML replica is enforced because model updates use a local
-  # single-writer store. Enable persistence to retain validated models across
-  # pod restarts, or bind an externally provisioned claim.
-  replicaCount: 1
-  image:
-    repository: mohankrishna999/kuberight-ml
-    tag: ""
-    digest: ""
-    pullPolicy: IfNotPresent
-  imagePullSecrets: []
-  service:
-    port: 8081
-    annotations: {}
-  persistence:
-    enabled: false
-    existingClaim: ""
-    storageClass: ""
-    accessModes:
-      - ReadWriteOnce
-    size: 1Gi
-    annotations: {}
-    # Required with persistence. Models are pickle (joblib) files; each is
-    # signed with HMAC-SHA256 and verified before it is loaded, so a file on
-    # the volume that was not written with this key is never deserialized.
-    # kubectl create secret generic kuberight-ml-signing \
-    #   --from-literal=artifact-key="$(openssl rand -hex 32)"
-    signingKey:
-      existingSecret: ""
-      key: artifact-key
-  resources:
-    requests:
-      cpu: 100m
-      memory: 256Mi
-    limits:
-      cpu: 1
-      memory: 1Gi
-  podAnnotations: {}
-  podLabels: {}
-  podSecurityContext:
-    runAsNonRoot: true
-    seccompProfile:
-      type: RuntimeDefault
-  securityContext:
-    allowPrivilegeEscalation: false
-    readOnlyRootFilesystem: true
-    capabilities:
-      drop:
-        - ALL
-  autoscaling:
-    # Horizontal scaling is unsupported while the model store is single-writer.
-    enabled: false
-    minReplicas: 1
-    maxReplicas: 1
-    targetCPUUtilizationPercentage: 70
-  podDisruptionBudget:
-    enabled: true
-    minAvailable: 1
-  networkPolicy:
-    enabled: true
-    ingress: []
-  nodeSelector:
-    kubernetes.io/os: linux
-  tolerations: []
-  affinity: {}
-  extraEnv: []
 
 extraVolumes: []
 extraVolumeMounts: []

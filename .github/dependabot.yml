@@ -9,7 +9,7 @@ updates:
         update-types: [minor, patch]
 
   - package-ecosystem: pip
-    directory: /ml
+    directory: /scripts
     schedule:
       interval: weekly
     groups:
@@ -31,10 +31,5 @@ updates:
 
   - package-ecosystem: docker
     directory: /
-    schedule:
-      interval: weekly
-
-  - package-ecosystem: docker
-    directory: /ml
     schedule:
       interval: weekly

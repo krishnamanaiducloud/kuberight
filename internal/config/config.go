@@ -68,11 +68,9 @@ type Config struct {
 	DatabaseMaxConns int
 	DatabaseMigrate  bool
 
-	// MLURL is the base URL of the forecasting service. MLAPIKey is secret.
-	MLURL       string
-	MLAPIKey    string
-	MLTimeout   time.Duration
-	MLAllowHTTP bool
+	// RemovedSettings lists environment variables that are set but no longer
+	// have any effect, so startup can say so.
+	RemovedSettings []string
 
 	// Prometheus usage windows used to generate recommendations and
 	// forecasts. Zero values select the defaults.
@@ -172,9 +170,6 @@ func (c Config) Normalized() Config {
 	if c.ForecastStep == 0 {
 		c.ForecastStep = DefaultForecastStep
 	}
-	if c.MLTimeout == 0 {
-		c.MLTimeout = 10 * time.Second
-	}
 	if c.PrometheusTimeout == 0 {
 		c.PrometheusTimeout = 10 * time.Second
 	}
@@ -214,8 +209,6 @@ func Load() (Config, error) {
 		PrometheusCAFile:          strings.TrimSpace(os.Getenv("KUBERIGHT_PROMETHEUS_CA_FILE")),
 		PrometheusTenantNamespace: strings.TrimSpace(os.Getenv("KUBERIGHT_PROMETHEUS_TENANT_NAMESPACE")),
 		DatabaseURL:               strings.TrimSpace(os.Getenv("KUBERIGHT_DATABASE_URL")),
-		MLURL:                     strings.TrimSpace(os.Getenv("KUBERIGHT_ML_URL")),
-		MLAPIKey:                  os.Getenv("KUBERIGHT_ML_API_KEY"),
 		CostCurrency:              strings.ToUpper(envOr("KUBERIGHT_COST_CURRENCY", "USD")),
 		LatencyQuery:              strings.TrimSpace(os.Getenv("KUBERIGHT_LATENCY_QUERY")),
 		RequestRateQuery:          strings.TrimSpace(os.Getenv("KUBERIGHT_REQUEST_RATE_QUERY")),
@@ -240,8 +233,11 @@ func Load() (Config, error) {
 	if cfg.AllowInsecureUpstreams, err = parseBool("KUBERIGHT_ALLOW_INSECURE_UPSTREAMS", false); err != nil {
 		return Config{}, err
 	}
-	if cfg.MLAllowHTTP, err = parseBool("KUBERIGHT_ML_ALLOW_HTTP", false); err != nil {
-		return Config{}, err
+	// Forecasting is built in; the external forecasting service is gone.
+	for _, name := range []string{"KUBERIGHT_ML_URL", "KUBERIGHT_ML_API_KEY", "KUBERIGHT_ML_TIMEOUT", "KUBERIGHT_ML_ALLOW_HTTP"} {
+		if os.Getenv(name) != "" {
+			cfg.RemovedSettings = append(cfg.RemovedSettings, name)
+		}
 	}
 	if cfg.DatabaseMigrate, err = parseBool("KUBERIGHT_DATABASE_MIGRATE", false); err != nil {
 		return Config{}, err
@@ -300,7 +296,6 @@ func Load() (Config, error) {
 		{"KUBERIGHT_SHUTDOWN_TIMEOUT", 20 * time.Second, time.Second, 2 * time.Minute, &cfg.ShutdownTimeout},
 		{"KUBERIGHT_INVENTORY_RESYNC", 10 * time.Minute, 30 * time.Second, 24 * time.Hour, &cfg.InventoryResync},
 		{"KUBERIGHT_PROMETHEUS_TIMEOUT", 10 * time.Second, time.Second, time.Minute, &cfg.PrometheusTimeout},
-		{"KUBERIGHT_ML_TIMEOUT", 10 * time.Second, time.Second, time.Minute, &cfg.MLTimeout},
 		{"KUBERIGHT_RECOMMENDATION_WINDOW", DefaultRecommendationWindow, time.Hour, 30 * 24 * time.Hour, &cfg.RecommendationWindow},
 		{"KUBERIGHT_RECOMMENDATION_STEP", DefaultRecommendationStep, 15 * time.Second, time.Hour, &cfg.RecommendationStep},
 		{"KUBERIGHT_FORECAST_WINDOW", DefaultForecastWindow, 2 * 24 * time.Hour, 30 * 24 * time.Hour, &cfg.ForecastWindow},
@@ -386,12 +381,6 @@ func (c Config) Validate() error {
 	}
 	if c.PrometheusBearerTokenFile != "" && strings.HasPrefix(strings.ToLower(c.PrometheusURL), "http://") {
 		return errors.New("KUBERIGHT_PROMETHEUS_BEARER_TOKEN_FILE requires an HTTPS KUBERIGHT_PROMETHEUS_URL; a token is never sent in cleartext")
-	}
-	if err := validateUpstream("KUBERIGHT_ML_URL", c.MLURL, c.AllowInsecureUpstreams || c.MLAllowHTTP, "KUBERIGHT_ML_ALLOW_HTTP=true"); err != nil {
-		return err
-	}
-	if c.MLAPIKey != "" && len(c.MLAPIKey) < 16 {
-		return errors.New("KUBERIGHT_ML_API_KEY must contain at least 16 characters")
 	}
 	if c.DatabaseURL != "" {
 		u, err := url.Parse(c.DatabaseURL)

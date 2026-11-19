@@ -602,7 +602,7 @@ func TestForecastConvertsUnitsAndTimestamps(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
-	if forecaster.request.IntervalSeconds != 3600 || forecaster.request.Resource != "cpu" || len(forecaster.request.Samples) != 100 || forecaster.request.Samples[0] != 0.2 || !forecaster.request.Persist || !strings.HasPrefix(forecaster.request.SeriesID, "kuberight-") {
+	if forecaster.request.IntervalSeconds != 3600 || forecaster.request.Resource != "cpu" || len(forecaster.request.Samples) != 100 || forecaster.request.Samples[0] != 0.2 || !strings.HasPrefix(forecaster.request.SeriesID, "kuberight-") {
 		t.Fatalf("forecast request = %#v", forecaster.request)
 	}
 	points := body["forecast"].([]any)
@@ -703,7 +703,7 @@ func TestOverviewReportsCountsAndDependencies(t *testing.T) {
 	if states["Prometheus"]["configured"] != true || states["Prometheus"]["healthy"] != false {
 		t.Fatalf("Prometheus status=%v", states["Prometheus"])
 	}
-	if states["Forecasting service"]["configured"] != false || states["Recommendation store"]["healthy"] != true {
+	if states["Forecasting"]["configured"] != false || states["Recommendation store"]["healthy"] != true {
 		t.Fatalf("dependencies=%v", states)
 	}
 	if _, ok := body["estimatedMonthlySavings"]; ok {
@@ -758,7 +758,7 @@ func TestIntegrationsReportLiveHealth(t *testing.T) {
 	found := false
 	for _, item := range body["items"].([]any) {
 		dependency := item.(map[string]any)
-		if dependency["name"] == "Forecasting service" {
+		if dependency["name"] == "Forecasting" {
 			found = dependency["configured"] == true && dependency["healthy"] == true
 		}
 	}

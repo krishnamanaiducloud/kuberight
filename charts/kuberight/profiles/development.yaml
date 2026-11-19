@@ -15,9 +15,3 @@ resources:
   limits:
     cpu: 500m
     memory: 256Mi
-ml:
-  replicaCount: 1
-  autoscaling:
-    enabled: false
-  podDisruptionBudget:
-    enabled: false

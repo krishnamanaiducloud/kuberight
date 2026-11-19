@@ -266,7 +266,7 @@ func TestForecastEvaluationNeedsHistoryAndService(t *testing.T) {
 	if evaluation := server.forecastEvaluation(context.Background(), subject, fixedNow); evaluation.Available {
 		t.Fatal("history failure")
 	}
-	for err, want := range map[error]string{forecast.ErrRejected: "requirements", forecast.ErrBusy: "busy", errors.New("x"): "did not respond"} {
+	for err, want := range map[error]string{forecast.ErrRejected: "requirements", forecast.ErrBusy: "busy", errors.New("x"): "forecasting failed"} {
 		if !strings.Contains(forecastFailure(err), want) {
 			t.Fatalf("%v: %s", err, forecastFailure(err))
 		}

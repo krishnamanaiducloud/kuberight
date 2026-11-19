@@ -46,6 +46,14 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) == 4 && os.Args[1] == "benchmark" && os.Args[2] == "--forecast-traces" {
+		// Backtests the built-in forecasting engine on a measured trace.
+		if err := benchmarkForecastTraces(os.Args[3]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) == 4 && os.Args[1] == "benchmark" && os.Args[2] == "--traces" {
 		// Real-trace evaluation: rolling-origin folds with bootstrap
 		// confidence intervals. The trace format is documented in
@@ -57,7 +65,7 @@ func main() {
 		return
 	}
 	if len(os.Args) > 1 && (len(os.Args) != 2 || os.Args[1] != "migrate") {
-		fmt.Fprintln(os.Stderr, "usage: kuberight [healthcheck|migrate|benchmark [--traces FILE]]")
+		fmt.Fprintln(os.Stderr, "usage: kuberight [healthcheck|migrate|benchmark [--traces FILE | --forecast-traces FILE]]")
 		os.Exit(2)
 	}
 
@@ -102,19 +110,11 @@ func main() {
 		}
 		dependencies.Usage = usage.NewSource(client)
 	}
-	if cfg.MLURL != "" {
-		client, clientErr := forecast.NewClient(forecast.Options{
-			BaseURL: cfg.MLURL, APIKey: cfg.MLAPIKey, Timeout: cfg.MLTimeout, AllowHTTP: cfg.MLAllowHTTP || cfg.AllowInsecureUpstreams,
-		})
-		if clientErr != nil {
-			logger.Error("forecasting client initialization failed", "error", clientErr)
-			os.Exit(1)
-		}
-		dependencies.Forecaster = client
-	} else {
-		// The built-in engine forecasts inside this process; it is bounded
-		// so forecasting cannot take every CPU the API has.
-		dependencies.Forecaster = forecast.NewEngine(max(2, runtime.GOMAXPROCS(0)))
+	// Forecasting runs inside this process, bounded so it cannot take every
+	// CPU the API has.
+	dependencies.Forecaster = forecast.NewEngine(max(2, runtime.GOMAXPROCS(0)))
+	if len(cfg.RemovedSettings) > 0 {
+		logger.Warn("ignoring settings that no longer have any effect; forecasting is built in", "settings", cfg.RemovedSettings)
 	}
 	// webhook is the notifier to close at shutdown: the in-memory queue, or
 	// the durable outbox dispatcher with the PostgreSQL store.
@@ -218,7 +218,7 @@ func main() {
 	}()
 
 	logger.Info("starting KubeRight API", "address", cfg.ListenAddress, "version", httpapi.Version, "commit", httpapi.Commit, "mode", cfg.OperationMode,
-		"store", storeKind(store), "prometheus", cfg.PrometheusURL != "", "forecasting", cfg.MLURL != "", "costModel", cfg.CostConfigured())
+		"store", storeKind(store), "prometheus", cfg.PrometheusURL != "", "forecasting", forecast.EngineVersion, "costModel", cfg.CostConfigured())
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("API server failed", "error", err)
 		os.Exit(1)
@@ -315,6 +315,21 @@ func benchmarkTraces(path string) error {
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(benchmark.RunTraces(benchmark.TraceDatasets(series, config), config))
+}
+
+func benchmarkForecastTraces(path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = file.Close() }()
+	series, err := benchmark.ReadTraces(file)
+	if err != nil {
+		return err
+	}
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(benchmark.RunForecastTraces(series, benchmark.DefaultForecastTraceConfig()))
 }
 
 // resolvePrometheus picks the Prometheus endpoint: the configured URL, or
