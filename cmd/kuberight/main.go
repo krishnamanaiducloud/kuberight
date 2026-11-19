@@ -114,7 +114,7 @@ func main() {
 	// CPU the API has.
 	dependencies.Forecaster = forecast.NewEngine(max(2, runtime.GOMAXPROCS(0)))
 	if len(cfg.RemovedSettings) > 0 {
-		logger.Warn("ignoring settings that no longer have any effect; forecasting is built in", "settings", cfg.RemovedSettings)
+		logger.Warn("ignoring settings that no longer have any effect: forecasting is built in and KubeRight never changes workloads", "settings", cfg.RemovedSettings)
 	}
 	// webhook is the notifier to close at shutdown: the in-memory queue, or
 	// the durable outbox dispatcher with the PostgreSQL store.
@@ -189,17 +189,6 @@ func main() {
 			os.Exit(1)
 		}
 		go verifier.Run(ctx)
-	}
-	// Continuous rightsizing writes only in apply mode, and then only to
-	// opted-in namespaces with approved, fresh, identity-matched advice.
-	if cfg.OperationMode == config.ModeApply {
-		automator, automatorErr := httpapi.NewAutomator(cfg, dependencies)
-		if automatorErr != nil {
-			logger.Error("automation initialization failed", "error", automatorErr)
-			os.Exit(1)
-		}
-		logger.Warn("automation is enabled: approved recommendations are applied to namespaces labeled kuberight.io/automation=enabled", "interval", cfg.Normalized().AutomationInterval.String(), "max_changes_per_run", cfg.Normalized().AutomationMaxChanges, "window", cfg.AutomationWindow)
-		go automator.Run(ctx)
 	}
 	shutdownComplete := make(chan struct{})
 	go func() {

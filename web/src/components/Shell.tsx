@@ -34,10 +34,8 @@ export function Shell({ children }: { children: ReactNode }) {
 	const modeDescription = operationalMode === 'observe'
 		? 'Recommendation generation and workload changes are disabled.'
 		: operationalMode === 'recommend'
-			? 'No changes are applied automatically.'
-			: operationalMode === 'apply'
-				? 'Approved recommendations are applied only in namespaces labeled kuberight.io/automation=enabled.'
-				: 'Connect to verify the configured safety mode.'
+			? 'Read-only: KubeRight never changes workloads.'
+			: 'Connect to verify the configured safety mode.'
 
   const saveToken = () => {
     tokenStore.set(token.trim())

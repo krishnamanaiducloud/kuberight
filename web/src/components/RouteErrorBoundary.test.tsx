@@ -11,7 +11,7 @@ describe('RouteErrorBoundary', () => {
 
   it('contains a failing view and recovers on the next route', () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined)
-    const { rerender } = render(<RouteErrorBoundary resetKey="/automation"><Broken /></RouteErrorBoundary>)
+    const { rerender } = render(<RouteErrorBoundary resetKey="/forecasting"><Broken /></RouteErrorBoundary>)
     expect(screen.getByRole('heading', { level: 1, name: 'This view could not be displayed' })).toBeInTheDocument()
     expect(screen.getByRole('alert')).toHaveTextContent('decisions is undefined')
 

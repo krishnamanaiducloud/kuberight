@@ -107,9 +107,6 @@ VALUES ($1, $2, 'alice', 'create', $3, 'shop', 'success', 'request-1')`, eventID
 			if _, err := store.ListVerificationOutcomes(ctx, 1, 10); err != nil {
 				t.Fatalf("read verification outcomes after upgrade: %v", err)
 			}
-			if _, known, err := store.GetResizeState(ctx, "rec_00000000000000000000000000000000"); err != nil || known {
-				t.Fatalf("read resize state after upgrade: known=%v err=%v", known, err)
-			}
 		})
 	}
 }

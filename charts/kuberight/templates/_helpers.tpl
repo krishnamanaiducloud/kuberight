@@ -78,15 +78,6 @@ app.kubernetes.io/component: server
 {{- if and (eq .Values.auth.mode "static") (not .Values.auth.staticToken.existingSecret) -}}
 {{- fail "auth.staticToken.existingSecret is required when auth.mode=static" -}}
 {{- end -}}
-{{- if and (eq .Values.operationMode "apply") (not (has .Values.auth.mode (list "kubernetes" "oidc"))) -}}
-{{- fail "operationMode=apply requires auth.mode=kubernetes or oidc so every approval and change has an audited identity" -}}
-{{- end -}}
-{{- if and (eq .Values.operationMode "apply") (ne .Values.rbac.scope "cluster") -}}
-{{- fail "operationMode=apply requires rbac.scope=cluster because automation reads the kuberight.io/automation namespace opt-in label" -}}
-{{- end -}}
-{{- if and (eq .Values.operationMode "apply") (not .Values.rbac.monitoring.enabled) -}}
-{{- fail "operationMode=apply requires rbac.monitoring.enabled=true" -}}
-{{- end -}}
 {{- if eq .Values.auth.mode "oidc" -}}
 {{- $oidc := .Values.auth.oidc -}}
 {{- if not (and $oidc.issuerURL $oidc.clientID $oidc.existingSecret $oidc.redirectURL) -}}

@@ -31,32 +31,6 @@ func TestValidateRejectsWeakStaticToken(t *testing.T) {
 	}
 }
 
-func TestApplyModeRequiresAuditedIdentitiesAndValidBounds(t *testing.T) {
-	cfg := validConfig()
-	cfg.OperationMode = ModeApply
-	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "Kubernetes authentication") {
-		t.Fatalf("apply mode with the shared static token must be rejected, got %v", err)
-	}
-	cfg.AuthMode, cfg.APIToken = "kubernetes", ""
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("apply mode with Kubernetes authentication: %v", err)
-	}
-	for name, mutate := range map[string]func(*Config){
-		"window":      func(value *Config) { value.AutomationWindow = "late at night" },
-		"max changes": func(value *Config) { value.AutomationMaxChanges = 101 },
-	} {
-		invalid := cfg
-		mutate(&invalid)
-		if err := invalid.Validate(); err == nil {
-			t.Fatalf("invalid automation %s was accepted", name)
-		}
-	}
-	cfg.AutomationWindow = "22:00-04:00"
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("a valid change window was rejected: %v", err)
-	}
-}
-
 func TestValidateRequiresTLSForPrometheusByDefault(t *testing.T) {
 	cfg := validConfig()
 	cfg.PrometheusURL = "http://prometheus.monitoring.svc:9090"
@@ -154,10 +128,6 @@ func TestOIDCModeRequiresALoopbackListener(t *testing.T) {
 			t.Errorf("%s: err=%v, valid=%v", address, err, valid)
 		}
 	}
-	cfg.ListenAddress, cfg.OperationMode = "127.0.0.1:8080", ModeApply
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("apply mode with OIDC identities: %v", err)
-	}
 }
 
 func TestValidateGitOpsSettings(t *testing.T) {
@@ -241,5 +211,24 @@ func TestLoadReportsRemovedForecastingSettings(t *testing.T) {
 	}
 	if strings.Join(cfg.RemovedSettings, ",") != "KUBERIGHT_ML_URL,KUBERIGHT_ML_API_KEY" {
 		t.Fatalf("removed settings = %v", cfg.RemovedSettings)
+	}
+}
+
+func TestLoadRunsReadOnlyWhenApplyModeIsRequested(t *testing.T) {
+	t.Setenv("KUBERIGHT_AUTH_MODE", "static")
+	t.Setenv("KUBERIGHT_API_TOKEN", strings.Repeat("x", 32))
+	t.Setenv("KUBERIGHT_OPERATION_MODE", "apply")
+	t.Setenv("KUBERIGHT_AUTOMATION_IN_PLACE_RESIZE", "true")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("a removed setting must not stop startup: %v", err)
+	}
+	if cfg.OperationMode != ModeRecommend || strings.Join(cfg.RemovedSettings, ",") != "KUBERIGHT_AUTOMATION_IN_PLACE_RESIZE,KUBERIGHT_OPERATION_MODE=apply" {
+		t.Fatalf("mode=%s removed=%v", cfg.OperationMode, cfg.RemovedSettings)
+	}
+	invalid := validConfig()
+	invalid.OperationMode = "apply"
+	if err := invalid.Validate(); err == nil {
+		t.Fatal("apply mode passed validation")
 	}
 }

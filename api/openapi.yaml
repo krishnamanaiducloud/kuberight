@@ -1265,53 +1265,34 @@ paths:
     get:
       tags: [Recommendations]
       operationId: planAutomation
-      summary: Continuous rightsizing plan
+      deprecated: true
+      summary: Removed; KubeRight never changes workloads
       description: |
-        Evaluates the latest approved recommendation of every container and
-        reports what apply mode would do, without writing anything. A change
-        is eligible only in a namespace labeled `kuberight.io/automation=enabled`,
-        for a supported controller (Deployment, StatefulSet, DaemonSet) not
-        owned by Argo CD or Flux (unless annotated
-        `kuberight.io/automation-gitops=allow`) and not opted out with
-        `kuberight.io/automation=disabled`, when the recommendation is
-        approved, has the `recommend` verdict, unexpired evidence covering
-        every replica, and its workload UID, generation, spec fingerprint, and
-        current resources still match the live workload. A regressed automated
-        change is planned for rollback. Requires `list` on `automation`.
+        Apply mode was removed: KubeRight is read-only and never changes a
+        workload. The operation remains so that existing clients receive a
+        clear `410 Gone` instead of a missing route. Apply approved
+        recommendations through a GitOps pull request
+        (`POST /api/v1/recommendations/{id}/pull-request`) or your own
+        deployment process.
       responses:
-        "200":
-          description: The plan.
+        "410":
+          description: Apply mode was removed (`automation_removed`). KubeRight is read-only and never changes workloads.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/AutomationReport" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
 
   /api/v1/automation:run:
     post:
       tags: [Recommendations]
       operationId: runAutomation
-      summary: Apply eligible approved recommendations now
+      deprecated: true
+      summary: Removed; KubeRight never changes workloads
       description: |
-        Runs one automation pass in `operationMode=apply`: rollbacks first,
-        then changes, at most `maxChangesPerRun`, only inside the configured
-        UTC change window. Each change is a strategic-merge patch of one
-        container's requests and limits with a `resourceVersion`
-        precondition, owned by the `kuberight-automation` field manager, and
-        annotated with the recommendation and the previous resources. Every
-        attempt is audited, and applied or rolled-back changes are announced
-        as `recommendation.applied` and `recommendation.rolled_back` webhooks.
-        Requires `update` on `automation`.
+        Apply mode was removed: KubeRight is read-only and never changes a
+        workload. The operation always answers `410 Gone`.
       responses:
-        "200":
-          description: The pass results.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/AutomationReport" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "409":
-          description: Automation is disabled because the operation mode is not `apply` (`automation_disabled`), or another replica is running a pass (`automation_busy`).
+        "410":
+          description: Apply mode was removed (`automation_removed`). KubeRight is read-only and never changes workloads.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }

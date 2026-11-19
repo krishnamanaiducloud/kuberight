@@ -8,7 +8,6 @@ import (
 	"fmt"
 
 	"github.com/kuberight/kuberight/internal/httpapi"
-	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -39,7 +38,6 @@ func (provider *KubernetesProvider) Workload(ctx context.Context, namespace, kin
 		identity           metav1.ObjectMeta
 		workloadObjectSpec any
 		found              bool
-		onDelete           bool
 		err                error
 	)
 	switch kind {
@@ -62,7 +60,6 @@ func (provider *KubernetesProvider) Workload(ctx context.Context, namespace, kin
 				if item := &list.Items[index]; item.Name == name {
 					replicas, podSpec, found = defaultReplicas(item.Spec.Replicas), item.Spec.Template.Spec, true
 					identity, workloadObjectSpec = item.ObjectMeta, item.Spec
-					onDelete = item.Spec.UpdateStrategy.Type == appsv1.OnDeleteStatefulSetStrategyType
 				}
 			}
 		}
@@ -74,7 +71,6 @@ func (provider *KubernetesProvider) Workload(ctx context.Context, namespace, kin
 				if item := &list.Items[index]; item.Name == name {
 					replicas, podSpec, found = item.Status.DesiredNumberScheduled, item.Spec.Template.Spec, true
 					identity, workloadObjectSpec = item.ObjectMeta, item.Spec
-					onDelete = item.Spec.UpdateStrategy.Type == appsv1.OnDeleteDaemonSetStrategyType
 				}
 			}
 		}
@@ -129,7 +125,7 @@ func (provider *KubernetesProvider) Workload(ctx context.Context, namespace, kin
 		Cluster: provider.clusterID, Namespace: namespace, Kind: kind, Name: name,
 		UID: string(identity.UID), Generation: identity.Generation, ResourceVersion: identity.ResourceVersion, SourceSpecFingerprint: specFingerprint, Replicas: replicas,
 		Containers: make([]httpapi.ContainerSpec, 0, len(podSpec.Containers)), Warnings: []string{},
-		Labels: identity.Labels, Annotations: identity.Annotations, OnDelete: onDelete, AutomationWrite: lastAutomatedWrite(identity),
+		Labels: identity.Labels, Annotations: identity.Annotations,
 	}
 	for _, container := range podSpec.Containers {
 		spec.Containers = append(spec.Containers, containerSpec(container))

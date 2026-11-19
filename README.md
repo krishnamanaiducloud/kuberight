@@ -6,7 +6,7 @@ KubeRight is a Kubernetes resource-inventory and right-sizing project. It is a s
 
 ## What works today
 
-- Namespace-scoped or cluster-scoped inventory of Kubernetes workloads and autoscalers. It is read-only unless you enable [continuous rightsizing](#continuous-rightsizing).
+- Namespace-scoped or cluster-scoped inventory of Kubernetes workloads and autoscalers. It is read-only: KubeRight never changes workloads.
 - Historical workload attribution: usage is attributed to the current workload UID across rollouts, scale-downs, replaced StatefulSet pods, Jobs, and same-name recreation, using kube-state-metrics ownership and creation history rather than today's pod list. Replica coverage is time-aware. See [historical attribution and replica coverage](#historical-attribution-and-replica-coverage).
 - Deterministic CPU and memory recommendations, including confidence, risk, data-quality, burst, HPA, VPA, KEDA, restart, and OOM warnings. Recommendations can be calculated from caller-supplied samples or **generated server-side** from the workload's live requests, limits, replicas, and autoscalers plus its Prometheus usage history. Sparse, stale, or missing history blocks reductions.
 - CPU-throttling awareness: five-minute usage averages hide sub-second bursts, so KubeRight also reads CFS throttling. A throttled container is never given less CPU, and an existing CPU limit is raised instead.
@@ -27,7 +27,7 @@ KubeRight is a Kubernetes resource-inventory and right-sizing project. It is a s
 - Node groups: node impact is split by the group that provisions each node: Karpenter NodePools, EKS managed and eksctl node groups, GKE node pools, AKS agent pools, and OpenShift and Cluster API MachineSets. Membership is *verified* when it comes from the platform's own label or annotation, or from the node's OpenShift Machine. It is *inferred* when it comes from a Machine name or, for a node with no group, from its shape. Each group says how it would shrink: Karpenter consolidation, Cluster Autoscaler, the provider's node-pool autoscaler, a MachineAutoscaler, or by hand. Minimum and maximum sizes from a MachineAutoscaler or from Cluster Autoscaler's status bound how far each group can shrink.
 - A workload page with every container's settings, latest recommendation, usage charts, and recommendation history. Whole namespaces or workloads can be analyzed in one action.
 - Prometheus usage history per container, charted against current requests and limits.
-- A review workflow: recommendations are approved or rejected, individually or in bulk, with optional separation of duties, and every decision is audited. Prometheus-generated advice carries workload/specification identity, observation/query/policy provenance, and a 24-hour expiry; approval fails if that advice is expired or no longer matches the live workload and resources. Approval records a decision. Changes are applied only by opt-in [continuous rightsizing](#continuous-rightsizing). Otherwise the dashboard shows a `kubectl` command or a strategic-merge YAML patch for each approved change, and exports approved changes as a patch file for GitOps or `kubectl patch`.
+- A review workflow: recommendations are approved or rejected, individually or in bulk, with optional separation of duties, and every decision is audited. Prometheus-generated advice carries workload/specification identity, observation/query/policy provenance, and a 24-hour expiry; approval fails if that advice is expired or no longer matches the live workload and resources. Approval records a decision; KubeRight never applies it. For each approved change the dashboard shows a `kubectl` command and a strategic-merge YAML patch, exports approved changes as a patch file for GitOps or `kubectl patch`, and can open a [GitOps pull request](#gitops-pull-requests).
 - Durable PostgreSQL storage for recommendations, reviews, idempotency keys, and audit events. Embedded checksummed migrations run transactionally under an advisory lock; the chart uses a bounded pre-install/pre-upgrade migration Job while serving pods verify the exact schema without DDL. An append-only trigger rejects audit-table mutation. Without a database, a bounded in-process store is used.
 - Forecasts from a built-in engine using Prometheus history. Each forecast chooses its model by testing candidates on the series' own past against a seasonal-naive baseline, and reports that accuracy with its prediction interval.
 - Request-based monthly cost estimates priced per namespace from [OpenCost](#cost-and-opencost) when configured, or from operator-configured unit prices. Every savings item names its price source. Node impact keeps three amounts apart: the request reduction, the feasible savings from removing the nodes the packing frees, and the bill, which KubeRight does not measure.
@@ -46,7 +46,7 @@ KubeRight does **not**:
 - ingest cloud billing or provide a complete FinOps ledger;
 - register remote clusters.
 
-It never changes workloads unless `operationMode=apply` is set and a namespace opts in. With the PostgreSQL store, webhook delivery is durable; without it, the delivery queue is process-local. See [known limitations](docs/known-limitations.md) before evaluating it for production.
+It never changes workloads: its ServiceAccount can only read them (see [read-only by design](#read-only-by-design)). With the PostgreSQL store, webhook delivery is durable; without it, the delivery queue is process-local. See [known limitations](docs/known-limitations.md) before evaluating it for production.
 
 ## Quick start from source
 
@@ -165,7 +165,7 @@ A regression is any of the following:
 
 Verification starts only when every live pod runs the approved values. A matching workload template is not enough: during a rollout, in an `OnDelete` workload, or while an in-place resize is pending, pods still run the previous resources. Until they change, the status is `not_applied` and the reason gives the number of pods that are behind.
 
-Severe regressions are caught sooner. During the first hour, the verifier rechecks each change every `verification.earlyInterval` (two minutes by default), starting five minutes after the change is first observed. An OOM kill, a restart, or throttling or CPU or memory pressure that reaches 25% and rises by at least 20 points marks the change regressed. The evidence must cover exactly the live pods. In apply mode the change is then rolled back on the same cadence. Rollbacks are not deferred by the change window or the per-run change limit.
+Severe regressions are caught sooner. During the first hour, the verifier rechecks each change every `verification.earlyInterval` (two minutes by default), starting five minutes after the change is first observed. An OOM kill, a restart, or throttling or CPU or memory pressure that reaches 25% and rises by at least 20 points marks the change regressed. The evidence must cover exactly the live pods. A regression sends the `recommendation.regressed` webhook and raises the `KubeRightRecommendationRegressed` alert. KubeRight does not change the workload: restoring the previous values is up to you or your GitOps process.
 
 The background verifier exports these metrics:
 
@@ -294,46 +294,18 @@ go run ./cmd/kuberight benchmark --forecast-traces FILE # forecasting engine on 
 
 The Correlation analysis page runs the same rolling-origin backtest on the selected container's own history.
 
-## Continuous rightsizing
+## Read-only by design
 
-With `operationMode=apply`, KubeRight applies approved recommendations itself. It evaluates them every `automation.interval` (default 15m), and `GET /api/v1/automation` shows the plan in any mode without writing. A change is made only when all of the following hold:
+KubeRight observes, recommends, and verifies. It never patches a workload, changes requests or limits, restarts or deletes a pod, scales replicas, or edits an autoscaler, and it never runs commands in your containers. Its ServiceAccount can only `list` and `get` what it inventories, read metrics (on OpenShift through the read-only `cluster-monitoring-view` role or the namespace's pod metrics), and `create` TokenReview and SubjectAccessReview requests to authenticate and authorize users. The chart renders no other rules unless you add `rbac.extraRules`. Installing it creates only KubeRight's own Deployment, Service, ServiceAccount, RBAC, and optional Route, Ingress, NetworkPolicy, and monitoring objects.
 
-- The namespace is labeled `kuberight.io/automation=enabled` and the workload is not annotated `kuberight.io/automation=disabled`.
-- The workload is a Deployment, StatefulSet, or DaemonSet that Argo CD or Flux does not manage. Annotate `kuberight.io/automation-gitops=allow` only if the GitOps source will not revert the change.
-- The recommendation is approved, its verdict is `recommend`, and its evidence is unexpired and covered every replica.
-- The workload UID, generation, spec fingerprint, and current requests and limits still match what the recommendation was calculated against.
-- No VPA manages the container.
+To act on an approved recommendation, open a [GitOps pull request](#gitops-pull-requests), export the patch, or copy the `kubectl` command from the dashboard. Verification then checks the change once the live pods run it.
 
-Each change is a strategic-merge patch of one container's requests and limits:
+Earlier releases had an opt-in apply mode. It was removed:
 
-- It is owned by the `kuberight-automation` field manager.
-- A `resourceVersion` precondition rejects it if the workload changed after evaluation.
-- It is annotated with the recommendation and the exact previous resources.
-
-At most `automation.maxChangesPerRun` changes (default 5) run per pass, inside the optional daily UTC `automation.window`. Rollbacks go first. When post-change verification reports a regression, KubeRight restores the previous values, provided nobody changed them since.
-
-Every attempt is audited, and `recommendation.applied` and `recommendation.rolled_back` webhooks are sent. `POST /api/v1/automation:run` runs a pass on demand and requires `update` on the virtual `automation` resource.
-
-Applying passes are singletons across API replicas. A PostgreSQL advisory lock (or a process lock for the in-memory store) is held for the pass, and a concurrent `POST /api/v1/automation:run` returns `409 automation_busy`. `/metrics` exports `kuberight_automation_changes_total{action,outcome}`, `kuberight_automation_eligible_changes`, `kuberight_automation_last_pass_timestamp_seconds`, and `kuberight_automation_interval_seconds`. With `metrics.prometheusRule.enabled=true`, apply mode adds alerts for failed changes, rollbacks, and a stalled automation loop.
-
-Apply mode requires `auth.mode=kubernetes` and `rbac.scope=cluster`. It adds only `patch` on those three kinds.
-
-#### In-place resize for OnDelete workloads
-
-A StatefulSet or DaemonSet with the `OnDelete` update strategy does not roll out a template change, so its running pods keep their old resources until someone deletes them. With `automation.inPlaceResize=true` (off by default), KubeRight patches the template as usual and then resizes the running pods through the `pods/resize` subresource, without restarting them. This needs Kubernetes 1.33 or later, and the chart then also grants `patch` on `pods/resize`.
-
-KubeRight never deletes or restarts a pod to apply a change. It leaves the pods alone, and they take the new resources when recreated, when:
-
-- the workload rolls out changes itself (Deployments and `RollingUpdate` workloads);
-- the container's `resizePolicy` restarts it for a resource the change touches;
-- the change would add or remove a limit, which in-place resize cannot do;
-- the cluster does not serve `pods/resize`, or rejects the resize (for example, a QoS class change).
-
-Each decision in the automation report carries an `inPlace` object with the pods found, resized, failed, and remaining. A failed resize does not fail the change.
-
-A change is resized in stages, so values that harm a pod do not reach every replica at once. The pass that patches the template resizes one pod, the highest ordinal of a StatefulSet. Each later pass resizes as many pods as already run the new values: one more, then two, then four. Sixteen pods take five passes. A stage starts only once the pods resized before it have run the new values for about one automation interval. KubeRight reads that time from the cluster, so running several replicas does not shorten it. A pod that is not ready, or that is still being resized, is not given new values until it is ready. A pass resizes nothing and reports a failed change while a pod that already carries the new values is not ready, has not finished its resize, or had the container restart after the change. If that pod is still unsettled about one automation interval after KubeRight first saw it, the change is rolled back: the template and every pod return to the previous values, inside or outside the change window. The rollback is audited and notified like a rollback after a regressed verification, and the recommendation is not applied again. A rollback restores values that ran before, so it resizes every pod at once.
-
-Later stages and retries share one path. On each pass, if the template still carries the change KubeRight made and running pods have other values, the next pods are resized without touching the template. Such a pass is audited as `automation.resize`, appears in the report as an `apply` or `rollback` decision, counts against the per-run limit, and counts as a failed change when pods reject the resize or the resize halts. A newer recommendation for the same container does not interrupt a resize that has started: it is still finished, halted, or rolled back, and a change that is live keeps being verified until it has a verdict. After a failure the next retry waits one automation interval, doubling up to six hours. A retry that completes a rollback ignores the change window, like the rollback itself. The kubelet applies a resize asynchronously and can defer it on a full node; KubeRight does not wait for that, and post-change verification judges the result.
+- `GET /api/v1/automation` and `POST /api/v1/automation:run` answer `410 Gone` (`automation_removed`).
+- `KUBERIGHT_OPERATION_MODE=apply` and the `KUBERIGHT_AUTOMATION_*` settings are ignored, with a startup warning. KubeRight runs in `recommend` mode instead.
+- The chart rejects `operationMode=apply` and no longer has `automation` values.
+- Schema version 8 drops the table that tracked in-place resizes.
 
 ## GitOps pull requests
 
@@ -397,7 +369,7 @@ helm upgrade --install kuberight charts/kuberight --namespace kuberight \
 
 - **Trust boundary:** the API listens on loopback only, so the identity headers can come only from the sidecar.
 - **Authorization:** every request is still checked with `SubjectAccessReview`. Bind users and groups with the `oidc:` prefixes, for example `--user=oidc:alice@example.com`.
-- **Apply mode** accepts OIDC identities, and the creator of a recommendation still cannot approve it.
+- **Reviews** accept OIDC identities, and the creator of a recommendation still cannot approve it.
 - **Session cookie:** `HttpOnly`, `Secure`, and `SameSite=Lax`. API calls without a session get `401` instead of a redirect.
 
 In token mode, verified identities are cached for up to 2 minutes (never past the token's expiry), allow decisions for 30 seconds, and denials for 10 seconds. A revoked RoleBinding therefore takes effect within 30 seconds. Under load, three replicas served about 520 requests per second; without the cache, client-side rate limiting had capped them at about 5.
@@ -415,33 +387,26 @@ When a namespace has no priced allocation, OpenCost's cluster-wide blend is used
 
 Each savings item reports `priceSource` as `opencost`, `opencost-cluster`, or `configured`. Estimates remain request-based: realized savings stay unavailable without billing evidence and a counterfactual.
 
-```sh
-helm upgrade --install kuberight charts/kuberight --namespace kuberight \
-  --set operationMode=apply --set rbac.scope=cluster --set automation.window=22:00-04:00
-kubectl label namespace shop kuberight.io/automation=enabled
-```
-
 ## Monitoring
 
-`metrics.serviceMonitor.enabled` and `metrics.prometheusRule.enabled` add a ServiceMonitor and alerts: unavailable replicas, a 5xx ratio above 5%, a regressed recommendation, and, in apply mode, failed changes, rollbacks, and a stalled automation loop.
+`metrics.serviceMonitor.enabled` and `metrics.prometheusRule.enabled` add a ServiceMonitor and alerts: unavailable replicas, a 5xx ratio above 5%, and a regressed recommendation.
 
 `metrics.grafanaDashboard.enabled=true` adds a ConfigMap labeled for the Grafana dashboard sidecar. Set `metrics.grafanaDashboard.namespace` if the sidecar watches only Grafana's namespace, or import [the dashboard](charts/kuberight/dashboards/kuberight.json) by hand. It shows:
 
 - API rate, 5xx share, and mean latency.
 - Post-change verification outcomes and recommendations by risk.
 - Estimated savings, which needs `exportRecommendationMetrics`.
-- Automated changes by outcome, and how many intervals the last pass is behind.
 - Webhook delivery.
 
 Status colors carry meaning only: green is good, yellow and orange are warnings, red is a failure, and gray is a neutral state such as pending.
 
-Every counter exports all of its label combinations from zero. `increase()` cannot see an increment that creates a series, so the first failed change still alerts. The per-recommendation series carry the workload's own `namespace` and `container` labels. The dashboard selects them by scrape target and works with `honor_labels: true` as well as with the `exported_*` renaming a ServiceMonitor applies.
+Every counter exports all of its label combinations from zero, because `increase()` cannot see an increment that creates a series. The per-recommendation series carry the workload's own `namespace` and `container` labels. The dashboard selects them by scrape target and works with `honor_labels: true` as well as with the `exported_*` renaming a ServiceMonitor applies.
 
 `scripts/verify-monitoring.sh` renders the rules, runs promtool unit tests against them, parses every dashboard query, and evaluates the savings queries under both label layouts. CI runs it.
 
 ## Live validation
 
-The chart was installed in apply mode on a two-node kind cluster running Kubernetes 1.35, with Prometheus 3.16, kube-state-metrics 2.20, OpenCost 1.121, PostgreSQL 18, and Grafana 12.3. The run covered these workloads:
+The chart was installed on a two-node kind cluster running Kubernetes 1.35, with Prometheus 3.16, kube-state-metrics 2.20, OpenCost 1.121, PostgreSQL 18, and Grafana 12.3. The run covered these workloads:
 
 - A Deployment scaled from 6 to 2 replicas.
 - Two rollouts.
@@ -451,7 +416,7 @@ The chart was installed in apply mode on a two-node kind cluster running Kuberne
 | Area | Result |
 | --- | --- |
 | Attribution | Every pod, including the deleted ones, was attributed to its workload and revision, and each StatefulSet pod incarnation was kept apart by UID. CPU and memory replica-time coverage was 97–99%, and every workload's coverage was complete. |
-| Approval and automation | The creator could not approve their own recommendation. A second identity approved it. The background pass patched the Deployment under the `kuberight-automation` field manager with exactly the recommended values and did not reapply. On PostgreSQL, two approved changes were applied in one pass under the advisory lock. |
+| Approval | The creator could not approve their own recommendation. A second identity approved it. That run also exercised the since-removed apply mode: the background pass patched the Deployment under the `kuberight-automation` field manager with exactly the recommended values and did not reapply. On PostgreSQL, two approved changes were applied in one pass under the advisory lock. |
 | Verification | The applied change was `verified` from exact pod-UID evidence over 3h20m: no OOM kills, restarts, or throttling. A follow-up reduction for the same workload was held by the 24-hour cooldown, detected from Prometheus resource history. |
 | Cost | Savings were priced from OpenCost's per-namespace allocation (`priceSource: opencost`). |
 | Dashboards | Grafana loaded the chart's dashboard ConfigMap with no panel errors. |
@@ -487,7 +452,6 @@ These were functional runs on a small cluster. Accuracy is evaluated separately,
 | `cmd/kuberight`, `internal/` | Go API, authentication, inventory, Prometheus usage, forecasting engine, recommendations, reviews, and storage |
 | `internal/usage/attribution.go` | Historical pod attribution and time-aware replica coverage |
 | `internal/optimizer/stability.go`, `runtime.go` | Hysteresis, cooldown, oscillation, and confirmation controls; JVM memory rules |
-| `internal/automation/`, `internal/httpapi/automation.go` | Opt-in continuous rightsizing and rollback |
 | `scripts/attribution-replay.sh` | Real-Prometheus replay of the attribution queries |
 | `internal/gitops/` | In-place manifest editing and the GitHub, GitLab, and Gitea/Forgejo providers |
 | `internal/benchmark/traces.go`, `scripts/convert-bitbrains-trace.py` | Real-trace evaluation with rolling-origin folds and bootstrap intervals |

@@ -1,73 +1,9 @@
 # promtool unit tests for the chart's PrometheusRule, rendered by
-# scripts/verify-monitoring.sh with operationMode=apply into rules.yaml.
+# scripts/verify-monitoring.sh into rules.yaml.
 rule_files:
   - rules.yaml
 evaluation_interval: 1m
 tests:
-  - name: a first failed automated change alerts
-    interval: 1m
-    input_series:
-      # KubeRight exports every action and outcome pair from zero, so the
-      # first failure is an increase Prometheus can see.
-      - series: 'kuberight_automation_changes_total{namespace="kuberight",action="apply",outcome="failed",instance="a"}'
-        values: '0x4 1x40'
-      - series: 'kuberight_automation_changes_total{namespace="kuberight",action="rollback",outcome="rolled_back",instance="a"}'
-        values: '0x4 1x40'
-    promql_expr_test:
-      - expr: ALERTS{alertname=~"KubeRightAutomatedChange.*",alertstate="firing"}
-        eval_time: 3m
-        exp_samples: []
-      - expr: ALERTS{alertname=~"KubeRightAutomatedChange.*",alertstate="firing"}
-        eval_time: 6m
-        exp_samples:
-          - labels: 'ALERTS{alertname="KubeRightAutomatedChangeFailed",alertstate="firing",severity="warning"}'
-            value: 1
-          - labels: 'ALERTS{alertname="KubeRightAutomatedChangeRolledBack",alertstate="firing",severity="warning"}'
-            value: 1
-      # A failure 30 minutes ago no longer alerts; a rollback still does for an hour.
-      - expr: ALERTS{alertname=~"KubeRightAutomatedChange.*",alertstate="firing"}
-        eval_time: 40m
-        exp_samples:
-          - labels: 'ALERTS{alertname="KubeRightAutomatedChangeRolledBack",alertstate="firing",severity="warning"}'
-            value: 1
-    # A series that first appears at 1 is invisible to increase(): this is
-    # why the counters must exist before their first increment.
-  - name: a counter created at one is invisible to increase
-    interval: 1m
-    input_series:
-      - series: 'kuberight_automation_changes_total{namespace="kuberight",action="apply",outcome="failed",instance="a"}'
-        values: '_x4 1x40'
-    promql_expr_test:
-      - expr: ALERTS{alertname="KubeRightAutomatedChangeFailed"}
-        eval_time: 10m
-        exp_samples: []
-
-  - name: a stalled automation loop alerts after three intervals and ten minutes
-    interval: 1m
-    input_series:
-      # The default automation.interval is 15m: three intervals are 2700 s.
-      # The last pass completed at 60 s, on the replica holding the lock;
-      # the other replica has not run a pass.
-      - series: 'kuberight_automation_last_pass_timestamp_seconds{namespace="kuberight",instance="a"}'
-        values: '60x80'
-      - series: 'kuberight_automation_last_pass_timestamp_seconds{namespace="kuberight",instance="b"}'
-        values: '0x80'
-    alert_rule_test:
-      - eval_time: 50m
-        alertname: KubeRightAutomationStalled
-        exp_alerts: []
-    promql_expr_test:
-      - expr: ALERTS{alertname="KubeRightAutomationStalled"}
-        eval_time: 47m
-        exp_samples:
-          - labels: 'ALERTS{alertname="KubeRightAutomationStalled",alertstate="pending",severity="warning"}'
-            value: 1
-      - expr: ALERTS{alertname="KubeRightAutomationStalled",alertstate="firing"}
-        eval_time: 57m
-        exp_samples:
-          - labels: 'ALERTS{alertname="KubeRightAutomationStalled",alertstate="firing",severity="warning"}'
-            value: 1
-
   - name: regressions, 5xx errors, and unavailable replicas alert
     interval: 1m
     input_series:

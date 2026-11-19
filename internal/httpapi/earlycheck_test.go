@@ -2,13 +2,10 @@ package httpapi
 
 import (
 	"context"
-	"net/http"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/kuberight/kuberight/internal/automation"
-	"github.com/kuberight/kuberight/internal/config"
 	"github.com/kuberight/kuberight/internal/repository"
 	"github.com/kuberight/kuberight/internal/usage"
 )
@@ -129,52 +126,5 @@ func TestEarlyChecksIgnoreEventsOutsideTheIdentity(t *testing.T) {
 	verifier.PassRecent(context.Background())
 	if outcome, _ := api.store.GetVerificationOutcome(context.Background(), record.ID); outcome.Status != VerificationPending {
 		t.Fatalf("foreign evidence produced a verdict: %+v", outcome)
-	}
-}
-
-func TestRollbacksIgnoreTheChangeWindowAndRunEarly(t *testing.T) {
-	recommendation := automationRecommendation()
-	spec := automationSpec()
-	spec.Containers[0].CPURequestMilli, spec.Containers[0].CPULimitMilli = recommendation.CPURequestMilli, recommendation.CPULimitMilli
-	spec.Containers[0].MemoryRequestBytes, spec.Containers[0].MemoryLimitBytes = recommendation.MemoryRequestBytes, recommendation.MemoryLimitBytes
-	spec.Generation, spec.ResourceVersion = 13, "9100"
-	closed := fixedNow.UTC().Add(time.Hour).Format("15:04") + "-" + fixedNow.UTC().Add(2*time.Hour).Format("15:04")
-	harness := newAutomationHarness(t, config.ModeApply, spec, func(cfg *config.Config) { cfg.AutomationWindow = closed })
-	record := storeApproved(t, harness.api, recommendation, fixedNow.Add(-3*time.Hour))
-	harness.inventory.spec.Annotations = map[string]string{automation.AppliedAnnotation: record.ID}
-	harness = newAutomationHarness(t, config.ModeApply, harness.inventory.spec, func(cfg *config.Config) { cfg.AutomationWindow = closed })
-	record = storeApproved(t, harness.api, recommendation, fixedNow.Add(-3*time.Hour))
-	harness.inventory.spec.Annotations[automation.AppliedAnnotation] = record.ID
-	first := fixedNow.Add(-10 * time.Minute)
-	if _, err := harness.api.store.RecordVerification(context.Background(), repository.VerificationRun{
-		RecommendationID: record.ID, Status: repository.VerificationRegressed, ConfigurationObserved: true, FirstObservedAt: &first,
-		ObservedGeneration: 13, ObservedSpecFingerprint: strings.Repeat("b", 64), EvidenceComplete: true, Attribution: repository.VerificationAttributionExactPodUID,
-		Checks: []repository.VerificationCheck{}, Reasons: []string{"early check after 10m0s: 1 OOM kill(s) occurred"}, CheckedAt: fixedNow,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	_, body := harness.api.do(t, http.MethodPost, "/api/v1/automation:run", "alice", "")
-	if decision := decisionFor(t, body); decision["outcome"] != AutomationRolledBack || body["windowOpen"] != false || len(*harness.patches) != 1 || !(*harness.patches)[0].Rollback {
-		t.Fatalf("a closed window deferred a rollback: body=%v patches=%v", body, *harness.patches)
-	}
-}
-
-func TestRollbackPassEvaluatesOnlyRegressedChanges(t *testing.T) {
-	harness := newAutomationHarness(t, config.ModeApply, automationSpec(), nil)
-	// A fresh approved recommendation would be applied by a full pass, but a
-	// rollback pass leaves it alone.
-	storeApproved(t, harness.api, automationRecommendation(), fixedNow.Add(-time.Hour))
-	cfg := fallbackConfig()
-	cfg.OperationMode, cfg.AuthMode, cfg.APIToken = config.ModeApply, "kubernetes", ""
-	automator, err := NewAutomator(cfg, Dependencies{Provider: harness.inventory, Repository: harness.api.store, Access: harness.api.access, Now: func() time.Time { return fixedNow }})
-	if err != nil {
-		t.Fatal(err)
-	}
-	report, err := automator.server.automationRun(context.Background(), false, true)
-	if err != nil || report.Evaluated != 0 || len(report.Decisions) != 0 || len(*harness.patches) != 0 {
-		t.Fatalf("rollback pass: report=%+v err=%v patches=%v", report, err, *harness.patches)
-	}
-	if report, err := automator.server.automationRun(context.Background(), false, false); err != nil || report.Applied != 1 {
-		t.Fatalf("full pass: report=%+v err=%v", report, err)
 	}
 }

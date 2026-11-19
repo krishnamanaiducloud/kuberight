@@ -10,14 +10,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/kuberight/kuberight/internal/automation"
 )
 
 const (
 	ModeObserve   = "observe"
 	ModeRecommend = "recommend"
-	ModeApply     = "apply"
 )
 
 // Config contains the security- and reliability-relevant API server settings.
@@ -103,16 +100,6 @@ type Config struct {
 	// VerificationEarlyInterval is how often changes in their first hour are
 	// rechecked for severe regressions. Zero leaves them to the full pass.
 	VerificationEarlyInterval time.Duration
-	// AutomationInterval is how often apply mode evaluates approved
-	// recommendations; AutomationMaxChanges bounds changes per pass; and
-	// AutomationWindow is an optional daily UTC change window "HH:MM-HH:MM".
-	AutomationInterval   time.Duration
-	AutomationMaxChanges int
-	AutomationWindow     string
-	// AutomationInPlaceResize lets apply mode resize the running pods of
-	// OnDelete StatefulSets and DaemonSets through pods/resize. Off by
-	// default; it needs the pods/resize patch permission.
-	AutomationInPlaceResize bool
 
 	// WebhookURL receives recommendation lifecycle events. WebhookSecret,
 	// when set, signs each body with HMAC-SHA256. WebhookFormat is json or
@@ -141,8 +128,6 @@ const (
 	DefaultRecommendationWindow      = 7 * 24 * time.Hour
 	DefaultVerificationInterval      = 15 * time.Minute
 	DefaultVerificationEarlyInterval = 2 * time.Minute
-	DefaultAutomationInterval        = 15 * time.Minute
-	DefaultAutomationMaxChanges      = 5
 	DefaultRecommendationStep        = 5 * time.Minute
 	DefaultForecastWindow            = 14 * 24 * time.Hour
 	DefaultForecastStep              = time.Hour
@@ -160,12 +145,6 @@ func (c Config) Normalized() Config {
 	}
 	if c.ForecastWindow == 0 {
 		c.ForecastWindow = DefaultForecastWindow
-	}
-	if c.AutomationInterval == 0 {
-		c.AutomationInterval = DefaultAutomationInterval
-	}
-	if c.AutomationMaxChanges == 0 {
-		c.AutomationMaxChanges = DefaultAutomationMaxChanges
 	}
 	if c.ForecastStep == 0 {
 		c.ForecastStep = DefaultForecastStep
@@ -233,11 +212,20 @@ func Load() (Config, error) {
 	if cfg.AllowInsecureUpstreams, err = parseBool("KUBERIGHT_ALLOW_INSECURE_UPSTREAMS", false); err != nil {
 		return Config{}, err
 	}
-	// Forecasting is built in; the external forecasting service is gone.
-	for _, name := range []string{"KUBERIGHT_ML_URL", "KUBERIGHT_ML_API_KEY", "KUBERIGHT_ML_TIMEOUT", "KUBERIGHT_ML_ALLOW_HTTP"} {
+	// Forecasting is built in, and KubeRight no longer changes workloads:
+	// these settings are reported at startup and otherwise ignored.
+	for _, name := range []string{
+		"KUBERIGHT_ML_URL", "KUBERIGHT_ML_API_KEY", "KUBERIGHT_ML_TIMEOUT", "KUBERIGHT_ML_ALLOW_HTTP",
+		"KUBERIGHT_AUTOMATION_INTERVAL", "KUBERIGHT_AUTOMATION_MAX_CHANGES", "KUBERIGHT_AUTOMATION_WINDOW", "KUBERIGHT_AUTOMATION_IN_PLACE_RESIZE",
+	} {
 		if os.Getenv(name) != "" {
 			cfg.RemovedSettings = append(cfg.RemovedSettings, name)
 		}
+	}
+	// Apply mode was removed. Running read-only is the safe reading of it.
+	if cfg.OperationMode == "apply" {
+		cfg.RemovedSettings = append(cfg.RemovedSettings, "KUBERIGHT_OPERATION_MODE=apply")
+		cfg.OperationMode = ModeRecommend
 	}
 	if cfg.DatabaseMigrate, err = parseBool("KUBERIGHT_DATABASE_MIGRATE", false); err != nil {
 		return Config{}, err
@@ -254,13 +242,6 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.PrometheusMaxInFlight, err = parseInt("KUBERIGHT_PROMETHEUS_MAX_IN_FLIGHT", 8, 1, 1024); err != nil {
-		return Config{}, err
-	}
-	if cfg.AutomationMaxChanges, err = parseInt("KUBERIGHT_AUTOMATION_MAX_CHANGES", DefaultAutomationMaxChanges, 1, 100); err != nil {
-		return Config{}, err
-	}
-	cfg.AutomationWindow = strings.TrimSpace(os.Getenv("KUBERIGHT_AUTOMATION_WINDOW"))
-	if cfg.AutomationInPlaceResize, err = parseBool("KUBERIGHT_AUTOMATION_IN_PLACE_RESIZE", false); err != nil {
 		return Config{}, err
 	}
 	if cfg.CostCPUCoreHour, err = parseFloat("KUBERIGHT_COST_CPU_CORE_HOUR", 0, 0, 1000); err != nil {
@@ -302,7 +283,6 @@ func Load() (Config, error) {
 		{"KUBERIGHT_FORECAST_STEP", DefaultForecastStep, time.Minute, 24 * time.Hour, &cfg.ForecastStep},
 		{"KUBERIGHT_VERIFICATION_INTERVAL", DefaultVerificationInterval, 0, 24 * time.Hour, &cfg.VerificationInterval},
 		{"KUBERIGHT_VERIFICATION_EARLY_INTERVAL", DefaultVerificationEarlyInterval, 0, time.Hour, &cfg.VerificationEarlyInterval},
-		{"KUBERIGHT_AUTOMATION_INTERVAL", DefaultAutomationInterval, time.Minute, 24 * time.Hour, &cfg.AutomationInterval},
 	}
 	for _, item := range durations {
 		value, parseErr := parseDuration(item.name, item.defaultValue, item.minimum, item.maximum)
@@ -345,18 +325,8 @@ func (c Config) Validate() error {
 	}
 	switch c.OperationMode {
 	case ModeObserve, ModeRecommend:
-	case ModeApply:
-		if c.AuthMode != "kubernetes" && c.AuthMode != "oidc" {
-			return errors.New("apply mode requires Kubernetes authentication so every change has an audited identity")
-		}
 	default:
-		return errors.New("KUBERIGHT_OPERATION_MODE must be observe, recommend, or apply")
-	}
-	if c.AutomationMaxChanges < 0 || c.AutomationMaxChanges > 100 {
-		return errors.New("KUBERIGHT_AUTOMATION_MAX_CHANGES must be between 1 and 100")
-	}
-	if _, err := automation.ParseWindow(c.AutomationWindow); err != nil {
-		return fmt.Errorf("KUBERIGHT_AUTOMATION_WINDOW: %w", err)
+		return errors.New("KUBERIGHT_OPERATION_MODE must be observe or recommend")
 	}
 	if c.MaxBodyBytes < 1024 || c.MaxBodyBytes > 16<<20 {
 		return errors.New("maximum request body size must be between 1 KiB and 16 MiB")

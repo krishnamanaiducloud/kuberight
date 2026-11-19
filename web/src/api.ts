@@ -217,41 +217,6 @@ export type RecommendationRecord = {
   stability?: Stability
 }
 
-export type AutomationResources = { cpuRequestMilli: number; cpuLimitMilli: number; memoryRequestBytes: number; memoryLimitBytes: number }
-
-export type AutomationDecision = {
-  recommendationId: string
-  cluster?: string
-  namespace: string
-  kind: string
-  workload: string
-  container: string
-  action: 'apply' | 'rollback' | 'skip'
-  reasons: string[]
-  current: AutomationResources
-  desired: AutomationResources
-  outcome?: 'planned' | 'applied' | 'rolled_back' | 'deferred' | 'failed'
-  inPlace?: { attempted: boolean; reason?: string; pods: number; resized: number; failed: number; remaining?: number; halted?: boolean; error?: string }
-  error?: string
-}
-
-export type AutomationReport = {
-  mode: 'observe' | 'recommend' | 'apply'
-  enabled: boolean
-  dryRun: boolean
-  window?: string
-  windowOpen: boolean
-  maxChangesPerRun: number
-  evaluatedAt: string
-  evaluated: number
-  eligible: number
-  applied: number
-  rolledBack: number
-  deferred: number
-  failed: number
-  decisions: AutomationDecision[]
-}
-
 export type Stability = {
   minimumChangeRatio: number
   suppressedChanges: string[]

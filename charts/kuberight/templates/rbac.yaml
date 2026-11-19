@@ -99,18 +99,6 @@ rules:
     resources: ["limitranges", "resourcequotas"]
     verbs: ["list"]
   {{- end }}
-  {{- if eq .Values.operationMode "apply" }}
-  # Apply mode only: patch pod template resources of opted-in workloads.
-  - apiGroups: ["apps"]
-    resources: ["deployments", "statefulsets", "daemonsets"]
-    verbs: ["patch"]
-  {{- if .Values.automation.inPlaceResize }}
-  # Opt-in: resize running pods of OnDelete workloads without restarting them.
-  - apiGroups: [""]
-    resources: ["pods/resize"]
-    verbs: ["patch"]
-  {{- end }}
-  {{- end }}
   {{- with .Values.rbac.extraRules }}
   {{- toYaml . | nindent 2 }}
   {{- end }}

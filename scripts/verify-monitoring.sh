@@ -7,7 +7,7 @@ Usage: scripts/verify-monitoring.sh
 
 Evaluates the chart's alert rules and the Grafana dashboard queries in
 promtool:
-  - renders the PrometheusRule in apply mode, checks it, and runs the unit
+  - renders the PrometheusRule, checks it, and runs the unit
     tests in scripts/monitoring/alerts.test.yaml against it;
   - checks that every dashboard query parses and that no panels overlap;
   - evaluates the dashboard's savings queries against both scrape label
@@ -36,12 +36,12 @@ native() {
 
 echo "== alert rules"
 helm template kuberight "$repo_root/charts/kuberight" --namespace kuberight \
-  --set operationMode=apply --set rbac.scope=cluster \
+  --set rbac.scope=cluster \
   --set metrics.prometheusRule.enabled=true \
   --show-only templates/monitoring.yaml >"$work/monitoring.yaml"
 # The PrometheusRule spec is a promtool rule file indented by two spaces.
 awk 'found { sub(/^  /, ""); print } /^spec:$/ { found = 1 }' "$work/monitoring.yaml" >"$work/rules.yaml"
-grep -q 'alert: KubeRightAutomationStalled' "$work/rules.yaml" || { echo "apply-mode alerts did not render" >&2; exit 1; }
+grep -q 'alert: KubeRightRecommendationRegressed' "$work/rules.yaml" || { echo "the alert rules did not render" >&2; exit 1; }
 "$promtool" check rules "$(native "$work/rules.yaml")"
 cp "$repo_root/scripts/monitoring/alerts.test.yaml" "$work/"
 "$promtool" test rules "$(native "$work/alerts.test.yaml")"

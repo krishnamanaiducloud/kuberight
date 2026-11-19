@@ -14,7 +14,7 @@ import (
 )
 
 // LatestSchemaVersion is the schema version understood by this source tree.
-const LatestSchemaVersion uint64 = 7
+const LatestSchemaVersion uint64 = 8
 
 //go:embed migrations/*.sql
 var migrationFiles embed.FS
