@@ -88,6 +88,11 @@ func TestLoadAppliesIntegrationDefaults(t *testing.T) {
 	if cfg.DatabaseMigrate || cfg.DatabaseMaxConns != 10 || cfg.PrometheusMaxInFlight != 8 || cfg.RecommendationWindow != DefaultRecommendationWindow || cfg.ForecastStep != DefaultForecastStep || cfg.VerificationEarlyInterval != DefaultVerificationEarlyInterval || cfg.CostCurrency != "USD" || cfg.CostConfigured() {
 		t.Fatalf("unexpected defaults: %#v", cfg)
 	}
+	t.Setenv("KUBERIGHT_AUTH_MODE", "disabled")
+	t.Setenv("KUBERIGHT_API_TOKEN", "")
+	if cfg, err = Load(); err != nil || cfg.RequireDistinctApprover {
+		t.Fatalf("disabled mode has one anonymous identity, so distinct approvers must default off: %v %v", cfg.RequireDistinctApprover, err)
+	}
 	t.Setenv("KUBERIGHT_AUTH_MODE", "kubernetes")
 	if cfg, err = Load(); err != nil || !cfg.RequireDistinctApprover {
 		t.Fatalf("kubernetes mode must require distinct approvers: %v %v", cfg.RequireDistinctApprover, err)

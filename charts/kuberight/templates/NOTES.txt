@@ -5,7 +5,7 @@ Service:
   http://127.0.0.1:8080/
 
 {{- if eq .Values.auth.mode "disabled" }}
-WARNING: authentication is disabled. Do not expose this release outside a trusted local test environment.
+WARNING: authentication is disabled. Anyone who can reach this release's Service, Route, or Ingress can read the cluster inventory and approve or reject recommendations. Set auth.mode to require sign-in.
 {{- end }}
 {{- if and .Values.networkPolicy.enabled .Values.ingress.enabled }}
 IMPORTANT: networkPolicy permits same-namespace traffic by default. Add your ingress controller namespace/pod selectors to networkPolicy.ingress.

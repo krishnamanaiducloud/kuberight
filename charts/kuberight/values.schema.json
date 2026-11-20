@@ -214,7 +214,7 @@
       "additionalProperties": false,
       "required": ["mode", "staticToken", "oidc", "openshift"],
       "properties": {
-        "mode": { "type": "string", "enum": ["kubernetes", "openshift", "oidc", "static"] },
+        "mode": { "type": "string", "enum": ["disabled", "kubernetes", "openshift", "oidc", "static"] },
         "staticToken": {
           "type": "object",
           "additionalProperties": false,

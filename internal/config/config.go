@@ -238,9 +238,10 @@ func Load() (Config, error) {
 	if cfg.ExportRecommendationMetrics, err = parseBool("KUBERIGHT_EXPORT_RECOMMENDATION_METRICS", false); err != nil {
 		return Config{}, err
 	}
-	// Static mode has a single shared identity, so separation of duties is
-	// only meaningful, and therefore only on by default, with Kubernetes auth.
-	if cfg.RequireDistinctApprover, err = parseBool("KUBERIGHT_REQUIRE_DISTINCT_APPROVER", cfg.AuthMode != "static"); err != nil {
+	// Static and disabled modes have a single shared identity, so separation
+	// of duties is only meaningful, and therefore only on by default, with
+	// per-user authentication.
+	if cfg.RequireDistinctApprover, err = parseBool("KUBERIGHT_REQUIRE_DISTINCT_APPROVER", cfg.AuthMode != "static" && cfg.AuthMode != "disabled"); err != nil {
 		return Config{}, err
 	}
 	if cfg.DatabaseMaxConns, err = parseInt("KUBERIGHT_DATABASE_MAX_CONNS", 10, 1, 100); err != nil {
@@ -315,6 +316,8 @@ func (c Config) Validate() error {
 	}
 	switch c.AuthMode {
 	case "kubernetes":
+	case "disabled":
+		// No sign-in: every request is served as one anonymous identity.
 	case "static":
 		if len(c.APIToken) < 32 {
 			return errors.New("KUBERIGHT_API_TOKEN must contain at least 32 characters in static auth mode")
@@ -329,7 +332,7 @@ func (c Config) Validate() error {
 			return fmt.Errorf("KUBERIGHT_AUTH_MODE=%s requires KUBERIGHT_LISTEN_ADDR on a loopback address, such as 127.0.0.1:8080, behind the authenticating proxy", c.AuthMode)
 		}
 	default:
-		return errors.New("KUBERIGHT_AUTH_MODE must be kubernetes, openshift, oidc, or static")
+		return errors.New("KUBERIGHT_AUTH_MODE must be disabled, kubernetes, openshift, oidc, or static")
 	}
 	if c.DefaultScanInterval != 0 && c.DefaultScanInterval < 5*time.Minute {
 		return errors.New("KUBERIGHT_DEFAULT_SCAN_INTERVAL must be 0 or at least 5m")

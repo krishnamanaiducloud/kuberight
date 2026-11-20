@@ -33,11 +33,11 @@ KubeRight is a Kubernetes resource-inventory and right-sizing project. It is a s
 - Forecasts from a built-in engine using Prometheus history. Each forecast chooses its model by testing candidates on the series' own past against a seasonal-naive baseline, and reports that accuracy with its prediction interval. Hourly forecasts reach 7 days; daily forecasts reach 30 and 90 days from daily mean CPU and daily peak memory, and need at least 48 days of Prometheus history, and no fewer days than the horizon.
 - Request-based monthly cost estimates priced per namespace from [OpenCost](#cost-and-opencost) when configured, or from operator-configured unit prices. Every savings item names its price source. Node impact keeps three amounts apart: the request reduction, the feasible savings from removing the nodes the packing frees, and the bill, which KubeRight does not measure.
 - Persistent scoped policies (global, namespace, workload, container) with deterministic precedence. A cluster-specific scope wins over an all-clusters scope at the same level, then higher priority wins. Duplicate enabled scopes with equal priority are rejected, and resolution lists every applicable policy in order.
-- Authentication:
-  - Bearer tokens checked with Kubernetes `TokenReview`.
-  - [Browser single sign-on](#single-sign-on) with any OIDC provider.
-  - A development-only static token.
-- Every request is authorized with `SubjectAccessReview`. Verified identities and decisions are cached briefly; see [Single sign-on](#single-sign-on).
+- Authentication is **disabled by default** (`auth.mode=disabled`): the dashboard and API open without sign-in, and every request is served as one anonymous identity. Anyone who can reach the Service, Route, or Ingress can read the cluster inventory and approve or reject recommendations, so keep access to it restricted with the NetworkPolicy or your network. To require sign-in, set `auth.mode` to one of:
+  - `kubernetes`: bearer tokens checked with Kubernetes `TokenReview`.
+  - `openshift` or `oidc`: [browser single sign-on](#single-sign-on) with OpenShift or any OIDC provider.
+  - `static`: a development-only shared token.
+- With sign-in enabled, every request is authorized with `SubjectAccessReview`. Verified identities and decisions are cached briefly; see [Single sign-on](#single-sign-on).
 - [GitOps pull requests](#gitops-pull-requests): an approved recommendation can be proposed as a pull request (GitHub, Gitea/Forgejo) or merge request (GitLab) that edits the workload's manifest.
 - A dashboard backed by the versioned Go API. It opens on CPU recommendations. The fleet overview, at `/overview`, counts pods, healthy workloads and those that need attention, OOM kills, restart anomalies, unschedulable pods, and CPU hotspots, next to Prometheus and forecasting health. Health counts use the same rules as the workload health view and cover workloads that have pods. It passes an automated WCAG 2.1 AA audit on every view. Views whose integrations are unavailable display that state instead of fabricated data.
 - Prometheus metric coverage on the Integrations page: whether CPU usage, memory usage, CPU throttling, kube-state-metrics, and node condition series are present, counted over the last 10 minutes, and which features need each. Missing metrics are reported as missing, never treated as zero.
@@ -52,24 +52,22 @@ It never changes workloads: its ServiceAccount can only read them (see [read-onl
 
 ## Quick start from source
 
-Prerequisites are Go 1.27.4, Node.js 24, and npm. This local mode disables in-cluster inventory and uses a static token; it is for development only.
+Prerequisites are Go 1.27.4, Node.js 24, and npm. This local mode disables in-cluster inventory and authentication; it is for development only.
 
 ```sh
 npm ci --prefix web
 npm run build --prefix web
 
-export KUBERIGHT_AUTH_MODE=static
-export KUBERIGHT_API_TOKEN='replace-with-at-least-32-random-characters'
+export KUBERIGHT_AUTH_MODE=disabled
 export KUBERIGHT_INVENTORY_ENABLED=false
 export KUBERIGHT_WEB_ROOT="$PWD/web/dist"
 go run ./cmd/kuberight
 ```
 
-Open `http://127.0.0.1:8080`, enter the same bearer token in the dashboard, or call the API directly:
+Open `http://127.0.0.1:8080`, or call the API directly:
 
 ```sh
-curl -H "Authorization: Bearer $KUBERIGHT_API_TOKEN" \
-  http://127.0.0.1:8080/api/v1/version
+curl http://127.0.0.1:8080/api/v1/version
 ```
 
 ### Optional integrations
@@ -86,7 +84,7 @@ Each integration is independent. An unconfigured or unreachable one is reported 
 | `KUBERIGHT_DEFAULT_SCAN_INTERVAL` | When no scan schedule exists, KubeRight creates one that scans every namespace the inventory can see, starting at once and repeating at this interval (default `6h`), so recommendations appear without anyone queueing a scan. `0s` creates none. Once any schedule exists, schedules are managed on the Fleet page. |
 | `KUBERIGHT_FORECAST_WINDOW`, `KUBERIGHT_FORECAST_STEP` | Usage lookback and resolution for forecasts (defaults `336h` and `1h`). Forecasting runs inside KubeRight; there is no service to deploy or URL to set. The removed `KUBERIGHT_ML_*` settings are ignored with a startup warning. |
 | `KUBERIGHT_COST_CPU_CORE_HOUR`, `KUBERIGHT_COST_MEMORY_GIB_HOUR`, `KUBERIGHT_COST_CURRENCY` | Unit prices for savings estimates. Set both prices or neither. |
-| `KUBERIGHT_REQUIRE_DISTINCT_APPROVER` | Rejects reviews by the identity that created a recommendation. Defaults to `true` with Kubernetes authentication and `false` in static-token mode. |
+| `KUBERIGHT_REQUIRE_DISTINCT_APPROVER` | Rejects reviews by the identity that created a recommendation. Defaults to `true` with Kubernetes, OpenShift, and OIDC authentication, and `false` in static-token and disabled modes. |
 | `KUBERIGHT_LATENCY_QUERY` | One-line PromQL template in seconds, using `$namespace`, `$workload`, or `$container`, for example a p95 from an HTTP server or service-mesh histogram. Enables latency correlation. |
 | `KUBERIGHT_REQUEST_RATE_QUERY` | One-line PromQL template in requests per second, with the same placeholders, for example `sum(rate(http_requests_total{namespace="$namespace",service="$workload"}[5m]))`. Enables traffic correlation. |
 | `KUBERIGHT_VERIFICATION_INTERVAL` | How often each API pod verifies applied recommendations (default `15m`, between `1m` and `24h`). `0` disables the background check; the verification endpoint still works on demand. Needs Prometheus and the in-cluster inventory. |
@@ -360,7 +358,7 @@ The permission is `create` on `recommendations/pullrequest` in the `kuberight.io
 
 ### OpenShift
 
-The OpenShift profile and manifests sign users in with their OpenShift account: nobody pastes a token. `auth.mode=openshift` runs OpenShift's oauth-proxy as a sidecar behind the Route.
+The OpenShift profile and manifests ship with authentication disabled. To sign users in with their OpenShift account, set `auth.mode=openshift` and allow port 4180 instead of 8080 in `networkPolicy.ingress`; OpenShift's oauth-proxy then runs as a sidecar behind the Route.
 
 - **Sign-in:** the proxy sends users through the OpenShift login and admits those who may `get` KubeRight's Service in its namespace (the `view` role grants that): `oc adm policy add-role-to-user view <user> -n kuberight`.
 - **Identity:** the proxy forwards the user's OpenShift token. KubeRight verifies it with TokenReview and authorizes every request with SubjectAccessReview, so a forged header gains nothing. The API listens on loopback only.

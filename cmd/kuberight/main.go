@@ -10,6 +10,9 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"runtime/debug"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -80,6 +83,7 @@ func main() {
 
 	logger := httpapi.JSONLogger(slog.LevelInfo)
 	slog.SetDefault(logger)
+	applyMemoryLimit(logger)
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -232,6 +236,30 @@ func main() {
 		<-shutdownComplete
 	}
 	logger.Info("KubeRight API stopped")
+}
+
+// applyMemoryLimit sets the Go runtime's soft memory limit to 85% of the
+// container limit (KUBERIGHT_MEMORY_LIMIT, in bytes, from the Downward API),
+// so garbage collection works harder before the kernel OOM-kills the pod.
+// An explicit GOMEMLIMIT wins.
+func applyMemoryLimit(logger *slog.Logger) {
+	if os.Getenv("GOMEMLIMIT") != "" {
+		return
+	}
+	limit, ok := memoryTarget(os.Getenv("KUBERIGHT_MEMORY_LIMIT"))
+	if !ok {
+		return
+	}
+	debug.SetMemoryLimit(limit)
+	logger.Info("Go memory limit set from the container limit", "bytes", limit)
+}
+
+func memoryTarget(raw string) (int64, bool) {
+	limit, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil || limit < 64<<20 {
+		return 0, false
+	}
+	return limit / 100 * 85, true
 }
 
 // migrateDatabase is the bounded, one-shot entry point used by deployment

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -582,17 +583,28 @@ func (verifier *Verifier) Run(ctx context.Context) {
 		defer ticker.Stop()
 		early = ticker.C
 	}
-	verifier.Pass(ctx)
+	verifier.guarded(func() { verifier.Pass(ctx) })
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-full.C:
-			verifier.Pass(ctx)
+			verifier.guarded(func() { verifier.Pass(ctx) })
 		case <-early:
-			verifier.PassRecent(ctx)
+			verifier.guarded(func() { verifier.PassRecent(ctx) })
 		}
 	}
+}
+
+// guarded runs one verification pass. A panic ends that pass, not the
+// serving process, and its stack is logged; the next tick tries again.
+func (verifier *Verifier) guarded(pass func()) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			verifier.server.logger.Error("verification pass panicked", "panic", fmt.Sprint(recovered), "stack", string(debug.Stack()))
+		}
+	}()
+	pass()
 }
 
 // PassRecent rechecks approved changes that were first observed less than an

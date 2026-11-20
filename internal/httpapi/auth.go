@@ -88,6 +88,21 @@ func (*staticAccess) Authorize(_ context.Context, principal Principal, _ AccessA
 
 func (*staticAccess) Ready(context.Context) error { return nil }
 
+// anonymousPrincipal is the identity every request gets when authentication
+// is disabled, named as Kubernetes names unauthenticated requests.
+var anonymousPrincipal = Principal{Username: "system:anonymous", Groups: []string{"system:unauthenticated"}}
+
+// disabledAccess serves every request without sign-in or permission checks.
+type disabledAccess struct{}
+
+func (disabledAccess) Authenticate(context.Context, string) (Principal, error) {
+	return anonymousPrincipal, nil
+}
+
+func (disabledAccess) Authorize(context.Context, Principal, AccessAttributes) error { return nil }
+
+func (disabledAccess) Ready(context.Context) error { return nil }
+
 type kubernetesAccess struct {
 	client   kubernetes.Interface
 	audience string
@@ -171,6 +186,8 @@ func (access *kubernetesAccess) Ready(ctx context.Context) error {
 
 func configuredAccess(cfg config.Config) (AccessController, error) {
 	switch cfg.AuthMode {
+	case "disabled":
+		return disabledAccess{}, nil
 	case "static":
 		return newStaticAccess(cfg.APIToken)
 	case "kubernetes", "oidc", "openshift":

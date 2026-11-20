@@ -104,6 +104,12 @@ spec:
             {{- end }}
             - name: KUBERIGHT_AUTH_MODE
               value: {{ .Values.auth.mode | quote }}
+            # The Go runtime keeps its heap under 85% of this limit.
+            - name: KUBERIGHT_MEMORY_LIMIT
+              valueFrom:
+                resourceFieldRef:
+                  containerName: kuberight
+                  resource: limits.memory
             - name: KUBERIGHT_OPERATION_MODE
               value: {{ .Values.operationMode | quote }}
             - name: KUBERIGHT_INVENTORY_ENABLED

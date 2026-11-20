@@ -195,10 +195,18 @@ rbac:
   extraRules: []
 
 auth:
-  # Kubernetes TokenReview accepts service-account, OpenShift OAuth, and
-  # cluster-configured OIDC bearer tokens and then authorizes every request
-  # with SubjectAccessReview. Static mode is intended for isolated development.
-  mode: kubernetes
+  # disabled (the default): no sign-in. Anyone who can reach the Service,
+  # Route, or Ingress uses the dashboard and API, including approving and
+  # rejecting recommendations, as one anonymous identity. KubeRight never
+  # changes workloads, but it does show cluster inventory.
+  # To require sign-in instead:
+  #   kubernetes: TokenReview accepts service-account, OpenShift OAuth, and
+  #     cluster-configured OIDC bearer tokens, then authorizes every request
+  #     with SubjectAccessReview.
+  #   openshift: users sign in through OpenShift's oauth-proxy.
+  #   oidc: browser single sign-on through an oauth2-proxy sidecar.
+  #   static: one shared bearer token, for isolated development.
+  mode: disabled
   staticToken:
     existingSecret: ""
     key: token
@@ -334,7 +342,8 @@ resources:
     memory: 128Mi
   limits:
     cpu: 1
-    memory: 512Mi
+    # Cluster-wide scans hold inventory lists and Prometheus history together.
+    memory: 1Gi
 
 probes:
   startup:
@@ -345,14 +354,16 @@ probes:
     enabled: true
     initialDelaySeconds: 2
     periodSeconds: 10
-    timeoutSeconds: 2
+    # /readyz checks the Kubernetes API, the store, and Prometheus.
+    timeoutSeconds: 5
     failureThreshold: 3
   liveness:
     enabled: true
     initialDelaySeconds: 10
     periodSeconds: 20
-    timeoutSeconds: 2
-    failureThreshold: 3
+    # A busy scan must not get the pod restarted: 2 minutes of failures.
+    timeoutSeconds: 5
+    failureThreshold: 6
 
 terminationGracePeriodSeconds: 30
 

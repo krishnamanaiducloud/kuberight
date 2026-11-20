@@ -4,9 +4,10 @@ replicaCount: 1
 # pod's ServiceAccount token and service CA); this grants the read access.
 prometheus:
   openshiftMonitoring: true
-# Users sign in with their OpenShift account; nobody pastes a token.
+# No sign-in. Set auth.mode: openshift to require an OpenShift login
+# (and allow port 4180 below instead of 8080).
 auth:
-  mode: openshift
+  mode: disabled
 autoscaling:
   enabled: false
 route:
@@ -25,9 +26,9 @@ networkPolicy:
             matchLabels:
               network.openshift.io/policy-group: ingress
       ports:
-        # The sign-in proxy; the API itself listens on loopback.
+        # The API and dashboard.
         - protocol: TCP
-          port: 4180
+          port: 8080
 podSecurityContext:
   runAsNonRoot: true
   seccompProfile:

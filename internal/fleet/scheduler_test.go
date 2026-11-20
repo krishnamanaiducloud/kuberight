@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -123,6 +124,26 @@ func TestWorkerExhaustsRetryBudget(t *testing.T) {
 	failed, err := store.GetFleetScan(t.Context(), scan.ID)
 	if err != nil || failed.Status != repository.FleetScanFailed || failed.CompletedAt == nil || failed.Attempt != failed.MaxAttempts {
 		t.Fatalf("failed=%#v err=%v", failed, err)
+	}
+}
+
+func TestWorkerRecordsAPanickingScanAsAFailedAttempt(t *testing.T) {
+	base := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	store := repository.NewMemory(100)
+	scan, _, err := store.CreateFleetScan(t.Context(), repository.FleetScanRequest{Scope: repository.FleetScope{}, WindowSeconds: 24 * 3600, ScheduledFor: base, CreatedBy: "alice", MaxAttempts: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := NewWorker(store, executorFunc(func(context.Context, repository.FleetScan, func(repository.FleetScanProgress) error) error {
+		var series []float64
+		_ = series[3] // index out of range
+		return nil
+	}), "worker-1", quietLogger())
+	worker.now = func() time.Time { return base }
+	worker.claimAndExecute(t.Context()) // must not crash the test process
+	queued, err := store.GetFleetScan(t.Context(), scan.ID)
+	if err != nil || queued.Status != repository.FleetScanQueued || queued.Attempt != 1 || !strings.Contains(queued.LastError, "internal error during the scan") {
+		t.Fatalf("queued=%#v err=%v", queued, err)
 	}
 }
 

@@ -341,6 +341,11 @@ func (server *apiServer) withAuthentication(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		if server.config.AuthMode == "disabled" {
+			// No sign-in: any Authorization header is ignored.
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey, anonymousPrincipal)))
+			return
+		}
 		if server.config.AuthMode == "oidc" {
 			principal, ok := proxyPrincipal(r.Header, server.config.OIDCUsernamePrefix, server.config.OIDCGroupsPrefix)
 			if !ok {

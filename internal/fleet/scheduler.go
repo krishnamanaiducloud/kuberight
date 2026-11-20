@@ -5,7 +5,9 @@ package fleet
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -56,6 +58,11 @@ func (scheduler *Scheduler) tick(ctx context.Context) {
 	if err := ctx.Err(); err != nil {
 		return
 	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			scheduler.logger.Error("fleet scan scheduling panicked", "panic", fmt.Sprint(recovered), "stack", string(debug.Stack()))
+		}
+	}()
 	scans, err := scheduler.queue.EnqueueDueFleetScans(ctx, scheduler.now().UTC(), scheduler.batch)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -211,7 +218,7 @@ func (worker *Worker) claimAndExecute(ctx context.Context) {
 		progressMu.Unlock()
 		return persistProgress()
 	}
-	executeErr := worker.executor.Execute(executionContext, scan, report)
+	executeErr := worker.execute(executionContext, scan, report)
 	stopHeartbeat()
 	<-heartbeatDone
 
@@ -252,6 +259,18 @@ func (worker *Worker) claimAndExecute(ctx context.Context) {
 			worker.logger.Error("fleet scan exhausted its retry budget", "scan_id", scan.ID, "attempt", updated.Attempt, "error", finalProgress.Error)
 		}
 	}
+}
+
+// execute runs one scan attempt. A panic in the analysis fails the attempt
+// instead of terminating the serving process, and its stack is logged.
+func (worker *Worker) execute(ctx context.Context, scan repository.FleetScan, report func(repository.FleetScanProgress) error) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			worker.logger.Error("fleet scan attempt panicked", "scan_id", scan.ID, "panic", fmt.Sprint(recovered), "stack", string(debug.Stack()))
+			err = fmt.Errorf("internal error during the scan: %v", recovered)
+		}
+	}()
+	return worker.executor.Execute(ctx, scan, report)
 }
 
 func cloneProgress(progress repository.FleetScanProgress) repository.FleetScanProgress {
