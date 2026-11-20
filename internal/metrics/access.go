@@ -5,12 +5,16 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/net/http/httpproxy"
 )
 
 // ServiceAccountDir is where Kubernetes mounts a pod's ServiceAccount
@@ -123,9 +127,9 @@ func (token *tokenFile) get() (string, error) {
 		// whether it is still valid.
 		return token.value, nil
 	case err != nil:
-		return "", fmt.Errorf("%w: the bearer token file could not be read", ErrInvalidOptions)
+		return "", fmt.Errorf("%w: %w", ErrInvalidOptions, errCredentials)
 	case value == "" || strings.ContainsAny(value, "\r\n\t "):
-		return "", fmt.Errorf("%w: the bearer token file is empty or malformed", ErrInvalidOptions)
+		return "", fmt.Errorf("%w: %w: it is empty or malformed", ErrInvalidOptions, errCredentials)
 	}
 	token.value, token.readAt = value, token.now()
 	return value, nil
@@ -157,20 +161,21 @@ func configureAccess(client *http.Client, scheme string, options PrometheusOptio
 		return fmt.Errorf("%w: a bearer token is never sent over cleartext HTTP", ErrInvalidOptions)
 	}
 	base := client.Transport
+	if base == nil {
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.Proxy = clusterAwareProxy(httpproxy.FromEnvironment().ProxyFunc())
+		base = transport
+	}
 	if options.CAFile != "" {
 		config, err := tlsConfig(options.CAFile)
 		if err != nil {
 			return err
 		}
 		transport, ok := base.(*http.Transport)
-		switch {
-		case base == nil:
-			transport = http.DefaultTransport.(*http.Transport).Clone()
-		case ok:
-			transport = transport.Clone()
-		default:
+		if !ok {
 			return errors.New("a CA bundle cannot be combined with a custom HTTP transport")
 		}
+		transport = transport.Clone()
 		transport.TLSClientConfig = config
 		base = transport
 	}
@@ -179,11 +184,71 @@ func configureAccess(client *http.Client, scheme string, options PrometheusOptio
 		if err != nil {
 			return err
 		}
-		if base == nil {
-			base = http.DefaultTransport
-		}
 		base = bearerTransport{base: base, token: token}
 	}
 	client.Transport = base
 	return nil
+}
+
+// clusterAwareProxy keeps in-cluster traffic off the HTTP proxy. A
+// cluster-wide proxy is set through HTTP_PROXY and HTTPS_PROXY, and a
+// Service name missing from NO_PROXY would otherwise send the request,
+// with its bearer token, to the proxy, which cannot reach the Service.
+// Other hosts follow the environment, including NO_PROXY.
+func clusterAwareProxy(fromEnvironment func(*url.URL) (*url.URL, error)) func(*http.Request) (*url.URL, error) {
+	return func(request *http.Request) (*url.URL, error) {
+		if clusterInternalHost(request.URL.Hostname()) {
+			return nil, nil
+		}
+		return fromEnvironment(request.URL)
+	}
+}
+
+func clusterInternalHost(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	if host == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return strings.HasSuffix(host, ".svc") || strings.HasSuffix(host, ".cluster.local")
+}
+
+// innermostTransport finds the *http.Transport under the bearer wrapper.
+func innermostTransport(roundTripper http.RoundTripper) (*http.Transport, bool) {
+	switch typed := roundTripper.(type) {
+	case *http.Transport:
+		return typed, true
+	case bearerTransport:
+		return innermostTransport(typed.base)
+	default:
+		return nil, false
+	}
+}
+
+// openShiftMonitoringHosts are OpenShift's in-cluster monitoring Services,
+// which authenticate the pod's own ServiceAccount token and serve a
+// certificate from the service CA.
+var openShiftMonitoringHosts = map[string]bool{
+	"thanos-querier.openshift-monitoring.svc":               true,
+	"thanos-querier.openshift-monitoring.svc.cluster.local": true,
+	"prometheus-k8s.openshift-monitoring.svc":               true,
+	"prometheus-k8s.openshift-monitoring.svc.cluster.local": true,
+}
+
+// OpenShiftMonitoringCredentials returns the ServiceAccount token and
+// service CA for a configured URL that names OpenShift's in-cluster
+// monitoring, so setting the URL by hand works like discovery. It returns
+// nothing for any other host, so the token is never sent elsewhere.
+func OpenShiftMonitoringCredentials(endpoint, serviceAccountDir string) (tokenFile, caFile string, ok bool) {
+	parsed, err := url.Parse(endpoint)
+	if err != nil || !strings.EqualFold(parsed.Scheme, "https") || !openShiftMonitoringHosts[strings.ToLower(parsed.Hostname())] {
+		return "", "", false
+	}
+	tokenFile, caFile = serviceAccountDir+"/token", serviceAccountDir+"/service-ca.crt"
+	if !regularFile(tokenFile) || !regularFile(caFile) {
+		return "", "", false
+	}
+	return tokenFile, caFile, true
 }

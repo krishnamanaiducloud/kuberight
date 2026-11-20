@@ -174,7 +174,7 @@ export function Fleet({ title, description }: { title: string; description: stri
 
   return (
     <Box sx={{ p: { xs: 2, md: 4 }, maxWidth: 1500, mx: 'auto' }}>
-      <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ justifyContent: 'space-between', alignItems: { sm: 'flex-end' }, gap: 2,  mb: 3 }}>
+      <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ justifyContent: 'space-between', alignItems: { sm: 'flex-end' }, gap: 2, mb: 3 }}>
         <Box>
           <Typography variant="overline" color="primary.main">CONTINUOUS OPTIMIZATION</Typography>
           <Typography variant="h3" component="h1" sx={{ fontSize: { xs: '2.125rem', sm: '3rem' } }}>{title}</Typography>

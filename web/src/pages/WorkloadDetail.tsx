@@ -150,7 +150,7 @@ export function WorkloadDetail() {
 
       {activeContainer && (
         <Box sx={{ mb: 2 }}>
-          <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ justifyContent: 'space-between', alignItems: { sm: 'center' }, gap: 1,  mb: 1.5 }}>
+          <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ justifyContent: 'space-between', alignItems: { sm: 'center' }, gap: 1, mb: 1.5 }}>
             <Tabs value={activeContainer} onChange={(_, next) => updateView('container', next)} variant="scrollable" allowScrollButtonsMobile aria-label="Container usage">
               {containers.map((item) => <Tab key={item.name} value={item.name} label={item.name} />)}
             </Tabs>

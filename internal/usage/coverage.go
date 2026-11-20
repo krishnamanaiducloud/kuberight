@@ -2,6 +2,7 @@ package usage
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,6 +30,9 @@ type MetricCoverage struct {
 	Series  int64  `json:"series"`
 	UsedFor string `json:"usedFor"`
 	Note    string `json:"note,omitempty"`
+	// Failure says why the family could not be checked, such as timeout or
+	// authentication_failed; empty when Prometheus answered.
+	Failure string `json:"failure,omitempty"`
 }
 
 type coverageProbe struct {
@@ -40,6 +44,9 @@ var coverageProbes = []coverageProbe{
 	{"Memory usage", "container_memory_working_set_bytes", `{container!="",container!="POD"}`, "cAdvisor (kubelet)", "memory recommendations, OOM safeguards, forecasts"},
 	{"CPU throttling", "container_cpu_cfs_throttled_periods_total", `{container!="",container!="POD"}`, "cAdvisor (kubelet)", "throttling evidence and CPU hotspots"},
 	{"kube-state-metrics", "kube_pod_container_resource_requests", "", "kube-state-metrics", "attributing usage to workloads, requests and limits, restarts and OOM history"},
+	{"Container limits", "kube_pod_container_resource_limits", "", "kube-state-metrics", "limit headroom in recommendations"},
+	{"Restart counts", "kube_pod_container_status_restarts_total", "", "kube-state-metrics", "restart anomalies and post-change verification"},
+	{"Last termination reason", "kube_pod_container_status_last_terminated_reason", "", "kube-state-metrics", "OOM kill history and post-change verification"},
 	{"Node conditions", "kube_node_status_condition", "", "kube-state-metrics", "node pressure in correlation analysis"},
 }
 
@@ -60,11 +67,13 @@ func (source *Source) MetricCoverage(ctx context.Context) []MetricCoverage {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			response, err := source.client.QueryRange(ctx, metrics.RangeQuery{Expression: CoverageExpression(probe.metric, probe.selector), Start: at, End: at, Step: time.Minute})
+			response, err := source.client.QueryRange(ctx, metrics.RangeQuery{Name: "coverage." + probe.metric, Expression: CoverageExpression(probe.metric, probe.selector), Start: at, End: at, Step: time.Minute})
+			item := &results[index]
 			if err != nil {
+				item.Failure = string(metrics.FailureOf(err))
+				item.Note = "could not be checked: Prometheus " + strings.ReplaceAll(item.Failure, "_", " ")
 				return
 			}
-			item := &results[index]
 			item.State = CoverageUnavailable
 			if response.NoData || len(response.Series) == 0 || len(response.Series[0].Samples) == 0 {
 				return

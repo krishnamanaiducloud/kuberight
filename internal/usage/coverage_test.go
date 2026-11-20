@@ -26,18 +26,21 @@ func TestMetricCoverageSeparatesMissingFromUnreachable(t *testing.T) {
 		}
 	}}
 	coverage := NewSource(fake).MetricCoverage(context.Background())
-	if len(coverage) != 5 {
+	if len(coverage) != 8 {
 		t.Fatalf("coverage = %+v", coverage)
 	}
 	want := map[string]struct {
 		state  string
 		series int64
 	}{
-		"CPU usage":          {CoverageAvailable, 412},
-		"Memory usage":       {CoverageAvailable, 398},
-		"CPU throttling":     {CoverageUnavailable, 0},
-		"kube-state-metrics": {CoverageUnknown, 0},
-		"Node conditions":    {CoverageUnavailable, 0},
+		"CPU usage":               {CoverageAvailable, 412},
+		"Memory usage":            {CoverageAvailable, 398},
+		"CPU throttling":          {CoverageUnavailable, 0},
+		"kube-state-metrics":      {CoverageUnknown, 0},
+		"Container limits":        {CoverageUnavailable, 0},
+		"Restart counts":          {CoverageUnavailable, 0},
+		"Last termination reason": {CoverageUnavailable, 0},
+		"Node conditions":         {CoverageUnavailable, 0},
 	}
 	for _, item := range coverage {
 		expected, ok := want[item.Signal]

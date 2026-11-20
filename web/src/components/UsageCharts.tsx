@@ -19,7 +19,7 @@ function UsageCard({ title, series, references, format }: { title: string; serie
   return (
     <Card>
       <CardContent>
-        <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ justifyContent: 'space-between', alignItems: { sm: 'center' }, gap: 1,  mb: 2 }}>
+        <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ justifyContent: 'space-between', alignItems: { sm: 'center' }, gap: 1, mb: 2 }}>
           <Typography variant="h6">{title}</Typography>
           {series && <QualityChips series={series} />}
         </Stack>

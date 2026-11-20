@@ -276,7 +276,7 @@ func (source *Source) History(ctx context.Context, subject Subject, window Windo
 		go func(index int) {
 			defer wait.Done()
 			query := queries[index]
-			result, err := source.client.QueryRange(ctx, metrics.RangeQuery{Expression: query.expression, Start: start, End: window.End, Step: window.Step})
+			result, err := source.client.QueryRange(ctx, metrics.RangeQuery{Name: "usage." + query.resource, Expression: query.expression, Start: start, End: window.End, Step: window.Step})
 			if err != nil {
 				errs[index] = fmt.Errorf("%s usage query: %w", query.resource, err)
 				return
@@ -363,7 +363,7 @@ func (source *Source) Events(ctx context.Context, subject Subject, window Window
 }
 
 func (source *Source) instant(ctx context.Context, expression string, at time.Time) (float64, bool, error) {
-	result, err := source.client.QueryRange(ctx, metrics.RangeQuery{Expression: expression, Start: at, End: at, Step: time.Minute})
+	result, err := source.client.QueryRange(ctx, metrics.RangeQuery{Name: "events.instant", Expression: expression, Start: at, End: at, Step: time.Minute})
 	if err != nil {
 		return 0, false, err
 	}
@@ -377,6 +377,6 @@ func (source *Source) instant(ctx context.Context, expression string, at time.Ti
 // Ready evaluates a constant expression to confirm Prometheus answers.
 func (source *Source) Ready(ctx context.Context) error {
 	now := source.now().UTC().Truncate(time.Second)
-	_, err := source.client.QueryRange(ctx, metrics.RangeQuery{Expression: "vector(1)", Start: now, End: now, Step: time.Minute})
+	_, err := source.client.QueryRange(ctx, metrics.RangeQuery{Name: "readiness", Expression: "vector(1)", Start: now, End: now, Step: time.Minute})
 	return err
 }

@@ -229,6 +229,10 @@ func requestIDFromContext(ctx context.Context) string {
 	return value
 }
 
+// RequestIDFromContext returns the ID of the API request ctx belongs to, or
+// "" for background work, so other packages can tag their logs with it.
+func RequestIDFromContext(ctx context.Context) string { return requestIDFromContext(ctx) }
+
 func principalFromContext(ctx context.Context) (Principal, bool) {
 	value, ok := ctx.Value(principalKey).(Principal)
 	return value, ok

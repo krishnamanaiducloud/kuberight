@@ -103,7 +103,7 @@ func (source *Source) NamespaceUsage(ctx context.Context, namespaces []string, w
 // instantVector evaluates an expression at one instant and keys the result
 // by the given label. Series without the label are ignored.
 func (source *Source) instantVector(ctx context.Context, expression string, at time.Time, label string) (map[string]float64, error) {
-	response, err := source.client.QueryRange(ctx, metrics.RangeQuery{Expression: expression, Start: at, End: at, Step: time.Minute})
+	response, err := source.client.QueryRange(ctx, metrics.RangeQuery{Name: "namespace_usage", Expression: expression, Start: at, End: at, Step: time.Minute})
 	if err != nil {
 		return nil, err
 	}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kuberight/kuberight/internal/config"
@@ -93,7 +94,11 @@ type Dependencies struct {
 }
 
 type apiServer struct {
-	config     config.Config
+	config config.Config
+	// coverage caches the metric-family probe for the status pages.
+	coverageMu sync.Mutex
+	coverage   []usage.MetricCoverage
+	coverageAt time.Time
 	access     AccessController
 	repository repository.Store
 	provider   CollectionProvider

@@ -457,6 +457,8 @@ export type DependencyStatus = {
   healthy: boolean
   critical: boolean
   detail: string
+  // Prometheus and forecasting only, such as connected, authentication_failed, or insufficient_data.
+  state?: string
 }
 
 export type MetricCoverage = {
@@ -467,6 +469,8 @@ export type MetricCoverage = {
   series: number
   usedFor: string
   note?: string
+  // Why the family could not be checked, such as timeout or authentication_failed.
+  failure?: string
 }
 
 export type Policy = {

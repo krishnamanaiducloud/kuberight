@@ -8,11 +8,13 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/kuberight/kuberight/internal/config"
 	"github.com/kuberight/kuberight/internal/forecast"
+	"github.com/kuberight/kuberight/internal/metrics"
 	"github.com/kuberight/kuberight/internal/repository"
 	"github.com/kuberight/kuberight/internal/usage"
 )
@@ -553,15 +555,113 @@ type dependencyStatus struct {
 	Healthy    bool   `json:"healthy"`
 	Critical   bool   `json:"critical"`
 	Detail     string `json:"detail"`
+	// State names the condition for Prometheus and forecasting, such as
+	// connected, authentication_failed, or insufficient_data.
+	State string `json:"state,omitempty"`
+}
+
+// Prometheus integration states.
+const (
+	stateConnected      = "connected"
+	stateMetricsMissing = "connected_metrics_missing"
+	stateAuthentication = "authentication_failed"
+	stateAuthorization  = "authorization_denied"
+	stateQueryInvalid   = "query_invalid"
+	stateTimeout        = "timeout"
+	stateUnavailable    = "unavailable"
+	stateDisabled       = "disabled"
+	stateReady          = "ready"
+	stateNoHistory      = "insufficient_data"
+)
+
+// requiredMetrics are the metric families without which KubeRight cannot
+// recommend or forecast.
+var requiredMetrics = []string{"container_cpu_usage_seconds_total", "container_memory_working_set_bytes"}
+
+func prometheusState(kind metrics.FailureKind) string {
+	switch kind {
+	case metrics.FailureAuthentication, metrics.FailureCredentials:
+		return stateAuthentication
+	case metrics.FailureAuthorization:
+		return stateAuthorization
+	case metrics.FailureInvalidQuery:
+		return stateQueryInvalid
+	case metrics.FailureTimeout:
+		return stateTimeout
+	default:
+		return stateUnavailable
+	}
+}
+
+// describePrometheusFailure says what failed and where, without the token.
+func (server *apiServer) describePrometheusFailure(err error) string {
+	detail := "Prometheus did not answer"
+	if failure, ok := metrics.AsQueryError(err); ok {
+		detail = failure.Message
+		if failure.StatusCode != 0 {
+			detail = fmt.Sprintf("HTTP %d: %s", failure.StatusCode, failure.Message)
+		}
+		if failure.ViaProxy {
+			detail += "; the request went through the HTTP proxy"
+		}
+	}
+	if host := upstreamHost(server.config.PrometheusURL); host != "" {
+		detail += " (" + host + ")"
+	}
+	return detail
+}
+
+// cachedCoverage probes the metric families at most every 30 seconds, so
+// the overview and integration pages do not repeat the queries.
+func (server *apiServer) cachedCoverage(ctx context.Context) []usage.MetricCoverage {
+	reporter, ok := server.usage.(coverageReporter)
+	if !ok {
+		return nil
+	}
+	server.coverageMu.Lock()
+	defer server.coverageMu.Unlock()
+	if server.coverage != nil && server.now().Sub(server.coverageAt) < 30*time.Second {
+		return server.coverage
+	}
+	coverage := server.metricCoverage(ctx, reporter)
+	complete := true
+	for _, item := range coverage {
+		if item.State == usage.CoverageUnknown && item.Failure != "" {
+			complete = false
+		}
+	}
+	if complete {
+		server.coverage, server.coverageAt = coverage, server.now()
+	}
+	return coverage
+}
+
+// missingRequired lists required metric families Prometheus does not hold.
+func missingRequired(coverage []usage.MetricCoverage) []string {
+	missing := []string{}
+	for _, metric := range requiredMetrics {
+		for _, item := range coverage {
+			if item.Metric == metric && item.State == usage.CoverageUnavailable {
+				missing = append(missing, metric)
+			}
+		}
+	}
+	return missing
 }
 
 // dependencyStatuses checks every integration concurrently with a short
 // per-check timeout so a slow dependency cannot stall the caller.
 func (server *apiServer) dependencyStatuses(ctx context.Context) []dependencyStatus {
+	statuses, _ := server.dependencyStatusesWithCoverage(ctx)
+	return statuses
+}
+
+func (server *apiServer) dependencyStatusesWithCoverage(ctx context.Context) ([]dependencyStatus, []usage.MetricCoverage) {
 	type check struct {
 		status dependencyStatus
 		probe  readinessChecker
 		ready  string
+		err    error
 	}
 	checks := []check{
 		{status: dependencyStatus{Name: "Kubernetes inventory", Critical: true, Detail: "inventory provider is not configured"}, probe: server.provider, ready: "reading live workload inventory"},
@@ -585,6 +685,7 @@ func (server *apiServer) dependencyStatuses(ctx context.Context) []dependencySta
 			checkContext, cancel := context.WithTimeout(ctx, dependencyTimeout)
 			defer cancel()
 			if err := item.probe.Ready(checkContext); err != nil {
+				item.err = err
 				item.status.Detail = "configured but not responding"
 				return
 			}
@@ -593,6 +694,35 @@ func (server *apiServer) dependencyStatuses(ctx context.Context) []dependencySta
 		}()
 	}
 	wait.Wait()
+
+	// Prometheus is healthy only when an authenticated query succeeds and
+	// the metrics KubeRight needs are there; forecasting is ready only
+	// when that history exists, not merely because its code is loaded.
+	prometheus, forecasting := &checks[2].status, &checks[3].status
+	var coverage []usage.MetricCoverage
+	switch {
+	case !prometheus.Configured:
+		prometheus.State = stateDisabled
+	case checks[2].err != nil:
+		prometheus.State = prometheusState(metrics.FailureOf(checks[2].err))
+		prometheus.Detail = server.describePrometheusFailure(checks[2].err)
+	default:
+		prometheus.State = stateConnected
+		coverage = server.cachedCoverage(ctx)
+		if missing := missingRequired(coverage); len(missing) > 0 {
+			prometheus.Healthy, prometheus.State = false, stateMetricsMissing
+			prometheus.Detail = "connected, but these metrics are missing: " + strings.Join(missing, ", ")
+		}
+	}
+	if forecasting.Configured {
+		if prometheus.State == stateConnected {
+			forecasting.State = stateReady
+		} else {
+			forecasting.Healthy, forecasting.State = false, stateNoHistory
+			forecasting.Detail = "built-in engine " + forecast.EngineVersion + " is loaded, but there is no usage history to forecast from: Prometheus is " + strings.ReplaceAll(prometheus.State, "_", " ")
+		}
+	}
+
 	statuses := make([]dependencyStatus, 0, len(checks)+2)
 	for _, item := range checks {
 		statuses = append(statuses, item.status)
@@ -608,26 +738,19 @@ func (server *apiServer) dependencyStatuses(ctx context.Context) []dependencySta
 		server.optionalIntegration("Latency correlation", server.config.LatencyQuery != "", "application latency is correlated with resource signals", "KUBERIGHT_LATENCY_QUERY is not set"),
 		server.optionalIntegration("Recommendation metrics", server.config.ExportRecommendationMetrics, "recommendations are exported on /metrics for Grafana and other OpenMetrics tools", "KUBERIGHT_EXPORT_RECOMMENDATION_METRICS is not enabled"),
 	)
-	return statuses
+	return statuses, coverage
 }
 
 func (server *apiServer) integrations(w http.ResponseWriter, r *http.Request) {
 	if !server.authorize(w, r, AccessAttributes{Verb: "list", Resource: "integrations"}) {
 		return
 	}
-	var (
-		wait     sync.WaitGroup
-		coverage []usage.MetricCoverage
-	)
-	if reporter, ok := server.usage.(coverageReporter); ok {
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
-			coverage = server.metricCoverage(r.Context(), reporter)
-		}()
+	items, coverage := server.dependencyStatusesWithCoverage(r.Context())
+	if coverage == nil {
+		// Prometheus did not answer, so coverage is unknown; still list the
+		// families so each one shows why.
+		coverage = server.cachedCoverage(r.Context())
 	}
-	items := server.dependencyStatuses(r.Context())
-	wait.Wait()
 	body := map[string]any{
 		"items": items, "pagination": map[string]int{"page": 1, "pageSize": len(items), "total": len(items)},
 		"status": Availability{Available: true, Source: "runtime_configuration"},

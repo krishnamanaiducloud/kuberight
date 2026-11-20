@@ -67,8 +67,14 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) == 2 && os.Args[1] == "prometheus-check" {
+		// Run inside the pod (kubectl exec deploy/kuberight -- /app/kuberight
+		// prometheus-check) to test Prometheus with the pod's own identity,
+		// network path, and settings.
+		os.Exit(prometheusCheck(os.Stdout))
+	}
 	if len(os.Args) > 1 && (len(os.Args) != 2 || os.Args[1] != "migrate") {
-		fmt.Fprintln(os.Stderr, "usage: kuberight [healthcheck|migrate|benchmark [--traces FILE | --forecast-traces FILE]]")
+		fmt.Fprintln(os.Stderr, "usage: kuberight [healthcheck|migrate|prometheus-check|benchmark [--traces FILE | --forecast-traces FILE]]")
 		os.Exit(2)
 	}
 
@@ -109,12 +115,19 @@ func main() {
 			BearerTokenFile: cfg.PrometheusBearerTokenFile, CAFile: cfg.PrometheusCAFile, TenantNamespace: cfg.PrometheusTenantNamespace,
 			// Daily-step forecasts look back up to 180 days; the point bound
 			// still stops a long range at a fine step.
-			MaxRange: 180 * 24 * time.Hour,
+			MaxRange:  180 * 24 * time.Hour,
+			Logger:    logger,
+			RequestID: httpapi.RequestIDFromContext,
 		})
 		if clientErr != nil {
 			logger.Error("Prometheus client initialization failed", "error", clientErr)
 			os.Exit(1)
 		}
+		host, viaProxy := client.Endpoint()
+		// The token itself is never logged: only whether one is sent.
+		logger.Info("Prometheus client ready", "source", cfg.PrometheusSource, "endpoint_host", host,
+			"bearer_token", cfg.PrometheusBearerTokenFile != "", "ca_bundle", cfg.PrometheusCAFile != "",
+			"tenant_namespace", cfg.PrometheusTenantNamespace, "via_proxy", viaProxy, "timeout", cfg.PrometheusTimeout.String())
 		dependencies.Usage = usage.NewSource(client)
 	}
 	// Forecasting runs inside this process, bounded so it cannot take every
@@ -362,6 +375,18 @@ func resolvePrometheus(cfg config.Config, logger *slog.Logger) config.Config {
 	switch {
 	case cfg.PrometheusURL != "":
 		cfg.PrometheusSource = "configured"
+		// A URL set by hand to OpenShift's in-cluster monitoring needs the
+		// same ServiceAccount token and service CA that discovery uses;
+		// without them the request fails TLS verification or gets 401.
+		if tokenFile, caFile, ok := metrics.OpenShiftMonitoringCredentials(cfg.PrometheusURL, metrics.ServiceAccountDir); ok {
+			if cfg.PrometheusBearerTokenFile == "" {
+				cfg.PrometheusBearerTokenFile = tokenFile
+			}
+			if cfg.PrometheusCAFile == "" {
+				cfg.PrometheusCAFile = caFile
+			}
+			cfg.PrometheusSource = "configured OpenShift monitoring URL with the ServiceAccount token and service CA"
+		}
 	case !cfg.PrometheusDiscovery:
 		logger.Warn("Prometheus is not configured and discovery is disabled; recommendations and forecasts are unavailable")
 	default:

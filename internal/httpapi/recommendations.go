@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kuberight/kuberight/internal/config"
+	"github.com/kuberight/kuberight/internal/metrics"
 	"github.com/kuberight/kuberight/internal/notify"
 	"github.com/kuberight/kuberight/internal/optimizer"
 	"github.com/kuberight/kuberight/internal/repository"
@@ -330,12 +331,23 @@ func (server *apiServer) usageFailure(w http.ResponseWriter, r *http.Request, er
 		respondError(w, r, http.StatusUnprocessableEntity, "no_usage_data", "Prometheus has no CPU or memory usage for this container in the requested window")
 		return
 	}
-	server.logger.Error("usage query failed", "request_id", requestIDFromContext(r.Context()), "error", err)
-	if errors.Is(err, context.DeadlineExceeded) {
+	failure := metrics.FailureOf(err)
+	if failure == metrics.FailureCanceled {
+		// The browser went away (navigation, a newer request); Prometheus is fine.
+		server.logger.Debug("usage query canceled by the caller", "request_id", requestIDFromContext(r.Context()))
+		respondError(w, r, http.StatusServiceUnavailable, "request_canceled", "the request was canceled")
+		return
+	}
+	server.logger.Error("usage query failed", "request_id", requestIDFromContext(r.Context()), "failure", string(failure), "error", err)
+	if failure == metrics.FailureTimeout || errors.Is(err, context.DeadlineExceeded) {
 		respondError(w, r, http.StatusGatewayTimeout, "dependency_timeout", "Prometheus did not respond in time")
 		return
 	}
-	respondError(w, r, http.StatusServiceUnavailable, "dependency_unavailable", "Prometheus is unavailable")
+	message := "Prometheus is unavailable"
+	if queryError, ok := metrics.AsQueryError(err); ok && queryError.Message != "" {
+		message += ": " + queryError.Message
+	}
+	respondError(w, r, http.StatusServiceUnavailable, "dependency_unavailable", message)
 }
 
 func (server *apiServer) generateRecommendation(w http.ResponseWriter, r *http.Request) {

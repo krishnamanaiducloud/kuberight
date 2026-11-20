@@ -750,17 +750,25 @@ func TestListRecommendationsValidatesReviewFilters(t *testing.T) {
 }
 
 func TestIntegrationsReportLiveHealth(t *testing.T) {
-	api := newTestAPI(t, nil, Dependencies{Forecaster: &fakeForecaster{}})
-	_, body := api.do(t, http.MethodGet, "/api/v1/settings/integrations", "alice", "")
-	found := false
-	for _, item := range body["items"].([]any) {
-		dependency := item.(map[string]any)
-		if dependency["name"] == "Forecasting" {
-			found = dependency["configured"] == true && dependency["healthy"] == true
+	forecasting := func(dependencies Dependencies) map[string]any {
+		t.Helper()
+		dependencies.Forecaster = &fakeForecaster{}
+		api := newTestAPI(t, nil, dependencies)
+		_, body := api.do(t, http.MethodGet, "/api/v1/settings/integrations", "alice", "")
+		for _, item := range body["items"].([]any) {
+			if dependency := item.(map[string]any); dependency["name"] == "Forecasting" {
+				return dependency
+			}
 		}
-	}
-	if !found {
 		t.Fatalf("forecasting health missing: %v", body)
+		return nil
+	}
+	// The engine alone is not enough: without usage history it cannot forecast.
+	if status := forecasting(Dependencies{}); status["configured"] != true || status["healthy"] != false || status["state"] != "insufficient_data" {
+		t.Fatalf("without Prometheus: %v", status)
+	}
+	if status := forecasting(Dependencies{Usage: &fakeUsage{}}); status["healthy"] != true || status["state"] != "ready" {
+		t.Fatalf("with Prometheus connected: %v", status)
 	}
 }
 

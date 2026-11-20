@@ -122,7 +122,7 @@ func (source *Source) Signals(ctx context.Context, subject Subject, window Windo
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			item.result, item.err = source.client.QueryRange(ctx, metrics.RangeQuery{Expression: item.expression, Start: start, End: end, Step: window.Step})
+			item.result, item.err = source.client.QueryRange(ctx, metrics.RangeQuery{Name: "signals." + item.name, Expression: item.expression, Start: start, End: end, Step: window.Step})
 		}()
 	}
 	wait.Wait()

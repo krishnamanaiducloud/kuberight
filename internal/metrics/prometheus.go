@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"net/url"
@@ -119,6 +120,8 @@ type RangeResult struct {
 
 // RangeQuery describes one bounded call to Prometheus's query_range endpoint.
 type RangeQuery struct {
+	// Name identifies the query in logs, such as "hotspot.throttled_ratio".
+	Name            string
 	Expression      string
 	Start           time.Time
 	End             time.Time
@@ -153,10 +156,18 @@ type PrometheusOptions struct {
 	// multi-tenant query proxies such as OpenShift's Thanos Querier tenancy
 	// port require; they answer only for that namespace.
 	TenantNamespace string
+	// Logger receives one entry per failed request; nil logs nothing.
+	Logger *slog.Logger
+	// RequestID names the API request a query belongs to, for the logs.
+	RequestID func(context.Context) string
 }
 
 // PrometheusClient is safe for concurrent use after construction.
 type PrometheusClient struct {
+	host             string
+	viaProxy         bool
+	logger           *slog.Logger
+	requestID        func(context.Context) string
 	tenantNamespace  string
 	queryRangeURL    url.URL
 	httpClient       *http.Client
@@ -219,10 +230,19 @@ func NewPrometheusClient(options PrometheusOptions) (*PrometheusClient, error) {
 	if err := configureAccess(httpClient, endpoint.Scheme, options); err != nil {
 		return nil, err
 	}
+	viaProxy := false
+	if transport, ok := innermostTransport(httpClient.Transport); ok && transport.Proxy != nil {
+		proxyURL, proxyErr := transport.Proxy(&http.Request{URL: &endpoint})
+		viaProxy = proxyErr == nil && proxyURL != nil
+	}
 
 	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/api/v1/query_range"
 	endpoint.RawPath = ""
 	return &PrometheusClient{
+		host:             endpoint.Host,
+		viaProxy:         viaProxy,
+		logger:           options.Logger,
+		requestID:        options.RequestID,
 		tenantNamespace:  options.TenantNamespace,
 		queryRangeURL:    endpoint,
 		httpClient:       httpClient,
@@ -245,14 +265,17 @@ func (client *PrometheusClient) QueryRange(ctx context.Context, query RangeQuery
 	if err != nil {
 		return RangeResult{}, err
 	}
+	started := time.Now()
 	if err := ctx.Err(); err != nil {
-		return RangeResult{}, newUpstreamRequestError(err)
+		kind, message := transportFailure(ctx, err)
+		return RangeResult{}, client.fail(ctx, query, started, &QueryError{Kind: kind, Message: message, cause: err})
 	}
 	select {
 	case client.inFlight <- struct{}{}:
 		defer func() { <-client.inFlight }()
 	case <-ctx.Done():
-		return RangeResult{}, newUpstreamRequestError(ctx.Err())
+		kind, message := transportFailure(ctx, ctx.Err())
+		return RangeResult{}, client.fail(ctx, query, started, &QueryError{Kind: kind, Message: message + " while waiting for a query slot", cause: ctx.Err()})
 	}
 
 	requestURL := client.queryRangeURL
@@ -274,36 +297,48 @@ func (client *PrometheusClient) QueryRange(ctx context.Context, query RangeQuery
 
 	response, err := client.httpClient.Do(request)
 	if err != nil {
-		return RangeResult{}, newUpstreamRequestError(err)
+		kind, message := transportFailure(ctx, err)
+		return RangeResult{}, client.fail(ctx, query, started, &QueryError{Kind: kind, Message: message, cause: err})
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return RangeResult{}, fmt.Errorf("%w: HTTP status %d", ErrUpstream, response.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 4<<10))
+		errorType := apiErrorType(body)
+		kind := statusFailure(response.StatusCode, errorType)
+		return RangeResult{}, client.fail(ctx, query, started, &QueryError{
+			Kind: kind, StatusCode: response.StatusCode, ErrorType: errorType, Message: statusMessage(kind, response.StatusCode),
+		})
 	}
 	payload, err := io.ReadAll(io.LimitReader(response.Body, client.maxResponseBytes+1))
 	if err != nil {
-		return RangeResult{}, newUpstreamRequestError(err)
+		kind, message := transportFailure(ctx, err)
+		return RangeResult{}, client.fail(ctx, query, started, &QueryError{Kind: kind, StatusCode: http.StatusOK, Message: message, cause: err})
 	}
 	if int64(len(payload)) > client.maxResponseBytes {
+		client.fail(ctx, query, started, &QueryError{Kind: FailureProtocol, StatusCode: http.StatusOK, Message: "the response exceeds the size limit"})
 		return RangeResult{}, ErrResponseTooLarge
 	}
 
 	envelope, err := decodePrometheusEnvelope(payload)
 	if err != nil {
-		return RangeResult{}, err
+		return RangeResult{}, client.protocolFailure(ctx, query, started, err)
 	}
 	switch envelope.Status {
 	case "success":
 	case "error":
-		return RangeResult{}, ErrUpstream
+		errorType := apiErrorType(payload)
+		kind := statusFailure(http.StatusOK, errorType)
+		return RangeResult{}, client.fail(ctx, query, started, &QueryError{
+			Kind: kind, StatusCode: http.StatusOK, ErrorType: errorType, Message: statusMessage(kind, http.StatusOK),
+		})
 	default:
-		return RangeResult{}, fmt.Errorf("%w: unrecognized API status", ErrProtocol)
+		return RangeResult{}, client.protocolFailure(ctx, query, started, fmt.Errorf("%w: unrecognized API status", ErrProtocol))
 	}
 	if envelope.ResultType != "matrix" {
-		return RangeResult{}, fmt.Errorf("%w: expected matrix result", ErrProtocol)
+		return RangeResult{}, client.protocolFailure(ctx, query, started, fmt.Errorf("%w: expected matrix result", ErrProtocol))
 	}
 	if len(envelope.Result) > client.maxSeries {
-		return RangeResult{}, fmt.Errorf("%w: series limit exceeded", ErrProtocol)
+		return RangeResult{}, client.protocolFailure(ctx, query, started, fmt.Errorf("%w: series limit exceeded", ErrProtocol))
 	}
 
 	totalSamples := 0
@@ -779,28 +814,53 @@ func positiveDurationOrDefault(name string, value, fallback time.Duration) (time
 	return value, nil
 }
 
-type upstreamRequestError struct {
-	cancellation error
-}
-
-func newUpstreamRequestError(cause error) upstreamRequestError {
-	var cancellation error
-	switch {
-	case errors.Is(cause, context.Canceled):
-		cancellation = context.Canceled
-	case errors.Is(cause, context.DeadlineExceeded):
-		cancellation = context.DeadlineExceeded
+// fail completes a QueryError with the request facts and logs it once.
+// Nothing sensitive is logged: no header, token, or PromQL text.
+func (client *PrometheusClient) fail(ctx context.Context, query RangeQuery, started time.Time, failure *QueryError) error {
+	failure.Query = query.Name
+	if failure.Query == "" {
+		failure.Query = "unnamed"
 	}
-	return upstreamRequestError{cancellation: cancellation}
-}
-
-func (err upstreamRequestError) Error() string {
-	return "Prometheus request failed"
-}
-
-func (err upstreamRequestError) Unwrap() []error {
-	if err.cancellation != nil {
-		return []error{ErrUpstream, err.cancellation}
+	failure.Host, failure.Method, failure.ViaProxy = client.host, http.MethodGet, client.viaProxy
+	failure.Duration = time.Since(started)
+	if client.logger == nil {
+		return failure
 	}
-	return []error{ErrUpstream}
+	level := slog.LevelWarn
+	if failure.Kind == FailureCanceled {
+		// The browser navigated away; Prometheus did nothing wrong.
+		level = slog.LevelDebug
+	}
+	attributes := []any{
+		"query", failure.Query, "endpoint_host", failure.Host, "method", failure.Method,
+		"failure", string(failure.Kind), "duration_ms", failure.Duration.Milliseconds(),
+		"timeout", failure.Kind == FailureTimeout, "auth_failure", failure.AuthFailure(), "via_proxy", failure.ViaProxy,
+	}
+	if client.requestID != nil {
+		if id := client.requestID(ctx); id != "" {
+			attributes = append(attributes, "request_id", id)
+		}
+	}
+	if failure.StatusCode != 0 {
+		attributes = append(attributes, "status", failure.StatusCode)
+	}
+	if failure.ErrorType != "" {
+		attributes = append(attributes, "prometheus_error_type", failure.ErrorType)
+	}
+	if failure.Message != "" {
+		attributes = append(attributes, "message", failure.Message)
+	}
+	client.logger.Log(ctx, level, "Prometheus query failed", attributes...)
+	return failure
+}
+
+func (client *PrometheusClient) protocolFailure(ctx context.Context, query RangeQuery, started time.Time, cause error) error {
+	// Protocol errors are this package's own fixed descriptions.
+	return client.fail(ctx, query, started, &QueryError{Kind: FailureProtocol, StatusCode: http.StatusOK, Message: cause.Error(), cause: cause})
+}
+
+// Endpoint returns the host and port queries go to, and whether they go
+// through an HTTP proxy, for the integration status.
+func (client *PrometheusClient) Endpoint() (string, bool) {
+	return client.host, client.viaProxy
 }

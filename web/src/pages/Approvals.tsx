@@ -115,7 +115,7 @@ export function Approvals({ title, description }: { title: string; description: 
           </Alert>
         )}
         {status === 'pending' && checked.size > 0 && (
-          <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ gap: 1, alignItems: { sm: 'center' },  mb: 2, p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
+          <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ gap: 1, alignItems: { sm: 'center' }, mb: 2, p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
             <Typography sx={{ flexGrow: 1 }}>{checked.size} selected</Typography>
             <Button variant="contained" color="success" disabled={busy} onClick={() => void review('approve')} startIcon={busy ? <CircularProgress size={16} /> : undefined}>Approve selected</Button>
             <Button variant="outlined" color="error" disabled={busy} onClick={() => setRejecting(true)}>Reject selected</Button>

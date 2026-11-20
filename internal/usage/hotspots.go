@@ -68,7 +68,7 @@ func (source *Source) Hotspots(ctx context.Context, namespaces []string, window 
 	byKey := map[string]*ContainerHotspot{}
 	order := []string{}
 	for index, expression := range HotspotExpressions(namespaces, window) {
-		response, err := source.client.QueryRange(ctx, metrics.RangeQuery{Expression: expression, Start: end, End: end, Step: time.Minute})
+		response, err := source.client.QueryRange(ctx, metrics.RangeQuery{Name: fmt.Sprintf("hotspot.%d", index+1), Expression: expression, Start: end, End: end, Step: time.Minute})
 		if err != nil {
 			return nil, fmt.Errorf("hotspot query %d: %w", index+1, err)
 		}

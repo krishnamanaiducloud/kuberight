@@ -516,7 +516,7 @@ func (source *Source) runRequests(ctx context.Context, requests []*promRequest) 
 		wait.Add(1)
 		go func(request *promRequest) {
 			defer wait.Done()
-			request.result, request.err = source.client.QueryRange(ctx, metrics.RangeQuery{Expression: request.expression, Start: request.start, End: request.end, Step: request.step})
+			request.result, request.err = source.client.QueryRange(ctx, metrics.RangeQuery{Name: "attribution", Expression: request.expression, Start: request.start, End: request.end, Step: request.step})
 		}(request)
 	}
 	wait.Wait()

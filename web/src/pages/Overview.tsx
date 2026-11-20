@@ -80,7 +80,7 @@ export function Overview() {
         <Typography variant="overline" color="primary.main">FLEET INTELLIGENCE</Typography>
         <Typography variant="h2" component="h1" sx={{ maxWidth: 820 }}>Rightsize with evidence,<br />not instinct.</Typography>
         <Typography color="text.secondary" sx={{ mt: 1.5, maxWidth: 700 }}>KubeRight separates observed signals, forecasts, and estimated savings so platform teams can make controlled changes with a clear audit trail.</Typography>
-        <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ gap: 1, alignItems: { sm: 'center' },  mt: 2.5 }}>
+        <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ gap: 1, alignItems: { sm: 'center' }, mt: 2.5 }}>
           <Button component={RouterLink} to="/workloads" variant="contained">Choose a workload</Button>
           <Button component={RouterLink} to="/approvals" variant="outlined">Review decision queue</Button>
           {value?.generatedAt && <Typography variant="caption" color="text.secondary" sx={{ ml: { sm: 1 } }}>Control-plane snapshot {new Date(value.generatedAt).toLocaleString()}</Typography>}

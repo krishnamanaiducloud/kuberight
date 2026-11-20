@@ -451,6 +451,44 @@ These were functional runs on a small cluster. Accuracy is evaluated separately,
 3. A recommendation with the verdict `insufficient_data` names what is missing: usually too little history, replicas without metrics, or a recent restart or rollout. KubeRight holds advice rather than guessing.
 4. A namespace-scoped install sees only its own namespace. Use the cluster-wide manifest or `rbac.scope=cluster` to see every namespace.
 
+**Prometheus unavailable?** The Integrations page names the state:
+
+| State | Meaning |
+| --- | --- |
+| `authentication_failed` | HTTP 401: the token was missing or rejected, or the token file could not be read. |
+| `authorization_denied` | HTTP 403: the ServiceAccount lacks the monitoring role. |
+| `query_invalid` | Prometheus rejected the PromQL. |
+| `timeout` | No answer in time. |
+| `unavailable` | A TLS, DNS, connection, or proxy failure. The detail says which. |
+| `connected_metrics_missing` | Prometheus answered, but the CPU or memory series are absent. |
+
+Each failed query is also logged once, as `Prometheus query failed`, with:
+
+- the request ID and the query name, such as `hotspot.1`;
+- the endpoint host, method, HTTP status, and Prometheus `errorType`;
+- a failure kind and the duration;
+- whether it was a timeout or an authentication failure, and whether it went through a proxy.
+
+The log never includes the token or the PromQL. A browser that navigates away cancels its queries; that is logged at debug level, not as a failure.
+
+To test Prometheus with the pod's own identity, network path, and settings, run the check inside the pod. The production image has no shell, but the binary runs directly:
+
+```sh
+oc -n kuberight exec deploy/kuberight -- /app/kuberight prometheus-check
+```
+
+It prints, as JSON:
+
+- the endpoint, whether a token and CA bundle are used, and whether a proxy is in the path;
+- the outcome of a readiness query and a real CPU usage query;
+- every metric family's coverage.
+
+A token is never printed. It exits 0 when Prometheus answered. On OpenShift:
+
+- KubeRight uses the pod's projected ServiceAccount token (re-read as it rotates) and the service CA, whether Thanos Querier is discovered or `prometheus.url` names `thanos-querier.openshift-monitoring.svc`.
+- Requests to `*.svc` and `*.cluster.local` hosts never go through an `HTTP_PROXY` or `HTTPS_PROXY`.
+- TLS verification is always on.
+
 **No forecast?** A forecast needs at least 48 samples with no gap longer than three steps, and no fewer samples than the horizon. That is 48 hours for hourly forecasts and 48 days for 30- and 90-day forecasts. The error says how many samples exist. On OpenShift, platform Prometheus keeps 15 days by default.
 
 **A shell for debugging.** The production image has no shell. Build the debug variant, which adds a BusyBox shell (`/busybox/sh`) and still runs as non-root, with `docker build --target debug -t <registry>/kuberight:<version>-debug .`. Then attach it to the running pod without restarting it, or start a copy on OpenShift:

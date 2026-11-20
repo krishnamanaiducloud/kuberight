@@ -7,10 +7,20 @@ import HelpOutline from '@mui/icons-material/HelpOutlineOutlined'
 import { api, ApiError, type DependencyStatus, type MetricCoverage } from '../api'
 import { PageHeader } from './PageHeader'
 
+const stateLabels: Record<string, string> = {
+  connected_metrics_missing: 'Metrics missing',
+  authentication_failed: 'Authentication failed',
+  authorization_denied: 'Access denied',
+  query_invalid: 'Query rejected',
+  timeout: 'Timed out',
+  insufficient_data: 'Insufficient data',
+}
+
 function state(dependency: DependencyStatus) {
-  if (!dependency.configured) return { label: 'Not configured', color: 'default' as const, icon: <RemoveCircleOutline fontSize="small" /> }
+  if (!dependency.configured || dependency.state === 'disabled') return { label: 'Not configured', color: 'default' as const, icon: <RemoveCircleOutline fontSize="small" /> }
   if (dependency.healthy) return { label: 'Healthy', color: 'success' as const, icon: <CheckCircleOutline fontSize="small" /> }
-  return { label: 'Unavailable', color: dependency.critical ? 'error' as const : 'warning' as const, icon: <ErrorOutline fontSize="small" /> }
+  const label = (dependency.state && stateLabels[dependency.state]) || 'Unavailable'
+  return { label, color: dependency.critical ? 'error' as const : 'warning' as const, icon: <ErrorOutline fontSize="small" /> }
 }
 
 function coverageState(item: MetricCoverage) {
@@ -31,7 +41,7 @@ function MetricCoverageCard({ coverage }: { coverage: MetricCoverage[] }) {
           {coverage.map((item) => {
             const current = coverageState(item)
             return (
-              <Stack key={item.metric} direction={{ xs: 'column', sm: 'row' }} sx={{ gap: { xs: 0.5, sm: 2 }, alignItems: { sm: 'center' },  py: 1.25 }}>
+              <Stack key={item.metric} direction={{ xs: 'column', sm: 'row' }} sx={{ gap: { xs: 0.5, sm: 2 }, alignItems: { sm: 'center' }, py: 1.25 }}>
                 <Box sx={{ minWidth: { sm: 200 } }}>
                   <Typography sx={{ fontWeight: 600 }}>{item.signal}</Typography>
                   <Typography variant="caption" color="text.secondary">{item.source}</Typography>
