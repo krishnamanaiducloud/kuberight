@@ -36,11 +36,15 @@ var waitingCategories = map[string]string{
 
 // diagnosticOwner names the workload that owns a pod: its controller, with
 // a Deployment's ReplicaSet resolved to the Deployment from the pod's
-// pod-template-hash label.
+// pod-template-hash label. A static pod's mirror is owned by its Node and is
+// reported as the pod itself, so it is never mistaken for a node problem.
 func diagnosticOwner(pod corev1.Pod) (kind, name string) {
 	for _, owner := range pod.OwnerReferences {
 		if owner.Controller == nil || !*owner.Controller {
 			continue
+		}
+		if owner.Kind == "Node" {
+			break
 		}
 		if owner.Kind == "ReplicaSet" {
 			if hash := pod.Labels["pod-template-hash"]; hash != "" && strings.HasSuffix(owner.Name, "-"+hash) {
@@ -180,7 +184,7 @@ func (provider *KubernetesProvider) HealthSummary(ctx context.Context) (httpapi.
 	for _, record := range records {
 		category, _ := record["category"].(string)
 		summary.Findings[category]++
-		if record["kind"] == "Node" {
+		if _, podFinding := record["pod"]; !podFinding {
 			summary.NodesWithProblems++
 			continue
 		}

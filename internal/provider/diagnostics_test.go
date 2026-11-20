@@ -117,6 +117,11 @@ func TestDiagnosticOwnerKeepsNonDeploymentReplicaSets(t *testing.T) {
 	if kind, name := diagnosticOwner(pod); kind != "Pod" || name != "web-0" {
 		t.Fatalf("a bare pod = %s/%s", kind, name)
 	}
+	pod.Name = "kube-apiserver-node-a"
+	pod.OwnerReferences = []metav1.OwnerReference{{Kind: "Node", Name: "node-a", Controller: &controller}}
+	if kind, name := diagnosticOwner(pod); kind != "Pod" || name != "kube-apiserver-node-a" {
+		t.Fatalf("a static pod's mirror = %s/%s", kind, name)
+	}
 }
 
 func TestHealthSummaryCountsWorkloadsWithFindings(t *testing.T) {
@@ -137,7 +142,13 @@ func TestHealthSummaryCountsWorkloadsWithFindings(t *testing.T) {
 		pod.Labels["pod-template-hash"] = "abc12"
 		pod.OwnerReferences[0].Name = "web-abc12"
 	})
-	client := kubernetesfake.NewSimpleClientset(healthyDeployment, crashing, other, statefulPod("db-0", 2), statefulPod("db-1", 3),
+	// A static pod's mirror is owned by its Node; its restarts are a pod
+	// problem, not a node problem.
+	mirror := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "etcd-node-a", Namespace: "kube-system", OwnerReferences: []metav1.OwnerReference{{Kind: "Node", Name: "node-a", Controller: &controller}}},
+		Status:     corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{Name: "etcd", RestartCount: 12}}},
+	}
+	client := kubernetesfake.NewSimpleClientset(healthyDeployment, crashing, other, statefulPod("db-0", 2), statefulPod("db-1", 3), mirror,
 		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-a"}, Status: corev1.NodeStatus{Conditions: []corev1.NodeCondition{
 			{Type: corev1.NodeMemoryPressure, Status: corev1.ConditionTrue},
 		}}})
@@ -145,11 +156,12 @@ func TestHealthSummaryCountsWorkloadsWithFindings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Workloads: Deployment checkout (one crashing pod), Deployment web, StatefulSet db (two OOM kills).
-	if !summary.Available || summary.Pods != 5 || summary.WorkloadsWithPods != 3 || summary.WorkloadsNeedingAttention != 2 || summary.HealthyWorkloads != 1 || summary.NodesWithProblems != 1 {
+	// Workloads: Deployment checkout (one crashing pod), Deployment web,
+	// StatefulSet db (two OOM kills), and the restarting static pod.
+	if !summary.Available || summary.Pods != 6 || summary.WorkloadsWithPods != 4 || summary.WorkloadsNeedingAttention != 3 || summary.HealthyWorkloads != 1 || summary.NodesWithProblems != 1 {
 		t.Fatalf("summary = %+v", summary)
 	}
-	if summary.Findings["OOMKilled"] != 2 || summary.Findings["CrashLoopBackOff"] != 1 || summary.Findings["RepeatedRestarts"] != 1 || summary.Findings["NodeMemoryPressure"] != 1 {
+	if summary.Findings["OOMKilled"] != 2 || summary.Findings["CrashLoopBackOff"] != 1 || summary.Findings["RepeatedRestarts"] != 2 || summary.Findings["NodeMemoryPressure"] != 1 {
 		t.Fatalf("findings = %v", summary.Findings)
 	}
 }
