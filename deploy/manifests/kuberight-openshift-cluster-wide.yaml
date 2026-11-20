@@ -13,11 +13,11 @@ metadata:
   name: kuberight
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.6
+    helm.sh/chart: kuberight-0.1.0-rc.7
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.6"
+    app.kubernetes.io/version: "0.1.0-rc.7"
     app.kubernetes.io/component: server
 spec:
   podSelector:
@@ -32,13 +32,13 @@ spec:
         - podSelector: {}
       ports:
         - protocol: TCP
-          port: 4180
+          port: 8080
     - from:
       - namespaceSelector:
           matchLabels:
             network.openshift.io/policy-group: ingress
       ports:
-      - port: 4180
+      - port: 8080
         protocol: TCP
 
 ---
@@ -49,11 +49,11 @@ metadata:
   name: kuberight
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.6
+    helm.sh/chart: kuberight-0.1.0-rc.7
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.6"
+    app.kubernetes.io/version: "0.1.0-rc.7"
     app.kubernetes.io/component: server
 spec:
   minAvailable: 1
@@ -71,37 +71,13 @@ metadata:
   name: kuberight
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.6
+    helm.sh/chart: kuberight-0.1.0-rc.7
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.6"
+    app.kubernetes.io/version: "0.1.0-rc.7"
     app.kubernetes.io/component: server
-  annotations:
-    serviceaccounts.openshift.io/oauth-redirectreference.primary: '{"apiVersion":"v1","kind":"OAuthRedirectReference","reference":{"kind":"Route","name":"kuberight"}}'
 automountServiceAccountToken: true
-
----
-# Source: kuberight/templates/rbac.yaml
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: kuberight-8cde1ab2-auth-reviewer
-  labels:
-    helm.sh/chart: kuberight-0.1.0-rc.6
-    app.kubernetes.io/name: kuberight
-    app.kubernetes.io/instance: kuberight
-    app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.6"
-    app.kubernetes.io/component: server
-rules:
-  - apiGroups: ["authentication.k8s.io"]
-    resources: ["tokenreviews"]
-    verbs: ["create"]
-  # Every request is authorized with SubjectAccessReview in both modes.
-  - apiGroups: ["authorization.k8s.io"]
-    resources: ["subjectaccessreviews"]
-    verbs: ["create"]
 
 ---
 # Source: kuberight/templates/rbac.yaml
@@ -110,11 +86,11 @@ kind: ClusterRole
 metadata:
   name: kuberight-8cde1ab2-workloads
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.6
+    helm.sh/chart: kuberight-0.1.0-rc.7
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.6"
+    app.kubernetes.io/version: "0.1.0-rc.7"
     app.kubernetes.io/component: server
 rules:
   - apiGroups: [""]
@@ -174,35 +150,13 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: kuberight-8cde1ab2-auth-reviewer
-  labels:
-    helm.sh/chart: kuberight-0.1.0-rc.6
-    app.kubernetes.io/name: kuberight
-    app.kubernetes.io/instance: kuberight
-    app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.6"
-    app.kubernetes.io/component: server
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: kuberight-8cde1ab2-auth-reviewer
-subjects:
-  - kind: ServiceAccount
-    name: kuberight
-    namespace: kuberight
-
----
-# Source: kuberight/templates/rbac.yaml
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
   name: kuberight-8cde1ab2-workloads
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.6
+    helm.sh/chart: kuberight-0.1.0-rc.7
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.6"
+    app.kubernetes.io/version: "0.1.0-rc.7"
     app.kubernetes.io/component: server
 roleRef:
   apiGroup: rbac.authorization.k8s.io
@@ -222,11 +176,11 @@ kind: ClusterRoleBinding
 metadata:
   name: kuberight-8cde1ab2-monitoring-view
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.6
+    helm.sh/chart: kuberight-0.1.0-rc.7
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.6"
+    app.kubernetes.io/version: "0.1.0-rc.7"
     app.kubernetes.io/component: server
 roleRef:
   apiGroup: rbac.authorization.k8s.io
@@ -245,11 +199,11 @@ metadata:
   name: kuberight
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.6
+    helm.sh/chart: kuberight-0.1.0-rc.7
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.6"
+    app.kubernetes.io/version: "0.1.0-rc.7"
     app.kubernetes.io/component: server
 spec:
   type: ClusterIP
@@ -271,14 +225,12 @@ metadata:
   name: kuberight
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.6
+    helm.sh/chart: kuberight-0.1.0-rc.7
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.6"
+    app.kubernetes.io/version: "0.1.0-rc.7"
     app.kubernetes.io/component: server
-  annotations:
-    image.openshift.io/triggers: '[{"fieldPath":"spec.template.spec.containers[?(@.name==\"oauth-proxy\")].image","from":{"kind":"ImageStreamTag","name":"oauth-proxy:v4.4","namespace":"openshift"}}]'
 spec:
   replicas: 1
   revisionHistoryLimit: 5
@@ -308,31 +260,9 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       terminationGracePeriodSeconds: 30
-      initContainers:
-        # Generates the proxy's session-cookie secret in memory, so no
-        # Secret has to be created by hand.
-        - name: proxy-cookie-secret
-          image: "mohankrishna999/kuberight:0.1.0-rc.6"
-          imagePullPolicy: IfNotPresent
-          args: ["cookie-secret", "/var/run/kuberight-proxy/cookie-secret"]
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop:
-              - ALL
-            readOnlyRootFilesystem: true
-          resources:
-            requests:
-              cpu: 10m
-              memory: 16Mi
-            limits:
-              memory: 32Mi
-          volumeMounts:
-            - name: proxy-session
-              mountPath: /var/run/kuberight-proxy
       containers:
         - name: kuberight
-          image: "mohankrishna999/kuberight:0.1.0-rc.6"
+          image: "mohankrishna999/kuberight:0.1.0-rc.7"
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
@@ -341,15 +271,20 @@ spec:
               - ALL
             readOnlyRootFilesystem: true
           ports:
-            - name: api
+            - name: http
               containerPort: 8080
               protocol: TCP
           env:
             - name: KUBERIGHT_LISTEN_ADDR
-              # Only the sign-in proxy sidecar in this pod can reach the API.
-              value: "127.0.0.1:8080"
+              value: ":8080"
             - name: KUBERIGHT_AUTH_MODE
-              value: "openshift"
+              value: "disabled"
+            # The Go runtime keeps its heap under 85% of this limit.
+            - name: KUBERIGHT_MEMORY_LIMIT
+              valueFrom:
+                resourceFieldRef:
+                  containerName: kuberight
+                  resource: limits.memory
             - name: KUBERIGHT_OPERATION_MODE
               value: "recommend"
             - name: KUBERIGHT_INVENTORY_ENABLED
@@ -383,88 +318,39 @@ spec:
           startupProbe:
             httpGet:
               path: /healthz
-              port: 4180
+              port: http
             failureThreshold: 30
             periodSeconds: 2
           readinessProbe:
             httpGet:
               path: /readyz
-              port: 4180
+              port: http
             initialDelaySeconds: 2
             periodSeconds: 10
-            timeoutSeconds: 2
+            timeoutSeconds: 5
             failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /healthz
-              port: 4180
+              port: http
             initialDelaySeconds: 10
             periodSeconds: 20
-            timeoutSeconds: 2
-            failureThreshold: 3
+            timeoutSeconds: 5
+            failureThreshold: 6
           resources:
             limits:
               cpu: 1
-              memory: 512Mi
+              memory: 1Gi
             requests:
               cpu: 100m
               memory: 128Mi
           volumeMounts:
             - name: tmp
               mountPath: /tmp
-        - name: oauth-proxy
-          image: "registry.redhat.io/openshift4/ose-oauth-proxy-rhel9:latest"
-          imagePullPolicy: IfNotPresent
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop:
-              - ALL
-            readOnlyRootFilesystem: true
-          args:
-            - --provider=openshift
-            - --openshift-service-account=kuberight
-            - --http-address=0.0.0.0:4180
-            - --https-address=
-            - --upstream=http://127.0.0.1:8080/
-            - --cookie-secret-file=/var/run/kuberight-proxy/cookie-secret
-            - --cookie-name=_kuberight
-            - --cookie-secure=true
-            - --cookie-expire=8h0m0s
-            # KubeRight verifies this token and authorizes each request itself.
-            - --pass-access-token=true
-            - --skip-auth-regex=^/(healthz|readyz|metrics)$
-            # Who may sign in at all.
-            - '--openshift-sar={"namespace":"kuberight","resource":"services","resourceName":"kuberight","verb":"get"}'
-            # API clients with their own bearer token skip the browser login.
-            - '--openshift-delegate-urls={"/api/":{"name":"kuberight","namespace":"kuberight","resource":"services","verb":"get"}}'
-          ports:
-            - name: http
-              containerPort: 4180
-              protocol: TCP
-          readinessProbe:
-            httpGet:
-              path: /oauth/healthz
-              port: 4180
-            periodSeconds: 10
-          volumeMounts:
-            - name: proxy-session
-              mountPath: /var/run/kuberight-proxy
-              readOnly: true
-          resources:
-            limits:
-              memory: 128Mi
-            requests:
-              cpu: 10m
-              memory: 32Mi
       volumes:
         - name: tmp
           emptyDir:
             sizeLimit: 64Mi
-        - name: proxy-session
-          emptyDir:
-            medium: Memory
-            sizeLimit: 1Mi
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
@@ -485,11 +371,11 @@ metadata:
   name: kuberight
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.6
+    helm.sh/chart: kuberight-0.1.0-rc.7
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.6"
+    app.kubernetes.io/version: "0.1.0-rc.7"
     app.kubernetes.io/component: server
 spec:
   to:

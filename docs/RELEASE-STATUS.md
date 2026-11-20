@@ -1,7 +1,7 @@
 # Release status
 
 - Candidate: `0.1.0-rc.6`, published from a local build (below); read-only, one application Deployment, built-in forecasting
-- Status: release candidate; see [production readiness](PRODUCTION-READINESS.md) (90/100)
+- Status: release candidate; see [production readiness](PRODUCTION-READINESS.md) (88/100)
 - Previous release: `v0.1.0-rc.4`, published to Docker Hub as `mohankrishna999/kuberight:0.1.0-rc.4` (2026-11-19)
 
 ## Published `0.1.0-rc.6` images (2026-11-20)

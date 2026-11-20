@@ -13,11 +13,11 @@ metadata:
   name: kuberight
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.6
+    helm.sh/chart: kuberight-0.1.0-rc.7
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.6"
+    app.kubernetes.io/version: "0.1.0-rc.7"
     app.kubernetes.io/component: server
 spec:
   podSelector:
@@ -42,11 +42,11 @@ metadata:
   name: kuberight
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.6
+    helm.sh/chart: kuberight-0.1.0-rc.7
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.6"
+    app.kubernetes.io/version: "0.1.0-rc.7"
     app.kubernetes.io/component: server
 spec:
   minAvailable: 1
@@ -64,57 +64,13 @@ metadata:
   name: kuberight
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.6
+    helm.sh/chart: kuberight-0.1.0-rc.7
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.6"
+    app.kubernetes.io/version: "0.1.0-rc.7"
     app.kubernetes.io/component: server
 automountServiceAccountToken: true
-
----
-# Source: kuberight/templates/rbac.yaml
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: kuberight-8cde1ab2-auth-reviewer
-  labels:
-    helm.sh/chart: kuberight-0.1.0-rc.6
-    app.kubernetes.io/name: kuberight
-    app.kubernetes.io/instance: kuberight
-    app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.6"
-    app.kubernetes.io/component: server
-rules:
-  - apiGroups: ["authentication.k8s.io"]
-    resources: ["tokenreviews"]
-    verbs: ["create"]
-  # Every request is authorized with SubjectAccessReview in both modes.
-  - apiGroups: ["authorization.k8s.io"]
-    resources: ["subjectaccessreviews"]
-    verbs: ["create"]
-
----
-# Source: kuberight/templates/rbac.yaml
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: kuberight-8cde1ab2-auth-reviewer
-  labels:
-    helm.sh/chart: kuberight-0.1.0-rc.6
-    app.kubernetes.io/name: kuberight
-    app.kubernetes.io/instance: kuberight
-    app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.6"
-    app.kubernetes.io/component: server
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: kuberight-8cde1ab2-auth-reviewer
-subjects:
-  - kind: ServiceAccount
-    name: kuberight
-    namespace: kuberight
 
 ---
 # Source: kuberight/templates/rbac.yaml
@@ -124,11 +80,11 @@ metadata:
   name: kuberight-workloads
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.6
+    helm.sh/chart: kuberight-0.1.0-rc.7
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.6"
+    app.kubernetes.io/version: "0.1.0-rc.7"
     app.kubernetes.io/component: server
 rules:
   # Pod ownerReferences attribute container metrics to exact controllers;
@@ -165,11 +121,11 @@ metadata:
   name: kuberight-workloads
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.6
+    helm.sh/chart: kuberight-0.1.0-rc.7
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.6"
+    app.kubernetes.io/version: "0.1.0-rc.7"
     app.kubernetes.io/component: server
 roleRef:
   apiGroup: rbac.authorization.k8s.io
@@ -188,11 +144,11 @@ metadata:
   name: kuberight
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.6
+    helm.sh/chart: kuberight-0.1.0-rc.7
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.6"
+    app.kubernetes.io/version: "0.1.0-rc.7"
     app.kubernetes.io/component: server
 spec:
   type: ClusterIP
@@ -214,11 +170,11 @@ metadata:
   name: kuberight
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.6
+    helm.sh/chart: kuberight-0.1.0-rc.7
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.6"
+    app.kubernetes.io/version: "0.1.0-rc.7"
     app.kubernetes.io/component: server
 spec:
   replicas: 1
@@ -251,7 +207,7 @@ spec:
       terminationGracePeriodSeconds: 30
       containers:
         - name: kuberight
-          image: "mohankrishna999/kuberight:0.1.0-rc.6"
+          image: "mohankrishna999/kuberight:0.1.0-rc.7"
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
@@ -267,7 +223,13 @@ spec:
             - name: KUBERIGHT_LISTEN_ADDR
               value: ":8080"
             - name: KUBERIGHT_AUTH_MODE
-              value: "kubernetes"
+              value: "disabled"
+            # The Go runtime keeps its heap under 85% of this limit.
+            - name: KUBERIGHT_MEMORY_LIMIT
+              valueFrom:
+                resourceFieldRef:
+                  containerName: kuberight
+                  resource: limits.memory
             - name: KUBERIGHT_OPERATION_MODE
               value: "recommend"
             - name: KUBERIGHT_INVENTORY_ENABLED
@@ -312,7 +274,7 @@ spec:
               port: http
             initialDelaySeconds: 2
             periodSeconds: 10
-            timeoutSeconds: 2
+            timeoutSeconds: 5
             failureThreshold: 3
           livenessProbe:
             httpGet:
@@ -320,12 +282,12 @@ spec:
               port: http
             initialDelaySeconds: 10
             periodSeconds: 20
-            timeoutSeconds: 2
-            failureThreshold: 3
+            timeoutSeconds: 5
+            failureThreshold: 6
           resources:
             limits:
               cpu: 1
-              memory: 512Mi
+              memory: 1Gi
             requests:
               cpu: 100m
               memory: 128Mi
