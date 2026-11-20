@@ -28,7 +28,11 @@ test('uses the deployed API and renders live Kubernetes inventory', async ({ pag
   expect(await response.json()).toMatchObject({ mode: 'recommend' })
 
   await page.goto('/')
+  await expect(page).toHaveURL(/\/recommendations\/cpu$/)
+  await expect(page.getByRole('heading', { level: 1, name: 'CPU recommendations' })).toBeVisible()
+  await page.goto('/overview')
   await expect(page.getByRole('heading', { level: 1, name: 'Rightsize with evidence, not instinct.' })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Workload health' })).toBeVisible()
   await page.goto('/workloads?scope=all')
   await expect(page.getByRole('heading', { level: 1, name: 'Workloads' })).toBeVisible()
   await expect(page.getByText('kuberight', { exact: true }).first()).toBeVisible()
