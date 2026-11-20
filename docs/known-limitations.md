@@ -45,11 +45,10 @@ This list describes the current implementation, not planned behavior. KubeRight 
 ## Security and operations
 
 - TLS termination, cross-replica rate limiting, web-application firewalling, and certificate rotation are external responsibilities.
-- Kubernetes authentication requires users to have RBAC for the virtual `kuberight.io` resources. The chart does not grant these to human users.
-- OpenShift sign-in (`auth.mode=openshift`, the OpenShift profile's default) has not been tested on an OpenShift cluster: the manifests are schema-checked and dry-run against Kubernetes 1.35, and the token handling is unit-tested, but the OAuth login flow, the ImageStream trigger, and the oauth-proxy image have not run. `/healthz`, `/readyz`, and `/metrics` bypass the login so probes and Prometheus can reach them, which also exposes them on the Route.
-- `/healthz`, `/readyz`, and `/metrics` are unauthenticated and should not be exposed publicly. Optional per-recommendation metrics reveal workload labels and are disabled by default.
-- Static-token mode has one credential with no expiry and no per-user audit identity.
-- The default NetworkPolicy isolates ingress but not egress. With `networkPolicy.egressIsolation`, DNS is allowed automatically, and the chart refuses to render without the Kubernetes API server addresses in `networkPolicy.kubernetesAPI.cidrs` or an explicit rule for them. PostgreSQL, Prometheus, OpenCost, OIDC, Git hosts, and webhooks still need explicit rules. Egress isolation has been rendered and schema-checked but not tested on a live cluster.
+- KubeRight has no sign-in, like Goldilocks. Anyone who can reach its Service, Route, or Ingress can read the cluster inventory, generate recommendations, and approve or reject them, and every action is audited as the one anonymous identity `system:anonymous`, so the audit trail cannot say who acted. Access control is the network's job: keep KubeRight on a port-forward, or restrict the Route or Ingress.
+- The OpenShift profile has not been tested on an OpenShift cluster: the manifests are schema-checked and dry-run against Kubernetes 1.35, but the Route and monitoring access have not run there.
+- `/healthz`, `/readyz`, and `/metrics` should not be exposed publicly. Optional per-recommendation metrics reveal workload labels and are disabled by default.
+- The default NetworkPolicy isolates ingress but not egress. With `networkPolicy.egressIsolation`, DNS is allowed automatically, and the chart refuses to render without the Kubernetes API server addresses in `networkPolicy.kubernetesAPI.cidrs` or an explicit rule for them. PostgreSQL, Prometheus, OpenCost, Git hosts, and webhooks still need explicit rules. Egress isolation has been rendered and schema-checked but not tested on a live cluster.
 - No external penetration test has been performed.
 
 ## Packaging and compatibility

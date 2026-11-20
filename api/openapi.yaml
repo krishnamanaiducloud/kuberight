@@ -1,13 +1,13 @@
 openapi: 3.1.0
 info:
   title: KubeRight API
-  version: 0.1.0-rc.7
+  version: 0.1.0-rc.8
   description: |
-    The HTTP contract implemented by the KubeRight Go service. All `/api/v1`
-    operations require a bearer token. The token is authenticated either with
-    Kubernetes TokenReview and authorized with SubjectAccessReview, or against
-    the configured static token. Health, readiness, and Prometheus metrics are
-    intentionally public.
+    The HTTP contract implemented by the KubeRight Go service. KubeRight has
+    no sign-in, like Goldilocks: every operation is served without
+    credentials, and any Authorization header is ignored. Who can call the API
+    is decided by the network: port-forward, NetworkPolicy, Route, or Ingress.
+    KubeRight never changes workloads.
 
     JSON request bodies reject unknown fields and multiple JSON values. The
     default body limit is 1 MiB and is configurable from 1 KiB through 16 MiB.
@@ -15,8 +15,6 @@ info:
     second through two minutes.
 servers:
   - url: /
-security:
-  - bearerAuth: []
 tags:
   - name: Operations
   - name: Recommendations
@@ -30,7 +28,6 @@ paths:
       tags: [Operations]
       operationId: getHealth
       summary: Process liveness
-      security: []
       responses:
         "200":
           description: The process is alive.
@@ -44,7 +41,6 @@ paths:
       tags: [Operations]
       operationId: getReadiness
       summary: Dependency readiness
-      security: []
       responses:
         "200":
           description: Required dependencies are ready.
@@ -64,7 +60,6 @@ paths:
       tags: [Operations]
       operationId: getMetrics
       summary: Prometheus metrics
-      security: []
       responses:
         "200":
           description: Metrics in Prometheus text exposition format.
@@ -85,7 +80,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Version"
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "503": { $ref: "#/components/responses/AccessUnavailable" }
 
@@ -101,7 +95,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Overview"
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "503": { $ref: "#/components/responses/AccessUnavailable" }
 
@@ -146,7 +139,6 @@ paths:
               schema:
                 $ref: "#/components/schemas/RecommendationCollection"
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "503": { $ref: "#/components/responses/AccessUnavailable" }
     post:
@@ -168,7 +160,6 @@ paths:
         "200":
           $ref: "#/components/responses/RecommendationReplayed"
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/IdempotencyConflict" }
         "413": { $ref: "#/components/responses/RequestTooLarge" }
@@ -195,7 +186,6 @@ paths:
         "200":
           $ref: "#/components/responses/RecommendationReplayed"
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/IdempotencyConflict" }
         "413": { $ref: "#/components/responses/RequestTooLarge" }
@@ -224,7 +214,6 @@ paths:
               schema:
                 $ref: "#/components/schemas/RecommendationRecord"
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "503": { $ref: "#/components/responses/AccessUnavailable" }
@@ -238,8 +227,7 @@ paths:
         Reads the container's current requests, limits, replicas, and HPA,
         KEDA, and VPA context from the Kubernetes inventory, and its CPU and
         memory usage from Prometheus over `window` at the configured step.
-        Sparse, stale, or missing history blocks reductions. Requires the
-        `create` verb on `recommendations` in the namespace. Returns 403 in
+        Sparse, stale, or missing history blocks reductions. Returns 403 in
         `observe` mode. It never mutates a workload.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
@@ -261,7 +249,6 @@ paths:
                   - $ref: "#/components/schemas/RecommendationRecord"
                   - $ref: "#/components/schemas/RecommendationPreview"
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/IdempotencyConflict" }
@@ -276,10 +263,7 @@ paths:
       summary: Approve or reject a pending recommendation
       description: |
         Records a single, terminal review decision and an audit event in one
-        transaction. Approval never applies the change. Authorized like the
-        Kubernetes CSR approval subresource: verb `update`, resource
-        `recommendations`, subresource `approval`. When separation of duties is
-        enabled, the creator of a recommendation cannot review it. Returns 403
+        transaction. Approval never applies the change. Returns 403
         in `observe` mode.
       parameters:
         - name: id
@@ -304,7 +288,6 @@ paths:
               schema:
                 $ref: "#/components/schemas/RecommendationRecord"
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
@@ -332,8 +315,7 @@ paths:
         is a Helm values file and that key's resources are edited instead.
         Only the resource values change; comments and formatting are kept. Idempotent
         per recommendation: the branch is `kuberight/<id>` and an open pull
-        request for it is returned with 200. Authorized with verb `create`,
-        resource `recommendations`, subresource `pullrequest`.
+        request for it is returned with 200.
       parameters:
         - name: id
           in: path
@@ -355,7 +337,6 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/PullRequestResult" }
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
@@ -401,7 +382,6 @@ paths:
               schema:
                 $ref: "#/components/schemas/PolicyCollection"
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "503": { $ref: "#/components/responses/AccessUnavailable" }
     post:
@@ -422,7 +402,6 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/PolicyRecord" }
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409":
           description: Another enabled policy has the same scope and priority (`policy_ambiguous`).
@@ -457,7 +436,6 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/PolicyResolution" }
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "413": { $ref: "#/components/responses/RequestTooLarge" }
         "503": { $ref: "#/components/responses/AccessUnavailable" }
@@ -479,7 +457,6 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/PolicyRecord" }
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "503": { $ref: "#/components/responses/AccessUnavailable" }
@@ -499,7 +476,6 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/PolicyRecord" }
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
@@ -518,7 +494,6 @@ paths:
       responses:
         "204": { description: Policy deleted. }
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
@@ -540,7 +515,6 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/FleetScheduleCollection" }
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "503": { $ref: "#/components/responses/AccessUnavailable" }
     post:
@@ -561,7 +535,6 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/FleetSchedule" }
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "413": { $ref: "#/components/responses/RequestTooLarge" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
@@ -581,7 +554,6 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/FleetSchedule" }
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "503": { $ref: "#/components/responses/AccessUnavailable" }
@@ -601,7 +573,6 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/FleetSchedule" }
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
@@ -620,7 +591,6 @@ paths:
       responses:
         "204": { description: Schedule deleted. }
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
@@ -648,7 +618,6 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/FleetScanCollection" }
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "503": { $ref: "#/components/responses/AccessUnavailable" }
     post:
@@ -676,7 +645,6 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/FleetScan" }
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/IdempotencyConflict" }
         "413": { $ref: "#/components/responses/RequestTooLarge" }
@@ -697,7 +665,6 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/FleetScan" }
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "503": { $ref: "#/components/responses/AccessUnavailable" }
@@ -716,7 +683,6 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/FleetScan" }
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
@@ -736,7 +702,6 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/FleetScan" }
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
@@ -758,7 +723,6 @@ paths:
               schema:
                 $ref: "#/components/schemas/AuditCollection"
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "503": { $ref: "#/components/responses/AccessUnavailable" }
 
@@ -773,8 +737,7 @@ paths:
         exponential backoff from 30 seconds up to one hour, and dead-lettered
         when the receiver rejects it (a 4xx other than 429) or after ten
         attempts. Delivered entries are kept for seven days. Without durable
-        delivery, `status.available` is false. Authorized with verb `list`
-        on `notifications`.
+        delivery, `status.available` is false.
       parameters:
         - $ref: "#/components/parameters/Page"
         - $ref: "#/components/parameters/PageSize"
@@ -789,7 +752,6 @@ paths:
               schema:
                 $ref: "#/components/schemas/NotificationCollection"
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "503": { $ref: "#/components/responses/AccessUnavailable" }
 
@@ -801,7 +763,7 @@ paths:
       description: |
         Returns a dead entry to pending with its attempts reset; the next
         delivery uses the same delivery ID, so receivers can deduplicate.
-        Audited. Authorized with verb `update` on `notifications/replay`.
+        Audited.
       parameters:
         - name: id
           in: path
@@ -814,7 +776,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/NotificationEntry"
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
@@ -832,7 +793,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/IntegrationCollection"
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "503": { $ref: "#/components/responses/AccessUnavailable" }
 
@@ -852,7 +812,6 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/ObjectCollection" }
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "503": { $ref: "#/components/responses/DependencyUnavailable" }
 
@@ -872,7 +831,6 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/ObjectCollection" }
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "503": { $ref: "#/components/responses/DependencyUnavailable" }
 
@@ -892,7 +850,6 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/ObjectCollection" }
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "503": { $ref: "#/components/responses/DependencyUnavailable" }
 
@@ -905,8 +862,7 @@ paths:
         Reads Prometheus cAdvisor series for the busiest replica at each step.
         The step is coarsened so a window yields at most about 600 points.
         Missing samples are omitted, never zero-filled. Returns
-        `status.available=false` when Prometheus is not configured. Requires
-        the `list` verb on `metrics-history` in the namespace.
+        `status.available=false` when Prometheus is not configured.
       parameters:
         - $ref: "#/components/parameters/SubjectNamespace"
         - $ref: "#/components/parameters/SubjectKind"
@@ -924,7 +880,6 @@ paths:
               schema:
                 $ref: "#/components/schemas/UsageHistory"
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "503": { $ref: "#/components/responses/DependencyUnavailable" }
         "504": { $ref: "#/components/responses/DependencyUnavailable" }
@@ -966,7 +921,6 @@ paths:
               schema:
                 $ref: "#/components/schemas/SavingsCollection"
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "503": { $ref: "#/components/responses/DependencyUnavailable" }
 
@@ -981,7 +935,7 @@ paths:
         each namespace. Reclaimable capacity is requested minus P95 usage.
         Only namespaces visible to the inventory are reported. Returns
         `status.available=false` unless both the inventory and Prometheus are
-        configured. Requires the `list` verb on `efficiency`.
+        configured.
       parameters:
         - $ref: "#/components/parameters/Namespace"
         - name: window
@@ -996,7 +950,6 @@ paths:
               schema:
                 $ref: "#/components/schemas/EfficiencyCollection"
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "503": { $ref: "#/components/responses/DependencyUnavailable" }
         "504": { $ref: "#/components/responses/DependencyUnavailable" }
@@ -1010,7 +963,7 @@ paths:
         Attributes Prometheus per-pod usage to workloads by controller pod
         naming and compares each workload's per-pod request with its pods'
         average and the busiest pod's P95. Reclaimable = (per-pod request -
-        busiest P95) x replicas. Requires the `list` verb on `efficiency`.
+        busiest P95) x replicas.
       parameters:
         - $ref: "#/components/parameters/SubjectNamespace"
         - name: window
@@ -1032,7 +985,6 @@ paths:
                   status: { $ref: "#/components/schemas/Availability" }
                   summary: { type: object, additionalProperties: true }
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "503": { $ref: "#/components/responses/DependencyUnavailable" }
 
@@ -1066,15 +1018,13 @@ paths:
         minimums keep. `costTiers` separates the monthly value of the request
         reduction, the feasible savings from removing the freed nodes (priced
         at unit prices for their allocatable CPU and memory), and billing,
-        which is never measured. Requires cluster-scoped inventory and the
-        `list` verb on `capacity`.
+        which is never measured. Requires cluster-scoped inventory.
       responses:
         "200":
           description: Node counts now and after, autoscaler context, and assumptions.
           content:
             application/json:
               schema: { type: object, additionalProperties: true }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "503": { $ref: "#/components/responses/DependencyUnavailable" }
 
@@ -1089,7 +1039,6 @@ paths:
         usage pinned at a CPU limit, and peak-to-median CPU ratio. Metrics that
         cannot be joined to a live owner are excluded and counted in
         `summary.podsUnmatched`; they are never attributed by pod-name prefix.
-        Requires the `list` verb on `hotspots`.
       parameters:
         - $ref: "#/components/parameters/Namespace"
         - name: window
@@ -1104,7 +1053,6 @@ paths:
               schema:
                 $ref: "#/components/schemas/HotspotCollection"
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
         "503": { $ref: "#/components/responses/DependencyUnavailable" }
@@ -1119,8 +1067,7 @@ paths:
         latency (from `KUBERIGHT_LATENCY_QUERY`) on one time axis; restart,
         OOM-kill, and Deployment rollout events; Pearson correlations over
         shared timestamps; and plain-language findings. Optional series are
-        omitted when their metrics are absent. Requires the `list` verb on
-        `metrics-history`.
+        omitted when their metrics are absent.
       parameters:
         - $ref: "#/components/parameters/SubjectNamespace"
         - $ref: "#/components/parameters/SubjectKind"
@@ -1137,7 +1084,6 @@ paths:
               schema:
                 $ref: "#/components/schemas/SignalsResponse"
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
         "503": { $ref: "#/components/responses/DependencyUnavailable" }
@@ -1158,8 +1104,7 @@ paths:
         container's latest recommendation, and its post-change verification
         once approved. Correlations use only the samples after the latest
         rollout when enough remain. Every report states that correlation is
-        not causation. Requires the `list` verb on `metrics-history`; the
-        recommendation is included only with `list` on `recommendations`.
+        not causation.
       parameters:
         - $ref: "#/components/parameters/SubjectNamespace"
         - $ref: "#/components/parameters/SubjectKind"
@@ -1176,7 +1121,6 @@ paths:
               schema:
                 $ref: "#/components/schemas/CorrelationResponse"
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
         "503": { $ref: "#/components/responses/DependencyUnavailable" }
@@ -1190,8 +1134,7 @@ paths:
         Returns the most recent recorded verification outcome. GET is
         read-only: it never queries Kubernetes or Prometheus, appends
         evidence, or sends a webhook. Until a refresh has run it returns 404
-        with code `verification_not_checked`. Requires `get` on
-        `recommendations`.
+        with code `verification_not_checked`.
       parameters:
         - name: id
           in: path
@@ -1209,7 +1152,6 @@ paths:
               schema:
                 $ref: "#/components/schemas/Verification"
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
@@ -1233,8 +1175,7 @@ paths:
         configuration are excluded. Incomplete evidence is `inconclusive`,
         never `verified`. The outcome is stored durably; a regression is
         announced once through the `recommendation.regressed` webhook and
-        counted in `kuberight_recommendation_regressions`. Requires `update`
-        on `recommendations`.
+        counted in `kuberight_recommendation_regressions`.
       parameters:
         - name: id
           in: path
@@ -1252,7 +1193,6 @@ paths:
               schema:
                 $ref: "#/components/schemas/Verification"
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
@@ -1305,7 +1245,6 @@ paths:
       description: Forecasts are computed on demand and not stored, so `items` is always empty; `status` reports availability.
       responses:
         "200": { $ref: "#/components/responses/ObjectCollection" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "503": { $ref: "#/components/responses/AccessUnavailable" }
     post:
@@ -1317,8 +1256,7 @@ paths:
         built-in engine, which selects its model by rolling-origin validation
         and reports that validation in `diagnostics`. Results are advisory;
         they never change recommendations or workloads. CPU values are millicores and
-        memory values are bytes. Requires the `create` verb on `forecasts` in
-        the namespace.
+        memory values are bytes.
       requestBody:
         required: true
         content:
@@ -1333,7 +1271,6 @@ paths:
               schema:
                 $ref: "#/components/schemas/ForecastResult"
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
         "429":
@@ -1360,7 +1297,6 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/ObjectCollection" }
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "503": { $ref: "#/components/responses/DependencyUnavailable" }
 
@@ -1378,8 +1314,7 @@ paths:
         minutes, and, with a cluster-wide inventory, nodes that are not
         ready or under memory, disk, or PID pressure. Every finding has
         `evidence: observed`: Kubernetes keeps only the current state and the
-        last termination, so older causes are not reported. Requires `list`
-        on `diagnostics`.
+        last termination, so older causes are not reported.
       parameters:
         - $ref: "#/components/parameters/Page"
         - $ref: "#/components/parameters/PageSize"
@@ -1391,7 +1326,6 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/ObjectCollection" }
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "503": { $ref: "#/components/responses/DependencyUnavailable" }
 
@@ -1402,8 +1336,7 @@ paths:
       summary: Recommendation review queue
       description: |
         Lists recommendations by review status, pending by default. Use
-        `reviewStatus=all` for every status. Requires the `list` verb on
-        `approvals`.
+        `reviewStatus=all` for every status.
       parameters:
         - $ref: "#/components/parameters/Page"
         - $ref: "#/components/parameters/PageSize"
@@ -1430,7 +1363,6 @@ paths:
               schema:
                 $ref: "#/components/schemas/RecommendationCollection"
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "503": { $ref: "#/components/responses/DependencyUnavailable" }
 
@@ -1451,19 +1383,10 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/ObjectCollection" }
         "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "503": { $ref: "#/components/responses/DependencyUnavailable" }
 
 components:
-  securitySchemes:
-    bearerAuth:
-      type: http
-      scheme: bearer
-      description: |
-        Kubernetes/OpenShift token or the configured static API token. Encoded
-        bearer credentials longer than 16,384 characters are rejected.
-
   parameters:
     Page:
       name: page
@@ -1609,16 +1532,8 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ErrorResponse" }
-    Unauthorized:
-      description: Bearer credentials were missing or rejected.
-      headers:
-        WWW-Authenticate:
-          schema: { type: string }
-      content:
-        application/json:
-          schema: { $ref: "#/components/schemas/ErrorResponse" }
     Forbidden:
-      description: Authorization was denied or the operation is disabled in the current mode.
+      description: The operation is disabled in the current mode, or KubeRight's ServiceAccount cannot read the scope.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ErrorResponse" }
@@ -1638,12 +1553,12 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/ErrorResponse" }
     AccessUnavailable:
-      description: Token authentication or authorization could not reach its dependency.
+      description: The server configuration is invalid, so the request was not served.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ErrorResponse" }
     DependencyUnavailable:
-      description: Authentication, authorization, or a configured dependency (Kubernetes inventory, Prometheus, or the recommendation store) is unavailable or not configured.
+      description: A configured dependency (Kubernetes inventory, Prometheus, or the recommendation store) is unavailable or not configured.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ErrorResponse" }
@@ -1669,14 +1584,15 @@ components:
         checks:
           type: object
           description: |
-            Authentication, the data provider, and the repository are critical
-            and make the service not ready. Prometheus (`usageMetrics`) and
-            forecasting are optional and report `degraded` without failing.
-          required: [authentication, dataProvider, repository, usageMetrics, forecasting]
+            The configuration, the data provider, and the repository are
+            critical and make the service not ready. Prometheus
+            (`usageMetrics`) and forecasting are optional and report
+            `degraded` without failing.
+          required: [configuration, dataProvider, repository, usageMetrics, forecasting]
           properties:
-            authentication:
+            configuration:
               type: string
-              enum: [ready, unavailable]
+              enum: [ready, invalid]
             dataProvider:
               type: string
               enum: [ready, unavailable, not_configured]

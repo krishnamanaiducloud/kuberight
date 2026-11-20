@@ -95,7 +95,5 @@ func TestDefaultScanIntervalSetting(t *testing.T) {
 }
 
 func validConfigForTest() config.Config {
-	cfg := fallbackConfig()
-	cfg.AuthMode, cfg.APIToken = "static", "0123456789abcdef0123456789abcdef"
-	return cfg
+	return fallbackConfig()
 }

@@ -54,13 +54,13 @@ describe('RecommendationDrawer', () => {
     expect(screen.getByText(/kubectl -n shop set resources deployment\/checkout -c api --requests=cpu=800m,memory=768Mi --limits=cpu=1600m$/)).toBeInTheDocument()
   })
 
-  it('surfaces a separation-of-duties refusal', async () => {
+  it('surfaces a refused review', async () => {
     vi.stubGlobal('fetch', vi.fn()
       .mockResolvedValueOnce(respond(record))
-      .mockResolvedValueOnce(respond({ error: { code: 'separation_of_duties', message: 'a recommendation must be reviewed by an identity other than the one that created it' } }, 403)))
+      .mockResolvedValueOnce(respond({ error: { code: 'operation_disabled', message: 'reviews are disabled in observe mode' } }, 403)))
     renderDrawer()
     fireEvent.click(await screen.findByRole('button', { name: 'Approve' }, { timeout: 5000 }))
-    await waitFor(() => expect(screen.getByText(/reviewed by an identity other than/)).toBeInTheDocument(), { timeout: 5000 })
+    await waitFor(() => expect(screen.getByText(/reviews are disabled in observe mode/)).toBeInTheDocument(), { timeout: 5000 })
   })
 
   it('disables approval when Prometheus evidence has expired', async () => {

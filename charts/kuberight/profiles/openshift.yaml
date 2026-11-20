@@ -4,10 +4,6 @@ replicaCount: 1
 # pod's ServiceAccount token and service CA); this grants the read access.
 prometheus:
   openshiftMonitoring: true
-# No sign-in. Set auth.mode: openshift to require an OpenShift login
-# (and allow port 4180 below instead of 8080).
-auth:
-  mode: disabled
 autoscaling:
   enabled: false
 route:

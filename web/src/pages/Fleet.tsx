@@ -122,7 +122,7 @@ function ScanDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
             label="Namespace (optional)"
             value={namespace}
             onChange={setNamespace}
-            helperText="Leave empty only when you intend to scan every namespace your identity can access."
+            helperText="Leave empty to scan every namespace KubeRight can read."
             size="medium"
           />
           <TextField select label="Evidence window" value={windowDays} onChange={(event) => setWindowDays(Number(event.target.value))}>

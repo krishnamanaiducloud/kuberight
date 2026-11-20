@@ -90,7 +90,7 @@ export function DataPage({ title, description, endpoint, columnKeys, actions, ch
     queryKey: ['resource', queryPath],
     queryFn: ({ signal }) => api.get<CollectionEnvelope>(queryPath, { signal }),
     enabled: scopeReady,
-    retry: (count, error) => !(error instanceof ApiError && [401, 403].includes(error.status)) && count < 2,
+    retry: (count, error) => !(error instanceof ApiError && error.status === 403) && count < 2,
   })
   const data = query.data
   const items = useMemo(() => data?.items ?? [], [data?.items])
@@ -157,7 +157,7 @@ export function DataPage({ title, description, endpoint, columnKeys, actions, ch
             <Stack direction={{ xs: 'column', md: 'row' }} gap={1.5} alignItems={{ md: 'center' }}>
               <Box sx={{ flex: 1 }}>
                 <Typography variant="subtitle2">Kubernetes namespace scope</Typography>
-                <Typography variant="body2" color="text.secondary">Start with the smallest scope your identity can access. Fleet-wide listing is always an explicit choice.</Typography>
+                <Typography variant="body2" color="text.secondary">Start with one namespace. Fleet-wide listing is always an explicit choice.</Typography>
               </Box>
               <NamespaceSelect
                 value={namespace}
@@ -181,7 +181,7 @@ export function DataPage({ title, description, endpoint, columnKeys, actions, ch
 
       {!scopeReady ? (
         <Alert severity="info">
-          <strong>Choose a namespace to begin.</strong> This prevents an accidental cluster-wide list request. Select <strong>All visible</strong> only if this identity has fleet-level access.
+          <strong>Choose a namespace to begin.</strong> This prevents an accidental cluster-wide list request. Select <strong>All visible</strong> to list every namespace KubeRight can read.
         </Alert>
       ) : <Card>
         <CardContent>

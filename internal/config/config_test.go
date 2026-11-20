@@ -9,8 +9,6 @@ import (
 func validConfig() Config {
 	return Config{
 		ListenAddress:     ":8080",
-		AuthMode:          "static",
-		APIToken:          strings.Repeat("x", 32),
 		OperationMode:     ModeRecommend,
 		MaxBodyBytes:      1 << 20,
 		RequestTimeout:    15 * time.Second,
@@ -20,14 +18,6 @@ func validConfig() Config {
 		IdleTimeout:       time.Minute,
 		ShutdownTimeout:   20 * time.Second,
 		ClusterID:         "test",
-	}
-}
-
-func TestValidateRejectsWeakStaticToken(t *testing.T) {
-	cfg := validConfig()
-	cfg.APIToken = "short"
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected a weak token to be rejected")
 	}
 }
 
@@ -76,26 +66,12 @@ func TestValidateIntegrationSettings(t *testing.T) {
 }
 
 func TestLoadAppliesIntegrationDefaults(t *testing.T) {
-	t.Setenv("KUBERIGHT_AUTH_MODE", "static")
-	t.Setenv("KUBERIGHT_API_TOKEN", strings.Repeat("t", 32))
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.RequireDistinctApprover {
-		t.Fatal("static mode has one identity, so distinct approvers must default off")
-	}
 	if cfg.DatabaseMigrate || cfg.DatabaseMaxConns != 10 || cfg.PrometheusMaxInFlight != 8 || cfg.RecommendationWindow != DefaultRecommendationWindow || cfg.ForecastStep != DefaultForecastStep || cfg.VerificationEarlyInterval != DefaultVerificationEarlyInterval || cfg.CostCurrency != "USD" || cfg.CostConfigured() {
 		t.Fatalf("unexpected defaults: %#v", cfg)
-	}
-	t.Setenv("KUBERIGHT_AUTH_MODE", "disabled")
-	t.Setenv("KUBERIGHT_API_TOKEN", "")
-	if cfg, err = Load(); err != nil || cfg.RequireDistinctApprover {
-		t.Fatalf("disabled mode has one anonymous identity, so distinct approvers must default off: %v %v", cfg.RequireDistinctApprover, err)
-	}
-	t.Setenv("KUBERIGHT_AUTH_MODE", "kubernetes")
-	if cfg, err = Load(); err != nil || !cfg.RequireDistinctApprover {
-		t.Fatalf("kubernetes mode must require distinct approvers: %v %v", cfg.RequireDistinctApprover, err)
 	}
 	t.Setenv("KUBERIGHT_COST_CPU_CORE_HOUR", "0.031")
 	t.Setenv("KUBERIGHT_COST_MEMORY_GIB_HOUR", "0.004")
@@ -121,17 +97,6 @@ func TestOpenCostURLFollowsUpstreamTransportRules(t *testing.T) {
 	cfg.AllowInsecureUpstreams = true
 	if err := cfg.Validate(); err != nil || !cfg.CostConfigured() {
 		t.Fatalf("explicit in-cluster OpenCost: err=%v costConfigured=%v", err, cfg.CostConfigured())
-	}
-}
-
-func TestOIDCModeRequiresALoopbackListener(t *testing.T) {
-	cfg := validConfig()
-	cfg.AuthMode = "oidc"
-	for address, valid := range map[string]bool{":8080": false, "0.0.0.0:8080": false, "10.0.0.5:8080": false, "127.0.0.1:8080": true, "[::1]:8080": true, "localhost:8080": true} {
-		cfg.ListenAddress = address
-		if err := cfg.Validate(); (err == nil) != valid {
-			t.Errorf("%s: err=%v, valid=%v", address, err, valid)
-		}
 	}
 }
 
@@ -182,8 +147,6 @@ func TestValidatePrometheusAccessSettings(t *testing.T) {
 }
 
 func TestLoadReadsPrometheusAccessAndDiscovery(t *testing.T) {
-	t.Setenv("KUBERIGHT_AUTH_MODE", "static")
-	t.Setenv("KUBERIGHT_API_TOKEN", strings.Repeat("x", 32))
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -206,8 +169,6 @@ func TestLoadReadsPrometheusAccessAndDiscovery(t *testing.T) {
 }
 
 func TestLoadReportsRemovedForecastingSettings(t *testing.T) {
-	t.Setenv("KUBERIGHT_AUTH_MODE", "static")
-	t.Setenv("KUBERIGHT_API_TOKEN", strings.Repeat("x", 32))
 	t.Setenv("KUBERIGHT_ML_URL", "http://kuberight-ml:8081")
 	t.Setenv("KUBERIGHT_ML_API_KEY", "an-old-shared-key")
 	cfg, err := Load()
@@ -220,8 +181,6 @@ func TestLoadReportsRemovedForecastingSettings(t *testing.T) {
 }
 
 func TestLoadRunsReadOnlyWhenApplyModeIsRequested(t *testing.T) {
-	t.Setenv("KUBERIGHT_AUTH_MODE", "static")
-	t.Setenv("KUBERIGHT_API_TOKEN", strings.Repeat("x", 32))
 	t.Setenv("KUBERIGHT_OPERATION_MODE", "apply")
 	t.Setenv("KUBERIGHT_AUTOMATION_IN_PLACE_RESIZE", "true")
 	cfg, err := Load()
@@ -238,20 +197,23 @@ func TestLoadRunsReadOnlyWhenApplyModeIsRequested(t *testing.T) {
 	}
 }
 
-func TestOpenShiftAuthModeNeedsTheProxyInFront(t *testing.T) {
-	cfg := validConfig()
-	cfg.AuthMode, cfg.APIToken = "openshift", ""
-	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "loopback") {
-		t.Fatalf("openshift mode on every interface: %v", err)
-	}
-	cfg.ListenAddress = "127.0.0.1:8080"
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("openshift mode behind the proxy: %v", err)
-	}
-	t.Setenv("KUBERIGHT_AUTH_MODE", "openshift")
-	t.Setenv("KUBERIGHT_LISTEN_ADDR", "127.0.0.1:8080")
-	loaded, err := Load()
-	if err != nil || !loaded.RequireDistinctApprover {
-		t.Fatalf("openshift mode must separate creator and approver by default: %+v err=%v", loaded.RequireDistinctApprover, err)
+// KubeRight has no sign-in. A manifest from an older release still starts,
+// and the sign-in settings it carries are reported rather than rejected.
+func TestLoadIgnoresRemovedSignInSettings(t *testing.T) {
+	removed := []string{"KUBERIGHT_AUTH_MODE", "KUBERIGHT_API_TOKEN", "KUBERIGHT_OIDC_USERNAME_PREFIX", "KUBERIGHT_OIDC_GROUPS_PREFIX", "KUBERIGHT_TOKEN_AUDIENCE", "KUBERIGHT_REQUIRE_DISTINCT_APPROVER"}
+	for _, mode := range []string{"kubernetes", "openshift", "oidc", "static", "nonsense"} {
+		t.Setenv("KUBERIGHT_AUTH_MODE", mode)
+		t.Setenv("KUBERIGHT_API_TOKEN", "short")
+		t.Setenv("KUBERIGHT_OIDC_USERNAME_PREFIX", "oidc:")
+		t.Setenv("KUBERIGHT_OIDC_GROUPS_PREFIX", "oidc:")
+		t.Setenv("KUBERIGHT_TOKEN_AUDIENCE", "kuberight")
+		t.Setenv("KUBERIGHT_REQUIRE_DISTINCT_APPROVER", "not-a-bool")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("KUBERIGHT_AUTH_MODE=%s: %v", mode, err)
+		}
+		if strings.Join(cfg.RemovedSettings, ",") != strings.Join(removed, ",") {
+			t.Fatalf("KUBERIGHT_AUTH_MODE=%s: removed settings %v, want %v", mode, cfg.RemovedSettings, removed)
+		}
 	}
 }

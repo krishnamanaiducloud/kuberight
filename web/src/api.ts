@@ -29,20 +29,11 @@ export class ApiError extends Error {
   }
 }
 
-export const tokenStore = {
-  get: () => sessionStorage.getItem('kuberight.token') ?? '',
-  set: (token: string) => {
-    if (token) sessionStorage.setItem('kuberight.token', token)
-    else sessionStorage.removeItem('kuberight.token')
-  },
-}
-
+// KubeRight has no sign-in: requests carry no credentials of any kind.
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers)
   headers.set('Accept', 'application/json')
   if (init?.body) headers.set('Content-Type', 'application/json')
-  const token = tokenStore.get()
-  if (token) headers.set('Authorization', `Bearer ${token}`)
 
   const response = await fetch(path, { ...init, headers, credentials: 'same-origin' })
   const requestId = response.headers.get('X-Request-ID') ?? undefined

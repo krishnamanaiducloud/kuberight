@@ -7,11 +7,6 @@ metadata:
   labels:
     {{- include "kuberight.labels" . | nindent 4 }}
   {{- $annotations := mergeOverwrite (dict) .Values.commonAnnotations .Values.deploymentAnnotations }}
-  {{- if and (eq .Values.auth.mode "openshift") .Values.auth.openshift.imageStreamTrigger.enabled }}
-  {{- $trigger := .Values.auth.openshift.imageStreamTrigger }}
-  {{- /* OpenShift resolves the oauth-proxy ImageStream tag into this field. */}}
-  {{- $_ := set $annotations "image.openshift.io/triggers" (toJson (list (dict "from" (dict "kind" "ImageStreamTag" "name" (printf "%s:%s" $trigger.name $trigger.tag) "namespace" $trigger.namespace) "fieldPath" "spec.template.spec.containers[?(@.name==\"oauth-proxy\")].image"))) }}
-  {{- end }}
   {{- with $annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
@@ -58,26 +53,6 @@ spec:
       {{- with .Values.runtimeClassName }}
       runtimeClassName: {{ . }}
       {{- end }}
-      {{- if and (eq .Values.auth.mode "openshift") (not .Values.auth.openshift.cookieSecret.existingSecret) }}
-      initContainers:
-        # Generates the proxy's session-cookie secret in memory, so no
-        # Secret has to be created by hand.
-        - name: proxy-cookie-secret
-          image: {{ include "kuberight.image" . | quote }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
-          args: ["cookie-secret", "/var/run/kuberight-proxy/cookie-secret"]
-          securityContext:
-            {{- toYaml .Values.securityContext | nindent 12 }}
-          resources:
-            requests:
-              cpu: 10m
-              memory: 16Mi
-            limits:
-              memory: 32Mi
-          volumeMounts:
-            - name: proxy-session
-              mountPath: /var/run/kuberight-proxy
-      {{- end }}
       containers:
         - name: kuberight
           image: {{ include "kuberight.image" . | quote }}
@@ -85,25 +60,12 @@ spec:
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           ports:
-            - name: {{ if include "kuberight.behindProxy" . }}api{{ else }}http{{ end }}
+            - name: http
               containerPort: 8080
               protocol: TCP
           env:
             - name: KUBERIGHT_LISTEN_ADDR
-              {{- if include "kuberight.behindProxy" . }}
-              # Only the sign-in proxy sidecar in this pod can reach the API.
-              value: "127.0.0.1:8080"
-              {{- else }}
               value: ":8080"
-              {{- end }}
-            {{- if eq .Values.auth.mode "oidc" }}
-            - name: KUBERIGHT_OIDC_USERNAME_PREFIX
-              value: {{ .Values.auth.oidc.usernamePrefix | quote }}
-            - name: KUBERIGHT_OIDC_GROUPS_PREFIX
-              value: {{ .Values.auth.oidc.groupsPrefix | quote }}
-            {{- end }}
-            - name: KUBERIGHT_AUTH_MODE
-              value: {{ .Values.auth.mode | quote }}
             # The Go runtime keeps its heap under 85% of this limit.
             - name: KUBERIGHT_MEMORY_LIMIT
               valueFrom:
@@ -125,13 +87,6 @@ spec:
             {{- if eq .Values.rbac.scope "namespace" }}
             - name: KUBERIGHT_INVENTORY_NAMESPACE
               value: {{ .Release.Namespace | quote }}
-            {{- end }}
-            {{- if eq .Values.auth.mode "static" }}
-            - name: KUBERIGHT_API_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.auth.staticToken.existingSecret | quote }}
-                  key: {{ .Values.auth.staticToken.key | quote }}
             {{- end }}
             {{- if .Values.database.enabled }}
             - name: KUBERIGHT_DATABASE_URL
@@ -184,10 +139,6 @@ spec:
               value: {{ .Values.forecasting.window | quote }}
             - name: KUBERIGHT_FORECAST_STEP
               value: {{ .Values.forecasting.step | quote }}
-            {{- if ne (toString .Values.approvals.requireDistinctApprover) "" }}
-            - name: KUBERIGHT_REQUIRE_DISTINCT_APPROVER
-              value: {{ .Values.approvals.requireDistinctApprover | quote }}
-            {{- end }}
             {{- with .Values.latencyQuery }}
             - name: KUBERIGHT_LATENCY_QUERY
               value: {{ . | quote }}
@@ -276,7 +227,7 @@ spec:
           startupProbe:
             httpGet:
               path: /healthz
-              port: {{ include "kuberight.probePort" . }}
+              port: http
             failureThreshold: {{ .Values.probes.startup.failureThreshold }}
             periodSeconds: {{ .Values.probes.startup.periodSeconds }}
           {{- end }}
@@ -284,7 +235,7 @@ spec:
           readinessProbe:
             httpGet:
               path: /readyz
-              port: {{ include "kuberight.probePort" . }}
+              port: http
             initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
             periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
             timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
@@ -294,7 +245,7 @@ spec:
           livenessProbe:
             httpGet:
               path: /healthz
-              port: {{ include "kuberight.probePort" . }}
+              port: http
             initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
             periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
             timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
@@ -308,12 +259,6 @@ spec:
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-        {{- if eq .Values.auth.mode "oidc" }}
-        {{- include "kuberight.oauth2ProxyContainer" . | nindent 8 }}
-        {{- end }}
-        {{- if eq .Values.auth.mode "openshift" }}
-        {{- include "kuberight.openshiftProxyContainer" . | nindent 8 }}
-        {{- end }}
       {{- with .Values.hostAliases }}
       hostAliases:
         {{- toYaml . | nindent 8 }}
@@ -322,21 +267,6 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 64Mi
-        {{- if eq .Values.auth.mode "openshift" }}
-        - name: proxy-session
-          {{- with .Values.auth.openshift.cookieSecret.existingSecret }}
-          secret:
-            secretName: {{ . | quote }}
-            defaultMode: 0400
-            items:
-              - key: {{ $.Values.auth.openshift.cookieSecret.key | quote }}
-                path: cookie-secret
-          {{- else }}
-          emptyDir:
-            medium: Memory
-            sizeLimit: 1Mi
-          {{- end }}
-        {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

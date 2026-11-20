@@ -338,14 +338,11 @@ func TestUnsafeRecommendationsCannotBeApproved(t *testing.T) {
 	}
 }
 
-func TestReviewWorkflowEnforcesSeparationOfDuties(t *testing.T) {
-	api := newTestAPI(t, func(cfg *config.Config) { cfg.RequireDistinctApprover = true }, Dependencies{})
+func TestReviewWorkflowRecordsTheReview(t *testing.T) {
+	api := newTestAPI(t, nil, Dependencies{})
 	id := createRecommendation(t, api, "alice")
 	path := "/api/v1/recommendations/" + id + "/review"
 
-	if response, body := api.do(t, http.MethodPost, path, "alice", `{"decision":"approve"}`); response.Code != http.StatusForbidden || body["error"].(map[string]any)["code"] != "separation_of_duties" {
-		t.Fatalf("self-approval status=%d body=%v", response.Code, body)
-	}
 	if response, _ := api.do(t, http.MethodPost, path, "bob", `{"decision":"reject"}`); response.Code != http.StatusBadRequest {
 		t.Fatalf("rejection without comment status=%d", response.Code)
 	}

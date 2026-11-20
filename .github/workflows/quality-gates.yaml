@@ -348,7 +348,6 @@ jobs:
         run: |
           set -euo pipefail
           docker run -d --name kuberight-smoke --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m \
-            -e KUBERIGHT_AUTH_MODE=static -e KUBERIGHT_API_TOKEN=ci-smoke-token-at-least-32-characters \
             -e KUBERIGHT_INVENTORY_ENABLED=false \
             -p 18080:8080 kuberight:ci
           trap 'docker logs kuberight-smoke || true; docker rm -f kuberight-smoke || true' EXIT
@@ -363,15 +362,12 @@ jobs:
       - name: Install images into disposable Kind cluster
         run: |
           kubectl create namespace kuberight
-          kubectl -n kuberight create secret generic kuberight-e2e-auth \
-            --from-literal=token=ci-live-browser-token-at-least-32-characters
           kind load docker-image kuberight:ci --name kuberight-integration
           helm upgrade --install kuberight charts/kuberight \
             --namespace kuberight --wait --timeout 5m \
             --set image.repository=kuberight --set image.tag=ci --set image.pullPolicy=Never \
             --set replicaCount=1 --set podDisruptionBudget.enabled=false \
-            --set topologySpreadConstraints.enabled=false \
-            --set auth.mode=static --set auth.staticToken.existingSecret=kuberight-e2e-auth
+            --set topologySpreadConstraints.enabled=false
           kubectl -n kuberight rollout status deployment/kuberight --timeout=2m
           kubectl -n kuberight get pods,services
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -383,7 +379,6 @@ jobs:
         shell: bash
         env:
           KUBERIGHT_E2E_BASE_URL: http://127.0.0.1:18084
-          KUBERIGHT_E2E_TOKEN: ci-live-browser-token-at-least-32-characters
         run: |
           set -euo pipefail
           kubectl -n kuberight port-forward service/kuberight 18084:8080 >/tmp/kuberight-port-forward.log 2>&1 &
@@ -470,8 +465,6 @@ jobs:
           trap cleanup EXIT
           docker run --platform linux/arm64 -d --name kuberight-arm64-smoke \
             --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m \
-            -e KUBERIGHT_AUTH_MODE=static \
-            -e KUBERIGHT_API_TOKEN=ci-smoke-token-at-least-32-characters \
             -e KUBERIGHT_INVENTORY_ENABLED=false \
             -p 18082:8080 kuberight:ci-arm64
           wait_for_url() {

@@ -42,7 +42,7 @@ type backtester interface {
 func (server *apiServer) allowed(r *http.Request, attributes AccessAttributes) bool {
 	principal, ok := principalFromContext(r.Context())
 	if !ok {
-		return false
+		principal = anonymousPrincipal
 	}
 	if attributes.APIGroup == "" {
 		attributes.APIGroup = apiGroup

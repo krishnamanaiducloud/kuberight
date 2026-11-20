@@ -75,27 +75,6 @@ app.kubernetes.io/component: server
 {{- end }}
 
 {{- define "kuberight.validateValues" -}}
-{{- if and (eq .Values.auth.mode "static") (not .Values.auth.staticToken.existingSecret) -}}
-{{- fail "auth.staticToken.existingSecret is required when auth.mode=static" -}}
-{{- end -}}
-{{- if eq .Values.auth.mode "oidc" -}}
-{{- $oidc := .Values.auth.oidc -}}
-{{- if not (and $oidc.issuerURL $oidc.clientID $oidc.existingSecret $oidc.redirectURL) -}}
-{{- fail "auth.mode=oidc requires auth.oidc.issuerURL, clientID, existingSecret, and redirectURL" -}}
-{{- end -}}
-{{- if and (not $oidc.insecureHTTP) (or (hasPrefix "http://" $oidc.issuerURL) (hasPrefix "http://" $oidc.redirectURL)) -}}
-{{- fail "auth.oidc URLs must use https; auth.oidc.insecureHTTP=true is for local development only" -}}
-{{- end -}}
-{{- end -}}
-{{- if and (eq .Values.auth.mode "openshift") (not .Values.route.enabled) -}}
-{{- fail "auth.mode=openshift requires route.enabled: the OpenShift login returns users to the Route" -}}
-{{- end -}}
-{{- if and (eq .Values.auth.mode "openshift") (not .Values.serviceAccount.create) -}}
-{{- fail "auth.mode=openshift requires serviceAccount.create: KubeRight annotates its ServiceAccount as the OAuth client" -}}
-{{- end -}}
-{{- if and (eq .Values.auth.mode "openshift") .Values.route.enabled (not .Values.route.tls.enabled) -}}
-{{- fail "auth.mode=openshift requires route.tls.enabled: OpenShift accepts only HTTPS OAuth redirects" -}}
-{{- end -}}
 {{- if and .Values.prometheus.bearerTokenFile (hasPrefix "http://" (lower .Values.prometheus.url)) -}}
 {{- fail "prometheus.bearerTokenFile requires an https prometheus.url; a token is never sent in cleartext" -}}
 {{- end -}}
@@ -120,8 +99,8 @@ app.kubernetes.io/component: server
 {{- if and (not .Values.serviceAccount.create) (empty .Values.serviceAccount.name) -}}
 {{- fail "serviceAccount.name is required when serviceAccount.create=false; refusing to bind KubeRight to the namespace default service account" -}}
 {{- end -}}
-{{- if and (not .Values.serviceAccount.automountServiceAccountToken) (or .Values.inventory.enabled (eq .Values.auth.mode "kubernetes")) -}}
-{{- fail "serviceAccount.automountServiceAccountToken must be true when Kubernetes inventory or authentication is enabled" -}}
+{{- if and (not .Values.serviceAccount.automountServiceAccountToken) .Values.inventory.enabled -}}
+{{- fail "serviceAccount.automountServiceAccountToken must be true when Kubernetes inventory is enabled" -}}
 {{- end -}}
 {{- if and .Values.route.enabled .Values.route.tls.enabled (ne .Values.route.tls.termination "edge") -}}
 {{- fail "route.tls.termination must be edge because KubeRight serves HTTP behind the Route" -}}
@@ -152,128 +131,3 @@ app.kubernetes.io/component: server
 {{- with regexFind "[0-9]+m" $value }}{{ $minutes = trimSuffix "m" . | int }}{{ end -}}
 {{- add (mul $hours 3600) (mul $minutes 60) -}}
 {{- end -}}
-
-{{/* The port probes use: the API itself, or the oauth2-proxy in oidc mode. */}}
-{{- define "kuberight.probePort" -}}
-{{- if include "kuberight.behindProxy" . }}4180{{ else }}http{{ end -}}
-{{- end }}
-
-{{/* Non-empty when a sign-in proxy sidecar fronts the API. */}}
-{{- define "kuberight.behindProxy" -}}
-{{- if has .Values.auth.mode (list "oidc" "openshift") }}true{{ end -}}
-{{- end }}
-
-{{/* The port the Service and NetworkPolicy expose. */}}
-{{- define "kuberight.httpPort" -}}
-{{- if include "kuberight.behindProxy" . }}4180{{ else }}8080{{ end -}}
-{{- end }}
-
-{{/*
-oauth2-proxy sidecar for auth.mode=oidc. It performs the OIDC login, keeps
-the session in an encrypted cookie, and forwards authenticated requests to
-the API on loopback with X-Forwarded-User, -Email, and -Groups.
-*/}}
-{{- define "kuberight.oauth2ProxyContainer" -}}
-{{- $oidc := .Values.auth.oidc -}}
-- name: oauth2-proxy
-  image: {{ printf "%s%s" $oidc.image.repository (ternary (printf "@%s" $oidc.image.digest) (printf ":%s" $oidc.image.tag) (ne $oidc.image.digest "")) | quote }}
-  imagePullPolicy: {{ $oidc.image.pullPolicy }}
-  securityContext:
-    {{- toYaml .Values.securityContext | nindent 4 }}
-  args:
-    - --http-address=0.0.0.0:4180
-    - --upstream=http://127.0.0.1:8080/
-    - --provider=oidc
-    - --oidc-issuer-url={{ $oidc.issuerURL }}
-    - --client-id={{ $oidc.clientID }}
-    - --redirect-url={{ $oidc.redirectURL }}
-    - --scope={{ $oidc.scopes }}
-    - --oidc-groups-claim={{ $oidc.groupsClaim }}
-    {{- range $oidc.emailDomains }}
-    - --email-domain={{ . }}
-    {{- end }}
-    - --pass-user-headers=true
-    - --skip-provider-button=true
-    # Ask for consent once, not on every login.
-    - --approval-prompt=auto
-    - --skip-auth-route=^/(healthz|readyz|metrics)$
-    - --api-route=^/api/
-    - --cookie-name=_kuberight
-    - --cookie-samesite=lax
-    - --cookie-secure={{ not $oidc.insecureHTTP }}
-    - --cookie-expire=8h
-    - --cookie-refresh=1h
-    - --silence-ping-logging=true
-    {{- with $oidc.extraArgs }}
-    {{- toYaml . | nindent 4 }}
-    {{- end }}
-  env:
-    - name: OAUTH2_PROXY_CLIENT_SECRET
-      valueFrom:
-        secretKeyRef:
-          name: {{ $oidc.existingSecret | quote }}
-          key: {{ $oidc.clientSecretKey | quote }}
-    - name: OAUTH2_PROXY_COOKIE_SECRET
-      valueFrom:
-        secretKeyRef:
-          name: {{ $oidc.existingSecret | quote }}
-          key: {{ $oidc.cookieSecretKey | quote }}
-  ports:
-    - name: http
-      containerPort: 4180
-      protocol: TCP
-  readinessProbe:
-    httpGet:
-      path: /ping
-      port: 4180
-    periodSeconds: 10
-  resources:
-    {{- toYaml $oidc.resources | nindent 4 }}
-{{- end }}
-
-{{/* OpenShift's oauth-proxy: signs users in with OpenShift and forwards their token. */}}
-{{- define "kuberight.openshiftProxyContainer" -}}
-{{- $openshift := .Values.auth.openshift -}}
-{{- $service := dict "namespace" .Release.Namespace "resource" "services" "resourceName" (include "kuberight.fullname" .) "verb" $openshift.signInVerb -}}
-{{- $delegate := dict "/api/" (dict "namespace" .Release.Namespace "resource" "services" "name" (include "kuberight.fullname" .) "verb" $openshift.signInVerb) -}}
-- name: oauth-proxy
-  image: {{ printf "%s%s" $openshift.image.repository (ternary (printf "@%s" $openshift.image.digest) (printf ":%s" $openshift.image.tag) (ne $openshift.image.digest "")) | quote }}
-  imagePullPolicy: {{ $openshift.image.pullPolicy }}
-  securityContext:
-    {{- toYaml .Values.securityContext | nindent 4 }}
-  args:
-    - --provider=openshift
-    - --openshift-service-account={{ include "kuberight.serviceAccountName" . }}
-    - --http-address=0.0.0.0:4180
-    - --https-address=
-    - --upstream=http://127.0.0.1:8080/
-    - --cookie-secret-file=/var/run/kuberight-proxy/cookie-secret
-    - --cookie-name=_kuberight
-    - --cookie-secure=true
-    - --cookie-expire=8h0m0s
-    # KubeRight verifies this token and authorizes each request itself.
-    - --pass-access-token=true
-    - --skip-auth-regex=^/(healthz|readyz|metrics)$
-    # Who may sign in at all.
-    - {{ printf "--openshift-sar=%s" (toJson $service) | squote }}
-    # API clients with their own bearer token skip the browser login.
-    - {{ printf "--openshift-delegate-urls=%s" (toJson $delegate) | squote }}
-    {{- with $openshift.extraArgs }}
-    {{- toYaml . | nindent 4 }}
-    {{- end }}
-  ports:
-    - name: http
-      containerPort: 4180
-      protocol: TCP
-  readinessProbe:
-    httpGet:
-      path: /oauth/healthz
-      port: 4180
-    periodSeconds: 10
-  volumeMounts:
-    - name: proxy-session
-      mountPath: /var/run/kuberight-proxy
-      readOnly: true
-  resources:
-    {{- toYaml $openshift.resources | nindent 4 }}
-{{- end }}

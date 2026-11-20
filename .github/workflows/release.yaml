@@ -240,8 +240,6 @@ jobs:
             fi
             docker run --platform "linux/$arch" -d --name "kuberight-release-$arch" \
               --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m \
-              -e KUBERIGHT_AUTH_MODE=static \
-              -e KUBERIGHT_API_TOKEN=release-smoke-token-at-least-32-characters \
               -e KUBERIGHT_INVENTORY_ENABLED=false \
               -p "$backend_port:8080" "kuberight-release:$arch"
           done

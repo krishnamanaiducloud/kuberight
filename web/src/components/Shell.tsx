@@ -2,16 +2,14 @@ import { useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link as RouterLink, useLocation } from 'react-router-dom'
 import {
-  AppBar, Box, Button, Chip, Dialog, DialogActions, DialogContent, DialogTitle,
-  Divider, Drawer, IconButton, List, ListItemButton, ListItemIcon, ListItemText,
-  TextField, Toolbar, Tooltip, Typography, useMediaQuery,
+  AppBar, Box, Button, Chip, Divider, Drawer, IconButton, List, ListItemButton,
+  ListItemIcon, ListItemText, Toolbar, Typography, useMediaQuery,
 } from '@mui/material'
 import MenuIcon from '@mui/icons-material/Menu'
-import KeyOutlined from '@mui/icons-material/KeyOutlined'
 import ShieldOutlined from '@mui/icons-material/ShieldOutlined'
 import { useTheme } from '@mui/material/styles'
 import { navigation } from '../navigation'
-import { api, ApiError, tokenStore } from '../api'
+import { api } from '../api'
 
 const drawerWidth = 272
 
@@ -20,32 +18,26 @@ export function Shell({ children }: { children: ReactNode }) {
   const theme = useTheme()
   const desktop = useMediaQuery(theme.breakpoints.up('lg'))
   const [drawerOpen, setDrawerOpen] = useState(false)
-  const [authOpen, setAuthOpen] = useState(false)
-  const [token, setToken] = useState(tokenStore.get())
+	// KubeRight has no sign-in, so the mode is unknown only while the API is
+	// starting or unreachable; keep asking until it answers.
 	const modeQuery = useQuery({
 		queryKey: ['version'],
 		queryFn: ({ signal }) => api.get<{ mode?: string }>('/api/v1/version', { signal }),
-		retry: false,
+		retry: 3,
+		refetchInterval: (query) => (query.state.data?.mode ? false : 15_000),
 		staleTime: 60_000,
 	})
-	// Behind a sign-in proxy (OpenShift or OIDC) the browser session already
-	// authenticates every request, so there is no token to ask for. The token
-	// control appears only when the server asked for one, or one is set.
-	const signedInBySession = modeQuery.isSuccess && !tokenStore.get()
-	const tokenRequired = modeQuery.error instanceof ApiError && modeQuery.error.status === 401
 	const operationalMode = modeQuery.data?.mode
-	const modeLabel = operationalMode ? `${operationalMode[0].toUpperCase()}${operationalMode.slice(1)}` : 'Unconfirmed'
+	const modeLabel = operationalMode
+		? `${operationalMode[0].toUpperCase()}${operationalMode.slice(1)}`
+		: modeQuery.isError ? 'Unreachable' : 'Checking'
 	const modeDescription = operationalMode === 'observe'
 		? 'Recommendation generation and workload changes are disabled.'
 		: operationalMode === 'recommend'
 			? 'Read-only: KubeRight never changes workloads.'
-			: 'Connect to verify the configured safety mode.'
-
-  const saveToken = () => {
-    tokenStore.set(token.trim())
-    setAuthOpen(false)
-    window.location.reload()
-  }
+			: modeQuery.isError
+				? 'The KubeRight API is not answering yet. Retrying.'
+				: 'Asking the KubeRight API for its mode.'
 
   const drawer = (
     <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
@@ -102,12 +94,7 @@ export function Shell({ children }: { children: ReactNode }) {
             <Typography variant="caption" color="text.secondary">CONTROL PLANE</Typography>
             <Typography sx={{ fontWeight: 750 }}>Verified signals only</Typography>
           </Box>
-          <Chip icon={<ShieldOutlined />} label={`${modeLabel} mode`} color="warning" variant="outlined" sx={{ mr: 1, display: { xs: 'none', sm: 'flex' } }} />
-          {!signedInBySession && (tokenRequired || tokenStore.get() !== '') && (
-            <Tooltip title="Set a Kubernetes or static development bearer token">
-              <Button color="inherit" startIcon={<KeyOutlined />} onClick={() => setAuthOpen(true)}>{tokenStore.get() ? 'Update access' : 'Connect'}</Button>
-            </Tooltip>
-          )}
+          <Chip icon={<ShieldOutlined />} label={`${modeLabel} mode`} color="warning" variant="outlined" sx={{ display: { xs: 'none', sm: 'flex' } }} />
         </Toolbar>
       </AppBar>
       <Box component="aside" sx={{ width: { lg: drawerWidth }, flexShrink: { lg: 0 } }}>
@@ -116,17 +103,6 @@ export function Shell({ children }: { children: ReactNode }) {
       <Box id="main-content" tabIndex={-1} component="main" sx={{ flexGrow: 1, width: { lg: `calc(100% - ${drawerWidth}px)` }, pt: '76px', minWidth: 0, outline: 'none' }}>
         {children}
       </Box>
-      <Dialog open={authOpen} onClose={() => setAuthOpen(false)} fullWidth maxWidth="sm">
-        <DialogTitle>Connect to KubeRight</DialogTitle>
-        <DialogContent>
-          <Typography color="text.secondary" sx={{ mb: 2 }}>The bearer token stays in this browser tab's session storage and is never written to application logs.</Typography>
-          <TextField autoFocus fullWidth label="Bearer token" type="password" value={token} onChange={(event) => setToken(event.target.value)} autoComplete="off" />
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => { setToken(''); tokenStore.set(''); setAuthOpen(false); window.location.reload() }}>Clear</Button>
-          <Button variant="contained" onClick={saveToken}>Save for session</Button>
-        </DialogActions>
-      </Dialog>
     </Box>
   )
 }

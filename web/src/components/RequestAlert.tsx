@@ -14,22 +14,15 @@ export function RequestAlert({ error, resource, namespaceScoped, onRetry }: Requ
   const request = apiError?.requestId ? ` Request ID: ${apiError.requestId}.` : ''
   const retry = onRetry ? <Button color="inherit" size="small" onClick={onRetry}>Retry</Button> : undefined
 
-  if (apiError?.status === 401) {
-    return (
-      <Alert severity="warning" action={retry}>
-        <AlertTitle>Connect to view {resource}</AlertTitle>
-        Your session has no valid bearer token. Use <strong>Connect</strong> in the header, then try again.{request}
-      </Alert>
-    )
-  }
-
+  // KubeRight has no sign-in, so a 403 means its own ServiceAccount cannot
+  // read this scope in Kubernetes.
   if (apiError?.status === 403) {
     return (
       <Alert severity="warning" action={retry}>
-        <AlertTitle>This identity cannot view this scope</AlertTitle>
+        <AlertTitle>KubeRight cannot read this scope</AlertTitle>
         {namespaceScoped
-          ? `Choose a namespace this identity can access, or ask an administrator for list permission on ${resource} in this namespace.`
-          : `Ask an administrator for permission to view ${resource}.`}
+          ? `KubeRight's ServiceAccount has no read access to ${resource} in this namespace. Choose another namespace, or install with rbac.scope=cluster.`
+          : `KubeRight's ServiceAccount has no read access to ${resource}.`}
         {request}
       </Alert>
     )

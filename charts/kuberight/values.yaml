@@ -103,12 +103,6 @@ forecasting:
   window: 336h
   step: 1h
 
-approvals:
-  # Reject reviews by the identity that created the recommendation. Empty
-  # means automatic: enabled with Kubernetes authentication and disabled in
-  # static-token mode, which has only one identity.
-  requireDistinctApprover: ""
-
 # Operator-supplied unit prices for request-based savings estimates. Leave
 # both empty to disable estimates; KubeRight never invents prices.
 cost:
@@ -189,102 +183,9 @@ rbac:
   create: true
   # namespace is the least-privilege default. Use cluster only for fleet-wide inventory.
   scope: namespace
-  authReviews: true
   monitoring:
     enabled: true
   extraRules: []
-
-auth:
-  # disabled (the default): no sign-in. Anyone who can reach the Service,
-  # Route, or Ingress uses the dashboard and API, including approving and
-  # rejecting recommendations, as one anonymous identity. KubeRight never
-  # changes workloads, but it does show cluster inventory.
-  # To require sign-in instead:
-  #   kubernetes: TokenReview accepts service-account, OpenShift OAuth, and
-  #     cluster-configured OIDC bearer tokens, then authorizes every request
-  #     with SubjectAccessReview.
-  #   openshift: users sign in through OpenShift's oauth-proxy.
-  #   oidc: browser single sign-on through an oauth2-proxy sidecar.
-  #   static: one shared bearer token, for isolated development.
-  mode: disabled
-  staticToken:
-    existingSecret: ""
-    key: token
-  # mode: oidc adds an oauth2-proxy sidecar for browser single sign-on with
-  # any OIDC provider (Entra ID, Okta, Google, Keycloak, Dex). KubeRight then
-  # listens on loopback only and trusts the identity the sidecar asserts;
-  # every request is still authorized with SubjectAccessReview, so RBAC binds
-  # "<usernamePrefix><email>" and "<groupsPrefix><group>".
-  oidc:
-    issuerURL: ""
-    clientID: ""
-    # Secret with the OIDC client secret and a 32-byte cookie secret:
-    # kubectl create secret generic kuberight-oidc --from-literal=client-secret=... \
-    #   --from-literal=cookie-secret="$(openssl rand -base64 32 | tr -- '+/' '-_')"
-    existingSecret: ""
-    clientSecretKey: client-secret
-    cookieSecretKey: cookie-secret
-    # The external URL users reach, ending in /oauth2/callback.
-    redirectURL: ""
-    scopes: openid email profile groups
-    groupsClaim: groups
-    emailDomains:
-      - "*"
-    usernamePrefix: "oidc:"
-    groupsPrefix: "oidc:"
-    # Development only: allow an http issuer and cookies without Secure.
-    insecureHTTP: false
-    image:
-      repository: quay.io/oauth2-proxy/oauth2-proxy
-      tag: v7.15.6
-      digest: ""
-      pullPolicy: IfNotPresent
-    resources:
-      requests:
-        cpu: 10m
-        memory: 32Mi
-      limits:
-        memory: 128Mi
-    extraArgs: []
-  # mode: openshift signs users in with their OpenShift account through
-  # OpenShift's oauth-proxy, as a sidecar behind the Route; nobody pastes a
-  # token. The proxy forwards each user's OpenShift token, which KubeRight
-  # verifies with TokenReview before authorizing every request with
-  # SubjectAccessReview. API clients can still send a bearer token. Needs
-  # route.enabled; KubeRight's ServiceAccount becomes the OAuth client.
-  openshift:
-    # OpenShift ships oauth-proxy as the openshift/oauth-proxy:v4.4
-    # ImageStream tag for third-party use. With imageStreamTrigger the
-    # cluster resolves it to its own release-matched (and, when
-    # disconnected, mirrored) image; image below is then only the initial
-    # value. Set imageStreamTrigger.enabled=false to pin image instead.
-    imageStreamTrigger:
-      enabled: true
-      namespace: openshift
-      name: oauth-proxy
-      tag: v4.4
-    image:
-      repository: registry.redhat.io/openshift4/ose-oauth-proxy-rhel9
-      tag: latest
-      digest: ""
-      pullPolicy: IfNotPresent
-    # Who may sign in: users allowed to get KubeRight's Service in its
-    # namespace (OpenShift's view role grants that). Every API request is
-    # still authorized with SubjectAccessReview.
-    signInVerb: get
-    # Session cookie secret. Empty: an init container generates one in
-    # memory for each pod, so sessions do not survive a pod restart and, with
-    # several replicas, need the Route's default sticky sessions.
-    cookieSecret:
-      existingSecret: ""
-      key: session-secret
-    resources:
-      requests:
-        cpu: 10m
-        memory: 32Mi
-      limits:
-        memory: 128Mi
-    extraArgs: []
 
 service:
   type: ClusterIP

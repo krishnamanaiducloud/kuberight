@@ -108,13 +108,15 @@ type apiServer struct {
 	now        func() time.Time
 }
 
+// unavailableAccess refuses every API request when the configuration could
+// not be loaded, so the server never runs with settings it did not validate.
 type unavailableAccess struct{ err error }
 
 func (access unavailableAccess) Authenticate(context.Context, string) (Principal, error) {
-	return Principal{}, newAccessError(http.StatusServiceUnavailable, "authentication_unavailable", "identity verification is unavailable")
+	return Principal{}, newAccessError(http.StatusServiceUnavailable, "configuration_invalid", "the server configuration is invalid")
 }
 func (access unavailableAccess) Authorize(context.Context, Principal, AccessAttributes) error {
-	return newAccessError(http.StatusServiceUnavailable, "authorization_unavailable", "permission evaluation is unavailable")
+	return newAccessError(http.StatusServiceUnavailable, "configuration_invalid", "the server configuration is invalid")
 }
 func (access unavailableAccess) Ready(context.Context) error { return access.err }
 
@@ -137,11 +139,7 @@ func newAPIServer(cfg config.Config, dependencies Dependencies) (*apiServer, err
 	cfg = cfg.Normalized()
 	access := dependencies.Access
 	if access == nil {
-		var err error
-		access, err = configuredAccess(cfg)
-		if err != nil {
-			return nil, err
-		}
+		access = openAccess{}
 	}
 	repo := dependencies.Repository
 	if repo == nil {
@@ -282,8 +280,6 @@ func Handler() http.Handler {
 func fallbackConfig() config.Config {
 	return config.Config{
 		ListenAddress:     ":8080",
-		AuthMode:          "static",
-		APIToken:          strings.Repeat("x", 32),
 		OperationMode:     config.ModeRecommend,
 		MaxBodyBytes:      1 << 20,
 		RequestTimeout:    15 * time.Second,
@@ -341,45 +337,11 @@ func (server *apiServer) withAuthentication(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if server.config.AuthMode == "disabled" {
-			// No sign-in: any Authorization header is ignored.
-			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey, anonymousPrincipal)))
-			return
-		}
-		if server.config.AuthMode == "oidc" {
-			principal, ok := proxyPrincipal(r.Header, server.config.OIDCUsernamePrefix, server.config.OIDCGroupsPrefix)
-			if !ok {
-				respondError(w, r, http.StatusUnauthorized, "unauthorized", "sign in through the KubeRight login")
-				return
-			}
-			recordTelemetrySubject(r.Context(), principal.Username)
-			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey, principal)))
-			return
-		}
-		bearer, ok := extractBearer(r.Header.Get("Authorization"))
-		if server.config.AuthMode == "openshift" {
-			// A browser session arrives with the token the OpenShift login
-			// issued; an API client sends its own bearer token. Both are
-			// verified with TokenReview, so a forged header gains nothing.
-			if token := strings.TrimSpace(r.Header.Get(openShiftTokenHeader)); token != "" && len(token) <= 16_384 {
-				bearer, ok = token, true
-			}
-			if !ok {
-				respondError(w, r, http.StatusUnauthorized, "unauthorized", "sign in through the OpenShift login")
-				return
-			}
-		}
-		if !ok {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="kuberight"`)
-			respondError(w, r, http.StatusUnauthorized, "unauthorized", "a bearer token is required")
-			return
-		}
-		principal, err := server.access.Authenticate(r.Context(), bearer)
+		// There is no sign-in: openAccess gives every request the anonymous
+		// identity whatever headers it carries.
+		principal, err := server.access.Authenticate(r.Context(), bearerToken(r.Header.Get("Authorization")))
 		if err != nil {
 			status, code, message := accessErrorDetails(err)
-			if status == http.StatusUnauthorized {
-				w.Header().Set("WWW-Authenticate", `Bearer realm="kuberight", error="invalid_token"`)
-			}
 			respondError(w, r, status, code, message)
 			return
 		}
@@ -391,8 +353,7 @@ func (server *apiServer) withAuthentication(next http.Handler) http.Handler {
 func (server *apiServer) authorize(w http.ResponseWriter, r *http.Request, attributes AccessAttributes) bool {
 	principal, ok := principalFromContext(r.Context())
 	if !ok {
-		respondError(w, r, http.StatusUnauthorized, "unauthorized", "an authenticated identity is required")
-		return false
+		principal = anonymousPrincipal
 	}
 	if attributes.APIGroup == "" {
 		attributes.APIGroup = apiGroup
@@ -438,10 +399,10 @@ func (server *apiServer) health(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (server *apiServer) ready(w http.ResponseWriter, r *http.Request) {
-	checks := map[string]string{"authentication": "ready"}
+	checks := map[string]string{"configuration": "ready"}
 	ready := true
 	if err := server.access.Ready(r.Context()); err != nil {
-		checks["authentication"] = "unavailable"
+		checks["configuration"] = "invalid"
 		ready = false
 	}
 	if server.provider != nil {

@@ -656,8 +656,7 @@ func (server *apiServer) storeRecommendation(w http.ResponseWriter, r *http.Requ
 	fingerprintDigest := sha256.Sum256(append([]byte(source+"\x00"), payload...))
 	principal, ok := principalFromContext(r.Context())
 	if !ok {
-		respondError(w, r, http.StatusUnauthorized, "unauthorized", "an authenticated identity is required")
-		return
+		principal = anonymousPrincipal
 	}
 	var (
 		record  repository.RecommendationRecord
@@ -761,10 +760,6 @@ func (server *apiServer) reviewRecommendation(w http.ResponseWriter, r *http.Req
 		return
 	}
 	principal, _ := principalFromContext(r.Context())
-	if server.config.RequireDistinctApprover && record.CreatedBy != "" && record.CreatedBy == principal.Username {
-		respondError(w, r, http.StatusForbidden, "separation_of_duties", "a recommendation must be reviewed by an identity other than the one that created it")
-		return
-	}
 	if status == repository.ReviewApproved {
 		// Hold, insufficient-data, and unsupported advice cannot be approved;
 		// it can still be rejected with a comment.

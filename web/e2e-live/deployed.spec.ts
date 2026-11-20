@@ -1,9 +1,6 @@
 import AxeBuilder from '@axe-core/playwright'
 import { expect, test, type Page } from '@playwright/test'
 
-const token = process.env.KUBERIGHT_E2E_TOKEN
-if (!token) throw new Error('KUBERIGHT_E2E_TOKEN is required for live browser tests')
-
 function captureRuntimeFailures(page: Page) {
   const failures: string[] = []
   page.on('console', (message) => {
@@ -13,17 +10,9 @@ function captureRuntimeFailures(page: Page) {
   return failures
 }
 
-test.beforeEach(async ({ page }) => {
-  await page.addInitScript((bearerToken) => {
-    window.sessionStorage.setItem('kuberight.token', bearerToken)
-  }, token)
-})
-
-test('uses the deployed API and renders live Kubernetes inventory', async ({ page }, testInfo) => {
+test('uses the deployed API without any sign-in and renders live Kubernetes inventory', async ({ page }, testInfo) => {
   const failures = captureRuntimeFailures(page)
-  const response = await page.request.get('/api/v1/version', {
-    headers: { Authorization: `Bearer ${token}` },
-  })
+  const response = await page.request.get('/api/v1/version')
   expect(response.status()).toBe(200)
   expect(await response.json()).toMatchObject({ mode: 'recommend' })
 
@@ -33,6 +22,9 @@ test('uses the deployed API and renders live Kubernetes inventory', async ({ pag
   await page.goto('/overview')
   await expect(page.getByRole('heading', { level: 1, name: 'Rightsize with evidence, not instinct.' })).toBeVisible()
   await expect(page.getByRole('region', { name: 'Workload health' })).toBeVisible()
+  await expect(page.getByText('recommend mode', { exact: true })).toBeVisible()
+  await expect(page.getByText(/unconfirmed/i)).toHaveCount(0)
+  await expect(page.getByRole('button', { name: /connect/i })).toHaveCount(0)
   await page.goto('/workloads?scope=all')
   await expect(page.getByRole('heading', { level: 1, name: 'Workloads' })).toBeVisible()
   await expect(page.getByText('kuberight', { exact: true }).first()).toBeVisible()

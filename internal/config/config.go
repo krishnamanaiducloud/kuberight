@@ -20,14 +20,7 @@ const (
 // Config contains the security- and reliability-relevant API server settings.
 // Secrets are intentionally kept separate from values which are safe to log.
 type Config struct {
-	ListenAddress string
-	AuthMode      string
-	APIToken      string
-	// OIDC mode: an authenticating proxy (oauth2-proxy) in the same pod
-	// sets the identity headers; KubeRight must listen on loopback only.
-	OIDCUsernamePrefix    string
-	OIDCGroupsPrefix      string
-	TokenAudience         string
+	ListenAddress         string
 	OperationMode         string
 	WebRoot               string
 	MaxBodyBytes          int64
@@ -81,10 +74,6 @@ type Config struct {
 	CostCPUCoreHour   float64
 	CostMemoryGiBHour float64
 	CostCurrency      string
-
-	// RequireDistinctApprover rejects reviews by the identity that created
-	// the recommendation.
-	RequireDistinctApprover bool
 
 	// LatencyQuery is an optional PromQL template, in seconds, correlated with
 	// resource signals. It must use $namespace, $workload, or $container.
@@ -179,11 +168,6 @@ func (c Config) CostConfigured() bool {
 func Load() (Config, error) {
 	cfg := Config{
 		ListenAddress:             envOr("KUBERIGHT_LISTEN_ADDR", ":8080"),
-		AuthMode:                  strings.ToLower(envOr("KUBERIGHT_AUTH_MODE", "kubernetes")),
-		APIToken:                  os.Getenv("KUBERIGHT_API_TOKEN"),
-		OIDCUsernamePrefix:        envOr("KUBERIGHT_OIDC_USERNAME_PREFIX", "oidc:"),
-		OIDCGroupsPrefix:          envOr("KUBERIGHT_OIDC_GROUPS_PREFIX", "oidc:"),
-		TokenAudience:             os.Getenv("KUBERIGHT_TOKEN_AUDIENCE"),
 		OperationMode:             strings.ToLower(envOr("KUBERIGHT_OPERATION_MODE", ModeRecommend)),
 		WebRoot:                   os.Getenv("KUBERIGHT_WEB_ROOT"),
 		InventoryNamespace:        os.Getenv("KUBERIGHT_INVENTORY_NAMESPACE"),
@@ -217,11 +201,14 @@ func Load() (Config, error) {
 	if cfg.AllowInsecureUpstreams, err = parseBool("KUBERIGHT_ALLOW_INSECURE_UPSTREAMS", false); err != nil {
 		return Config{}, err
 	}
-	// Forecasting is built in, and KubeRight no longer changes workloads:
-	// these settings are reported at startup and otherwise ignored.
+	// Forecasting is built in, KubeRight no longer changes workloads, and it
+	// has no sign-in: these settings are reported at startup and otherwise
+	// ignored, so an older manifest still starts.
 	for _, name := range []string{
 		"KUBERIGHT_ML_URL", "KUBERIGHT_ML_API_KEY", "KUBERIGHT_ML_TIMEOUT", "KUBERIGHT_ML_ALLOW_HTTP",
 		"KUBERIGHT_AUTOMATION_INTERVAL", "KUBERIGHT_AUTOMATION_MAX_CHANGES", "KUBERIGHT_AUTOMATION_WINDOW", "KUBERIGHT_AUTOMATION_IN_PLACE_RESIZE",
+		"KUBERIGHT_AUTH_MODE", "KUBERIGHT_API_TOKEN", "KUBERIGHT_OIDC_USERNAME_PREFIX", "KUBERIGHT_OIDC_GROUPS_PREFIX",
+		"KUBERIGHT_TOKEN_AUDIENCE", "KUBERIGHT_REQUIRE_DISTINCT_APPROVER",
 	} {
 		if os.Getenv(name) != "" {
 			cfg.RemovedSettings = append(cfg.RemovedSettings, name)
@@ -236,12 +223,6 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.ExportRecommendationMetrics, err = parseBool("KUBERIGHT_EXPORT_RECOMMENDATION_METRICS", false); err != nil {
-		return Config{}, err
-	}
-	// Static and disabled modes have a single shared identity, so separation
-	// of duties is only meaningful, and therefore only on by default, with
-	// per-user authentication.
-	if cfg.RequireDistinctApprover, err = parseBool("KUBERIGHT_REQUIRE_DISTINCT_APPROVER", cfg.AuthMode != "static" && cfg.AuthMode != "disabled"); err != nil {
 		return Config{}, err
 	}
 	if cfg.DatabaseMaxConns, err = parseInt("KUBERIGHT_DATABASE_MAX_CONNS", 10, 1, 100); err != nil {
@@ -313,26 +294,6 @@ func (c Config) Validate() error {
 	}
 	if _, _, err := net.SplitHostPort(c.ListenAddress); err != nil {
 		return fmt.Errorf("invalid KUBERIGHT_LISTEN_ADDR: %w", err)
-	}
-	switch c.AuthMode {
-	case "kubernetes":
-	case "disabled":
-		// No sign-in: every request is served as one anonymous identity.
-	case "static":
-		if len(c.APIToken) < 32 {
-			return errors.New("KUBERIGHT_API_TOKEN must contain at least 32 characters in static auth mode")
-		}
-	case "oidc", "openshift":
-		// In oidc mode identity headers are trusted only because nothing but
-		// the authenticating proxy in the same pod can reach the listener. In
-		// openshift mode the proxy forwards the user's token, which is still
-		// verified, but the API must not be reachable around the login.
-		host, _, _ := net.SplitHostPort(c.ListenAddress)
-		if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
-			return fmt.Errorf("KUBERIGHT_AUTH_MODE=%s requires KUBERIGHT_LISTEN_ADDR on a loopback address, such as 127.0.0.1:8080, behind the authenticating proxy", c.AuthMode)
-		}
-	default:
-		return errors.New("KUBERIGHT_AUTH_MODE must be disabled, kubernetes, openshift, oidc, or static")
 	}
 	if c.DefaultScanInterval != 0 && c.DefaultScanInterval < 5*time.Minute {
 		return errors.New("KUBERIGHT_DEFAULT_SCAN_INTERVAL must be 0 or at least 5m")

@@ -1,9 +1,9 @@
-import { api, ApiError, tokenStore } from './api'
+import { api, ApiError } from './api'
 import { vi } from 'vitest'
 
 describe('API client', () => {
-  it('uses a session-only bearer token and surfaces request IDs', async () => {
-    tokenStore.set('opaque-test-token')
+  it('sends no credentials and surfaces request IDs', async () => {
+    sessionStorage.setItem('kuberight.token', 'left-over-from-an-older-release')
     const fetchMock = vi.fn().mockResolvedValue({
       ok: false,
       status: 403,
@@ -12,8 +12,8 @@ describe('API client', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
     await expect(api.get('/api/v1/clusters')).rejects.toMatchObject({ status: 403, requestId: 'request-123' } satisfies Partial<ApiError>)
-    expect(new Headers(fetchMock.mock.calls[0][1].headers).get('Authorization')).toBe('Bearer opaque-test-token')
-    tokenStore.set('')
+    expect(new Headers(fetchMock.mock.calls[0][1].headers).get('Authorization')).toBeNull()
+    sessionStorage.clear()
     vi.unstubAllGlobals()
   })
 })

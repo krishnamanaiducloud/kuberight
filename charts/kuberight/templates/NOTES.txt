@@ -4,9 +4,7 @@ Service:
   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "kuberight.fullname" . }} 8080:{{ .Values.service.port }}
   http://127.0.0.1:8080/
 
-{{- if eq .Values.auth.mode "disabled" }}
-WARNING: authentication is disabled. Anyone who can reach this release's Service, Route, or Ingress can read the cluster inventory and approve or reject recommendations. Set auth.mode to require sign-in.
-{{- end }}
+KubeRight has no sign-in, like Goldilocks: anyone who can reach this release's Service, Route, or Ingress can read the cluster inventory and approve or reject recommendations. Keep it on port-forward, or restrict who can reach the Route or Ingress.
 {{- if and .Values.networkPolicy.enabled .Values.ingress.enabled }}
 IMPORTANT: networkPolicy permits same-namespace traffic by default. Add your ingress controller namespace/pod selectors to networkPolicy.ingress.
 {{- end }}
@@ -18,9 +16,4 @@ Inventory RBAC is namespace scoped to {{ .Release.Namespace }}.
 {{- end }}
 {{- if or (gt (int .Values.replicaCount) 1) .Values.autoscaling.enabled }}
 WARNING: API horizontal scaling is unsupported in this preview. Recommendation, idempotency, and audit state is process-local, so replicas do not share a consistent store.
-{{- end }}
-{{- if eq .Values.auth.mode "openshift" }}
-Users sign in at the Route with their OpenShift account. To let a user in, grant read access to the KubeRight Service and RBAC for the virtual kuberight.io resources, for example:
-  oc adm policy add-role-to-user view <user> -n {{ .Release.Namespace }}
-The OpenShift login needs the Route's HTTPS host; KubeRight's ServiceAccount is the OAuth client.
 {{- end }}

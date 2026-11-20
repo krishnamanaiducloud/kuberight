@@ -100,7 +100,7 @@ export function Hotspots({ title, description }: { title: string; description: s
         </Stack>
       </PageHeader>
       {query.isFetching && <LinearProgress sx={{ mb: 2 }} />}
-      {!scopeReady && <Alert severity="info" sx={{ mb: 2 }}><strong>Choose a namespace to begin.</strong> Select <strong>All visible</strong> only when this identity has fleet-level list access.</Alert>}
+      {!scopeReady && <Alert severity="info" sx={{ mb: 2 }}><strong>Choose a namespace to begin.</strong> Select <strong>All visible</strong> to include every namespace KubeRight can read.</Alert>}
       {query.error && <Box sx={{ mb: 2 }}><RequestAlert error={query.error} resource="CPU hotspots" namespaceScoped onRetry={() => void query.refetch()} /></Box>}
       {data?.status.available === false && <Alert severity="info" sx={{ mb: 2 }}>{data.status.reason}</Alert>}
       {data?.status.available !== false && (
