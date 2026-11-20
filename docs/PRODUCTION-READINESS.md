@@ -25,7 +25,7 @@ The live evidence is summarized in the README's [Live validation](../README.md#l
 ## Open release gates
 
 1. Run the full quality-gates workflow on `feat/standalone-read-only` and merge it into `main`.
-2. With owner approval, tag the merged main commit as `v0.1.0-rc.5`. The release workflow builds once, scans, and keyless-signs the published multi-architecture images and packaged Helm chart. It also attaches SPDX attestations and records the digests in the GitHub release.
+2. With owner approval, tag the merged main commit as `v0.1.0-rc.6`. The release workflow builds once, scans, and keyless-signs the published multi-architecture images and packaged Helm chart. It also attaches SPDX attestations and records the digests in the GitHub release.
 3. Verify the published Docker Hub digests, image signatures/attestations, chart checksum/signature bundle, and GitHub prerelease. The immutable `v0.1.0-rc.3` tag remains as a failed, non-publishing startup attempt.
 
 ## Scope

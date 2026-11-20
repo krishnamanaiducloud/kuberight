@@ -4,6 +4,7 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: kuberight
+
 ---
 # Source: kuberight/templates/networkpolicy.yaml
 apiVersion: networking.k8s.io/v1
@@ -12,11 +13,11 @@ metadata:
   name: kuberight
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.5
+    helm.sh/chart: kuberight-0.1.0-rc.6
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.5"
+    app.kubernetes.io/version: "0.1.0-rc.6"
     app.kubernetes.io/component: server
 spec:
   podSelector:
@@ -39,6 +40,7 @@ spec:
       ports:
       - port: 4180
         protocol: TCP
+
 ---
 # Source: kuberight/templates/pdb.yaml
 apiVersion: policy/v1
@@ -47,11 +49,11 @@ metadata:
   name: kuberight
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.5
+    helm.sh/chart: kuberight-0.1.0-rc.6
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.5"
+    app.kubernetes.io/version: "0.1.0-rc.6"
     app.kubernetes.io/component: server
 spec:
   minAvailable: 1
@@ -60,6 +62,7 @@ spec:
       app.kubernetes.io/name: kuberight
       app.kubernetes.io/instance: kuberight
       app.kubernetes.io/component: server
+
 ---
 # Source: kuberight/templates/serviceaccount.yaml
 apiVersion: v1
@@ -68,15 +71,16 @@ metadata:
   name: kuberight
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.5
+    helm.sh/chart: kuberight-0.1.0-rc.6
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.5"
+    app.kubernetes.io/version: "0.1.0-rc.6"
     app.kubernetes.io/component: server
   annotations:
     serviceaccounts.openshift.io/oauth-redirectreference.primary: '{"apiVersion":"v1","kind":"OAuthRedirectReference","reference":{"kind":"Route","name":"kuberight"}}'
 automountServiceAccountToken: true
+
 ---
 # Source: kuberight/templates/rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -84,11 +88,11 @@ kind: ClusterRole
 metadata:
   name: kuberight-8cde1ab2-auth-reviewer
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.5
+    helm.sh/chart: kuberight-0.1.0-rc.6
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.5"
+    app.kubernetes.io/version: "0.1.0-rc.6"
     app.kubernetes.io/component: server
 rules:
   - apiGroups: ["authentication.k8s.io"]
@@ -98,6 +102,7 @@ rules:
   - apiGroups: ["authorization.k8s.io"]
     resources: ["subjectaccessreviews"]
     verbs: ["create"]
+
 ---
 # Source: kuberight/templates/rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -105,11 +110,11 @@ kind: ClusterRoleBinding
 metadata:
   name: kuberight-8cde1ab2-auth-reviewer
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.5
+    helm.sh/chart: kuberight-0.1.0-rc.6
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.5"
+    app.kubernetes.io/version: "0.1.0-rc.6"
     app.kubernetes.io/component: server
 roleRef:
   apiGroup: rbac.authorization.k8s.io
@@ -119,6 +124,7 @@ subjects:
   - kind: ServiceAccount
     name: kuberight
     namespace: kuberight
+
 ---
 # Source: kuberight/templates/rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -127,11 +133,11 @@ metadata:
   name: kuberight-workloads
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.5
+    helm.sh/chart: kuberight-0.1.0-rc.6
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.5"
+    app.kubernetes.io/version: "0.1.0-rc.6"
     app.kubernetes.io/component: server
 rules:
   # Pod ownerReferences attribute container metrics to exact controllers;
@@ -159,6 +165,7 @@ rules:
   - apiGroups: [""]
     resources: ["limitranges", "resourcequotas"]
     verbs: ["list"]
+
 ---
 # Source: kuberight/templates/rbac.yaml
 # The Thanos Querier tenancy port answers for one namespace to whoever may
@@ -169,16 +176,17 @@ metadata:
   name: kuberight-monitoring-view
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.5
+    helm.sh/chart: kuberight-0.1.0-rc.6
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.5"
+    app.kubernetes.io/version: "0.1.0-rc.6"
     app.kubernetes.io/component: server
 rules:
   - apiGroups: ["metrics.k8s.io"]
     resources: ["pods"]
     verbs: ["get"]
+
 ---
 # Source: kuberight/templates/rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -187,11 +195,11 @@ metadata:
   name: kuberight-workloads
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.5
+    helm.sh/chart: kuberight-0.1.0-rc.6
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.5"
+    app.kubernetes.io/version: "0.1.0-rc.6"
     app.kubernetes.io/component: server
 roleRef:
   apiGroup: rbac.authorization.k8s.io
@@ -201,6 +209,7 @@ subjects:
   - kind: ServiceAccount
     name: kuberight
     namespace: kuberight
+
 ---
 # Source: kuberight/templates/rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -209,11 +218,11 @@ metadata:
   name: kuberight-monitoring-view
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.5
+    helm.sh/chart: kuberight-0.1.0-rc.6
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.5"
+    app.kubernetes.io/version: "0.1.0-rc.6"
     app.kubernetes.io/component: server
 roleRef:
   apiGroup: rbac.authorization.k8s.io
@@ -223,6 +232,7 @@ subjects:
   - kind: ServiceAccount
     name: kuberight
     namespace: kuberight
+
 ---
 # Source: kuberight/templates/service.yaml
 apiVersion: v1
@@ -231,11 +241,11 @@ metadata:
   name: kuberight
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.5
+    helm.sh/chart: kuberight-0.1.0-rc.6
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.5"
+    app.kubernetes.io/version: "0.1.0-rc.6"
     app.kubernetes.io/component: server
 spec:
   type: ClusterIP
@@ -248,6 +258,7 @@ spec:
       port: 8080
       targetPort: http
       protocol: TCP
+
 ---
 # Source: kuberight/templates/deployment.yaml
 apiVersion: apps/v1
@@ -256,11 +267,11 @@ metadata:
   name: kuberight
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.5
+    helm.sh/chart: kuberight-0.1.0-rc.6
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.5"
+    app.kubernetes.io/version: "0.1.0-rc.6"
     app.kubernetes.io/component: server
   annotations:
     image.openshift.io/triggers: '[{"fieldPath":"spec.template.spec.containers[?(@.name==\"oauth-proxy\")].image","from":{"kind":"ImageStreamTag","name":"oauth-proxy:v4.4","namespace":"openshift"}}]'
@@ -297,7 +308,7 @@ spec:
         # Generates the proxy's session-cookie secret in memory, so no
         # Secret has to be created by hand.
         - name: proxy-cookie-secret
-          image: "mohankrishna999/kuberight:0.1.0-rc.5"
+          image: "mohankrishna999/kuberight:0.1.0-rc.6"
           imagePullPolicy: IfNotPresent
           args: ["cookie-secret", "/var/run/kuberight-proxy/cookie-secret"]
           securityContext:
@@ -317,7 +328,7 @@ spec:
               mountPath: /var/run/kuberight-proxy
       containers:
         - name: kuberight
-          image: "mohankrishna999/kuberight:0.1.0-rc.5"
+          image: "mohankrishna999/kuberight:0.1.0-rc.6"
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
@@ -463,6 +474,7 @@ spec:
               app.kubernetes.io/component: server
       nodeSelector:
         kubernetes.io/os: linux
+
 ---
 # Source: kuberight/templates/route.yaml
 apiVersion: route.openshift.io/v1
@@ -471,11 +483,11 @@ metadata:
   name: kuberight
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.5
+    helm.sh/chart: kuberight-0.1.0-rc.6
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.5"
+    app.kubernetes.io/version: "0.1.0-rc.6"
     app.kubernetes.io/component: server
 spec:
   to:

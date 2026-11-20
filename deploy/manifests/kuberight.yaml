@@ -4,6 +4,7 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: kuberight
+
 ---
 # Source: kuberight/templates/networkpolicy.yaml
 apiVersion: networking.k8s.io/v1
@@ -12,11 +13,11 @@ metadata:
   name: kuberight
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.5
+    helm.sh/chart: kuberight-0.1.0-rc.6
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.5"
+    app.kubernetes.io/version: "0.1.0-rc.6"
     app.kubernetes.io/component: server
 spec:
   podSelector:
@@ -32,6 +33,7 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
+
 ---
 # Source: kuberight/templates/pdb.yaml
 apiVersion: policy/v1
@@ -40,11 +42,11 @@ metadata:
   name: kuberight
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.5
+    helm.sh/chart: kuberight-0.1.0-rc.6
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.5"
+    app.kubernetes.io/version: "0.1.0-rc.6"
     app.kubernetes.io/component: server
 spec:
   minAvailable: 1
@@ -53,6 +55,7 @@ spec:
       app.kubernetes.io/name: kuberight
       app.kubernetes.io/instance: kuberight
       app.kubernetes.io/component: server
+
 ---
 # Source: kuberight/templates/serviceaccount.yaml
 apiVersion: v1
@@ -61,13 +64,14 @@ metadata:
   name: kuberight
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.5
+    helm.sh/chart: kuberight-0.1.0-rc.6
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.5"
+    app.kubernetes.io/version: "0.1.0-rc.6"
     app.kubernetes.io/component: server
 automountServiceAccountToken: true
+
 ---
 # Source: kuberight/templates/rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -75,11 +79,11 @@ kind: ClusterRole
 metadata:
   name: kuberight-8cde1ab2-auth-reviewer
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.5
+    helm.sh/chart: kuberight-0.1.0-rc.6
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.5"
+    app.kubernetes.io/version: "0.1.0-rc.6"
     app.kubernetes.io/component: server
 rules:
   - apiGroups: ["authentication.k8s.io"]
@@ -89,6 +93,7 @@ rules:
   - apiGroups: ["authorization.k8s.io"]
     resources: ["subjectaccessreviews"]
     verbs: ["create"]
+
 ---
 # Source: kuberight/templates/rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -96,11 +101,11 @@ kind: ClusterRoleBinding
 metadata:
   name: kuberight-8cde1ab2-auth-reviewer
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.5
+    helm.sh/chart: kuberight-0.1.0-rc.6
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.5"
+    app.kubernetes.io/version: "0.1.0-rc.6"
     app.kubernetes.io/component: server
 roleRef:
   apiGroup: rbac.authorization.k8s.io
@@ -110,6 +115,7 @@ subjects:
   - kind: ServiceAccount
     name: kuberight
     namespace: kuberight
+
 ---
 # Source: kuberight/templates/rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -118,11 +124,11 @@ metadata:
   name: kuberight-workloads
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.5
+    helm.sh/chart: kuberight-0.1.0-rc.6
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.5"
+    app.kubernetes.io/version: "0.1.0-rc.6"
     app.kubernetes.io/component: server
 rules:
   # Pod ownerReferences attribute container metrics to exact controllers;
@@ -150,6 +156,7 @@ rules:
   - apiGroups: [""]
     resources: ["limitranges", "resourcequotas"]
     verbs: ["list"]
+
 ---
 # Source: kuberight/templates/rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -158,11 +165,11 @@ metadata:
   name: kuberight-workloads
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.5
+    helm.sh/chart: kuberight-0.1.0-rc.6
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.5"
+    app.kubernetes.io/version: "0.1.0-rc.6"
     app.kubernetes.io/component: server
 roleRef:
   apiGroup: rbac.authorization.k8s.io
@@ -172,6 +179,7 @@ subjects:
   - kind: ServiceAccount
     name: kuberight
     namespace: kuberight
+
 ---
 # Source: kuberight/templates/service.yaml
 apiVersion: v1
@@ -180,11 +188,11 @@ metadata:
   name: kuberight
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.5
+    helm.sh/chart: kuberight-0.1.0-rc.6
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.5"
+    app.kubernetes.io/version: "0.1.0-rc.6"
     app.kubernetes.io/component: server
 spec:
   type: ClusterIP
@@ -197,6 +205,7 @@ spec:
       port: 8080
       targetPort: http
       protocol: TCP
+
 ---
 # Source: kuberight/templates/deployment.yaml
 apiVersion: apps/v1
@@ -205,11 +214,11 @@ metadata:
   name: kuberight
   namespace: kuberight
   labels:
-    helm.sh/chart: kuberight-0.1.0-rc.5
+    helm.sh/chart: kuberight-0.1.0-rc.6
     app.kubernetes.io/name: kuberight
     app.kubernetes.io/instance: kuberight
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/version: "0.1.0-rc.5"
+    app.kubernetes.io/version: "0.1.0-rc.6"
     app.kubernetes.io/component: server
 spec:
   replicas: 1
@@ -242,7 +251,7 @@ spec:
       terminationGracePeriodSeconds: 30
       containers:
         - name: kuberight
-          image: "mohankrishna999/kuberight:0.1.0-rc.5"
+          image: "mohankrishna999/kuberight:0.1.0-rc.6"
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
