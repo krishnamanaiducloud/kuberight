@@ -3,8 +3,8 @@ module github.com/kuberight/kuberight
 go 1.27.4
 
 require (
-	github.com/jackc/pgx/v5 v5.12.0
-	go.yaml.in/yaml/v3 v3.0.4
+	github.com/jackc/pgx/v5 v5.13.0
+	go.yaml.in/yaml/v3 v3.0.6
 	k8s.io/api v0.37.2
 	k8s.io/apimachinery v0.37.2
 	k8s.io/client-go v0.37.2
