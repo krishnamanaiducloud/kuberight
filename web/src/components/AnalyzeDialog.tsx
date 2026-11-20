@@ -102,11 +102,11 @@ export function AnalyzeDialog({ open, onClose, namespace, workload }: AnalyzeDia
       <DialogTitle>Analyze {scope}</DialogTitle>
       <DialogContent dividers>
         {targets.length === 0 ? (
-          <Stack gap={2}>
+          <Stack sx={{ gap: 2 }}>
             <Typography color="text.secondary">
               Generates and stores a recommendation for every container in {scope}, using live requests and Prometheus history. Each recommendation then waits for review; nothing is applied.
             </Typography>
-            <Stack direction={{ xs: 'column', sm: 'row' }} gap={1.5}>
+            <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ gap: 1.5 }}>
               <ToggleButtonGroup exclusive size="small" value={profile} onChange={(_, next) => next && setProfile(next)} aria-label="Profile">
                 {['conservative', 'balanced', 'aggressive'].map((name) => <ToggleButton key={name} value={name} sx={{ textTransform: 'capitalize' }}>{name}</ToggleButton>)}
               </ToggleButtonGroup>
@@ -120,10 +120,10 @@ export function AnalyzeDialog({ open, onClose, namespace, workload }: AnalyzeDia
             {loadError && <Alert severity="error">{loadError}</Alert>}
           </Stack>
         ) : (
-          <Stack gap={1.5}>
-            <Stack direction="row" justifyContent="space-between" alignItems="center">
+          <Stack sx={{ gap: 1.5 }}>
+            <Stack direction="row" sx={{ justifyContent: 'space-between', alignItems: 'center' }}>
               <Typography variant="body2">{finished} of {targets.length} containers analyzed</Typography>
-              <Stack direction="row" gap={1}>
+              <Stack direction="row" sx={{ gap: 1 }}>
                 <Chip size="small" color="success" variant="outlined" label={`${created} created`} />
                 {failed > 0 && <Chip size="small" color="warning" variant="outlined" label={`${failed} skipped`} />}
               </Stack>

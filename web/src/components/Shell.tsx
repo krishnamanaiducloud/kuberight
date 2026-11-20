@@ -62,7 +62,7 @@ export function Shell({ children }: { children: ReactNode }) {
               sx={{ borderRadius: 2, mb: .25, minHeight: 42, '&.Mui-selected': { bgcolor: 'rgba(102,217,196,.14)', color: 'primary.light' } }}
             >
               <ListItemIcon sx={{ minWidth: 38, color: active ? 'primary.main' : 'text.secondary' }}>{item.icon}</ListItemIcon>
-              <ListItemText primary={item.label} primaryTypographyProps={{ fontSize: 13.5, fontWeight: active ? 750 : 550 }} />
+              <ListItemText primary={item.label} slotProps={{ primary: { sx: { fontSize: 13.5, fontWeight: active ? 750 : 550 } } }} />
             </ListItemButton>
           )
         })}

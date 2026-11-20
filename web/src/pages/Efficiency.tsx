@@ -27,7 +27,7 @@ function StatTile({ label, value, note, warning }: { label: string; value: strin
     <Card>
       <CardContent>
         <Typography color="text.secondary" variant="body2">{label}</Typography>
-        <Stack direction="row" alignItems="center" gap={1} sx={{ mt: 1 }}>
+        <Stack direction="row" sx={{ alignItems: 'center', gap: 1, mt: 1 }}>
           {warning && <WarningAmberOutlined color="warning" aria-hidden />}
           <Typography variant="h4" component="p" sx={{ fontWeight: 750 }}>{value}</Typography>
         </Stack>
@@ -51,7 +51,7 @@ export function Efficiency({ title, description }: { title: string; description:
   return (
     <Box sx={{ p: { xs: 2, md: 4 }, maxWidth: 1500, mx: 'auto' }}>
       <PageHeader eyebrow="FLEET EFFICIENCY" title={title} description={description}>
-        <Stack direction="row" gap={1.5} alignItems="center" sx={{ mt: 2 }}>
+        <Stack direction="row" sx={{ gap: 1.5, alignItems: 'center', mt: 2 }}>
           <TextField select size="small" label="Usage window" value={usageWindow} onChange={(event) => setUsageWindow(event.target.value)} sx={{ minWidth: 160 }}>
             {windows.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}
           </TextField>

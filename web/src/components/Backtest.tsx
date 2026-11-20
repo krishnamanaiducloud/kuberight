@@ -66,7 +66,7 @@ export function TrendChips({ trends }: { trends?: Trends }) {
   ].filter(Boolean) as Array<{ label: string; warn: boolean }>
   if (chips.length === 0) return null
   return (
-    <Stack direction="row" gap={1} flexWrap="wrap">
+    <Stack direction="row" sx={{ gap: 1, flexWrap: 'wrap' }}>
       {chips.map((chip) => <Chip key={chip.label} size="small" variant="outlined" color={chip.warn ? 'warning' : 'default'} label={`Trend: ${chip.label}`} />)}
     </Stack>
   )
@@ -94,7 +94,7 @@ export function CpuBehaviorChips({ throttling, throttlingPeak, pinned, spikes, c
   const spike = spikes ? spikeLabel(spikes) : undefined
   if (throttling === undefined && throttlingPeak === undefined && !hasCpuPressure && memoryPressurePeak === undefined && !pinned && !spike) return null
   return (
-    <Stack direction="row" gap={1} flexWrap="wrap">
+    <Stack direction="row" sx={{ gap: 1, flexWrap: 'wrap' }}>
       {(throttling !== undefined || throttlingPeak !== undefined) && (
         <Tooltip title="Share of CFS scheduling periods in which the container was throttled: across the window, and at the 95th percentile of intervals">
           <Chip size="small" variant="outlined" color={throttled ? 'warning' : 'success'} label={`CPU throttled ${percent(throttling ?? 0)} · peak ${percent(throttlingPeak ?? 0)}`} />

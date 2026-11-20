@@ -42,13 +42,13 @@ function ReviewPanel({ record }: { record: RecommendationRecord }) {
   const error = mutation.error instanceof ApiError ? mutation.error.message : mutation.error ? 'The review could not be saved.' : undefined
   const errorSeverity = mutation.error instanceof ApiError && [409, 503].includes(mutation.error.status) ? 'warning' : 'error'
   return (
-    <Stack gap={1.5}>
+    <Stack sx={{ gap: 1.5 }}>
       <Typography variant="body2" color="text.secondary">Approval records a decision for your change process. KubeRight never applies the change.</Typography>
-      <TextField size="small" multiline minRows={2} label="Comment" helperText="Required when rejecting" value={comment} onChange={(event) => setComment(event.target.value)} inputProps={{ maxLength: 1024 }} />
+      <TextField size="small" multiline minRows={2} label="Comment" helperText="Required when rejecting" value={comment} onChange={(event) => setComment(event.target.value)} slotProps={{ htmlInput: { maxLength: 1024 } }} />
       {!evidence.canApprove && <Alert severity="error">Approval is disabled: {evidence.detail}</Alert>}
       {evidence.canApprove && verdictBlocks && <Alert severity="warning">Approval is disabled: the assessment status is {record.assessment!.status.replace('_', ' ')}. {record.assessment!.statusReasons.join(' ')}</Alert>}
       {error && <Alert severity={errorSeverity}>{error}</Alert>}
-      <Stack direction="row" gap={1}>
+      <Stack direction="row" sx={{ gap: 1 }}>
         <Button variant="contained" color="success" disabled={mutation.isPending || !evidence.canApprove || verdictBlocks} onClick={() => mutation.mutate('approve')}>Approve</Button>
         <Button variant="outlined" color="error" disabled={mutation.isPending || comment.trim() === ''} onClick={() => mutation.mutate('reject')}>Reject</Button>
         {mutation.isPending && <CircularProgress size={22} sx={{ alignSelf: 'center' }} />}
@@ -65,7 +65,7 @@ function ApplyCommand({ record }: { record: RecommendationRecord }) {
   const content = format === 'kubectl' ? command : yamlPatch([record])
   return (
     <Box>
-      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 0.5 }}>
+      <Stack direction="row" sx={{ alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
         <Typography variant="subtitle2">Apply through your change process</Typography>
         <ToggleButtonGroup size="small" exclusive value={format} onChange={(_, next) => { if (next) { setFormat(next); setCopied(false) } }} aria-label="Change format">
           <ToggleButton value="kubectl">kubectl</ToggleButton>
@@ -92,8 +92,8 @@ export function RecommendationDrawer({ id, onClose }: { id: string | undefined; 
   })
   const record = query.data
   return (
-    <Drawer anchor="right" open={Boolean(id)} onClose={onClose} PaperProps={{ 'aria-labelledby': 'recommendation-title', sx: { width: { xs: '100%', sm: 600 }, bgcolor: 'background.paper' } }}>
-      <Stack direction="row" alignItems="center" sx={{ p: 2, pb: 1 }}>
+    <Drawer anchor="right" open={Boolean(id)} onClose={onClose} slotProps={{ paper: { 'aria-labelledby': 'recommendation-title', sx: { width: { xs: '100%', sm: 600 }, bgcolor: 'background.paper' } } }}>
+      <Stack direction="row" sx={{ alignItems: 'center', p: 2, pb: 1 }}>
         <Typography id="recommendation-title" variant="h6" sx={{ flexGrow: 1 }}>Recommendation decision</Typography>
         <IconButton aria-label="Close recommendation" onClick={onClose}><CloseIcon /></IconButton>
       </Stack>
@@ -102,11 +102,11 @@ export function RecommendationDrawer({ id, onClose }: { id: string | undefined; 
         {query.isLoading && <CircularProgress />}
         {query.error && <Alert severity="error">{query.error instanceof Error ? query.error.message : 'The recommendation could not be loaded.'}</Alert>}
         {record && (
-          <Stack gap={2.5}>
+          <Stack sx={{ gap: 2.5 }}>
             <Box>
               <Typography variant="h5" sx={{ wordBreak: 'break-word' }}>{record.workload} / {record.container}</Typography>
               <Typography color="text.secondary">{[record.cluster, record.namespace, record.kind].filter(Boolean).join(' · ')}{record.replicas ? ` · ${record.replicas} replica${record.replicas === 1 ? '' : 's'}` : ''}</Typography>
-              <Stack direction="row" gap={1} flexWrap="wrap" sx={{ mt: 1.5 }}>
+              <Stack direction="row" sx={{ gap: 1, flexWrap: 'wrap', mt: 1.5 }}>
                 {record.assessment && <AssessmentStatusChip status={record.assessment.status} />}
                 <Chip size="small" label={`Review: ${record.reviewStatus}`} color={reviewColor[record.reviewStatus]} variant="outlined" />
                 <Chip size="small" label={`Risk: ${record.risk}`} color={riskColor[record.risk]} variant="outlined" />
@@ -141,14 +141,14 @@ export function RecommendationDrawer({ id, onClose }: { id: string | undefined; 
               <Typography variant="caption" color="text.secondary">
                 {record.dataQuality.cpuSampleCount} CPU and {record.dataQuality.memorySampleCount} memory samples; {record.dataQuality.minimumRequired} required for reductions.
               </Typography>
-              <Stack direction="row" gap={1} flexWrap="wrap" sx={{ mt: 1 }}>
+              <Stack direction="row" sx={{ gap: 1, flexWrap: 'wrap', mt: 1 }}>
                 <Chip size="small" color={record.dataQuality.sufficient ? 'success' : 'warning'} variant="outlined" label={record.dataQuality.sufficient ? 'Sample threshold met' : 'Sample threshold not met'} />
                 <Chip size="small" variant="outlined" label={record.source === 'prometheus' ? 'Metrics: Prometheus' : 'Metrics: caller supplied'} />
               </Stack>
             </Box>
 
             {((record.dataQuality.issues ?? []).length > 0 || (record.warnings ?? []).length > 0) && (
-              <Stack gap={1}>
+              <Stack sx={{ gap: 1 }}>
                 {(record.dataQuality.issues ?? []).map((issue) => <Alert key={`q-${issue}`} severity="warning" variant="outlined">{issue}</Alert>)}
                 {(record.warnings ?? []).map((warning) => <Alert key={`w-${warning}`} severity="info" variant="outlined">{warning}</Alert>)}
               </Stack>
@@ -165,7 +165,7 @@ export function RecommendationDrawer({ id, onClose }: { id: string | undefined; 
 
             <Divider />
             {record.reviewStatus === 'pending' ? <ReviewPanel record={record} /> : (
-              <Stack gap={1.5}>
+              <Stack sx={{ gap: 1.5 }}>
                 <Typography variant="body2">
                   {record.reviewStatus === 'approved' ? 'Approved' : 'Rejected'} by <strong>{record.reviewedBy}</strong>{record.reviewedAt ? ` on ${formatDate(record.reviewedAt)}` : ''}.
                 </Typography>
@@ -191,8 +191,8 @@ function PullRequestAction({ record }: { record: RecommendationRecord }) {
   })
   const result = mutation.data
   return (
-    <Stack gap={1}>
-      <Stack direction="row" gap={1} alignItems="center">
+    <Stack sx={{ gap: 1 }}>
+      <Stack direction="row" sx={{ gap: 1, alignItems: 'center' }}>
         <Button variant="outlined" disabled={mutation.isPending || Boolean(result)} onClick={() => mutation.mutate()}
           startIcon={mutation.isPending ? <CircularProgress size={16} /> : undefined}>
           Open pull request

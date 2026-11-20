@@ -6,7 +6,7 @@ import {
   TableContainer, TableHead, TableRow, TextField, Typography,
 } from '@mui/material'
 import AutoFixHighOutlined from '@mui/icons-material/AutoFixHighOutlined'
-import ErrorOutline from '@mui/icons-material/ErrorOutline'
+import ErrorOutline from '@mui/icons-material/ErrorOutlineOutlined'
 import InfoOutlined from '@mui/icons-material/InfoOutlined'
 import WarningAmberOutlined from '@mui/icons-material/WarningAmberOutlined'
 import { api, type ApiStatus, type HotspotRow, type Subject } from '../api'
@@ -80,7 +80,7 @@ export function Hotspots({ title, description }: { title: string; description: s
   return (
     <Box sx={{ p: { xs: 2, md: 4 }, maxWidth: 1500, mx: 'auto' }}>
       <PageHeader eyebrow="CPU HEALTH" title={title} description={description}>
-        <Stack direction={{ xs: 'column', sm: 'row' }} gap={1.5} sx={{ mt: 2 }}>
+        <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ gap: 1.5, mt: 2 }}>
           <NamespaceSelect
             value={namespace}
             onChange={(selectedNamespace) => updateScope(selectedNamespace)}
@@ -133,7 +133,7 @@ export function Hotspots({ title, description }: { title: string; description: s
                   {data.items.map((row) => (
                     <TableRow key={`${row.namespace}/${row.kind}/${row.workload}/${row.container}`} hover>
                       <TableCell>
-                        <Stack direction="row" gap={0.75} alignItems="center">{severity[row.severity].icon}<Typography variant="body2">{severity[row.severity].label}</Typography></Stack>
+                        <Stack direction="row" sx={{ gap: 0.75, alignItems: 'center' }}>{severity[row.severity].icon}<Typography variant="body2">{severity[row.severity].label}</Typography></Stack>
                       </TableCell>
                       <TableCell>
                         <Link component={RouterLink} to={`/workloads/${encodeURIComponent(row.namespace)}/${encodeURIComponent(row.kind)}/${encodeURIComponent(row.workload)}`}>{row.workload}</Link>

@@ -63,9 +63,9 @@ function PolicyEditor({ record, profiles, onClose }: { record?: PolicyRecord; pr
     <Dialog open onClose={save.isPending ? undefined : onClose} fullWidth maxWidth="md">
       <DialogTitle>{record ? `Edit ${record.name}` : 'New policy'}</DialogTitle>
       <DialogContent>
-        <Stack gap={2} sx={{ mt: 1 }}>
+        <Stack sx={{ gap: 2, mt: 1 }}>
           {save.error && <RequestAlert error={save.error} resource="the policy" />}
-          <Stack direction={{ xs: 'column', sm: 'row' }} gap={1.5}>
+          <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ gap: 1.5 }}>
             <TextField label="Name" size="small" fullWidth required value={draft.name} onChange={(event) => update({ name: event.target.value })} />
             <TextField
               label="Priority" size="small" type="number" sx={{ minWidth: 140 }} value={draft.priority}
@@ -74,14 +74,14 @@ function PolicyEditor({ record, profiles, onClose }: { record?: PolicyRecord; pr
             />
           </Stack>
           <TextField label="Description" size="small" fullWidth value={draft.description} onChange={(event) => update({ description: event.target.value })} />
-          <Stack direction={{ xs: 'column', sm: 'row' }} gap={1.5}>
+          <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ gap: 1.5 }}>
             <TextField select label="Applies to" size="small" fullWidth value={level} onChange={(event) => setDraft((current) => ({ ...current, scope: { level: event.target.value as PolicyLevel, cluster: current.scope.cluster } }))}>
               {levels.map((item) => <MenuItem key={item.value} value={item.value}>{item.label}</MenuItem>)}
             </TextField>
             <TextField label="Cluster" size="small" fullWidth value={draft.scope.cluster ?? ''} onChange={(event) => updateScope({ cluster: event.target.value || undefined })} helperText="Empty applies to every cluster" />
           </Stack>
           {level !== 'global' && (
-            <Stack direction={{ xs: 'column', sm: 'row' }} gap={1.5}>
+            <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ gap: 1.5 }}>
               <NamespaceSelect fullWidth required value={draft.scope.namespace ?? ''} onChange={(namespace) => updateScope({ namespace })} />
               {(level === 'workload' || level === 'container') && (
                 <>
@@ -170,7 +170,7 @@ export function Policies({ title, description }: { title: string; description: s
       </PageHeader>
       {query.isFetching && <LinearProgress sx={{ mb: 2 }} aria-label="Loading policies" />}
       {query.error && <Box sx={{ mb: 2 }}><RequestAlert error={query.error} resource="policies" onRetry={() => void query.refetch()} /></Box>}
-      <Stack gap={3}>
+      <Stack sx={{ gap: 3 }}>
         <Card>
           <CardContent>
             <Typography variant="h6" component="h2" sx={{ mb: 1 }}>Policies</Typography>
@@ -223,7 +223,7 @@ export function Policies({ title, description }: { title: string; description: s
         <Card>
           <CardContent>
             <Typography variant="h6" component="h2" sx={{ mb: 1 }}>Built-in profiles</Typography>
-            <Stack gap={1}>
+            <Stack sx={{ gap: 1 }}>
               {profiles.map((profile) => (
                 <Typography key={profile.name} variant="body2"><strong>{profile.name}</strong>{profile.default ? ' (default)' : ''}: {profile.description}</Typography>
               ))}

@@ -14,7 +14,7 @@ export function Utilization({ title, description }: { title: string; description
       <PageHeader eyebrow="PROMETHEUS USAGE" title={title} description={description} />
       <Card sx={{ mb: 2 }}>
         <CardContent>
-          <Stack direction={{ xs: 'column', lg: 'row' }} gap={1.5}>
+          <Stack direction={{ xs: 'column', lg: 'row' }} sx={{ gap: 1.5 }}>
             <Box sx={{ flex: 1, minWidth: 0 }}><WorkloadPicker value={subject} onChange={setSubject} /></Box>
             <TextField select size="small" label="Window" value={usageWindow} onChange={(event) => setUsageWindow(event.target.value)} sx={{ minWidth: 140 }}>
               {usageWindows.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}

@@ -137,13 +137,13 @@ export function DataPage({ title, description, endpoint, columnKeys, actions, ch
 
   return (
     <Box sx={{ p: { xs: 2, md: 4 }, maxWidth: 1500, mx: 'auto' }}>
-      <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ sm: 'flex-end' }} gap={2} sx={{ mb: 3 }}>
+      <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ justifyContent: 'space-between', alignItems: { sm: 'flex-end' }, gap: 2,  mb: 3 }}>
         <Box>
           <Typography variant="overline" color="primary.main">LIVE CONTROL PLANE</Typography>
           <Typography variant="h3" component="h1" sx={{ fontSize: { xs: '2.125rem', sm: '3rem' }, overflowWrap: 'anywhere' }}>{title}</Typography>
           <Typography color="text.secondary" sx={{ mt: 1, maxWidth: 760 }}>{description}</Typography>
         </Box>
-        <Stack direction="row" alignItems="center" gap={1} flexWrap="wrap">
+        <Stack direction="row" sx={{ alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
           {data?.status?.asOf && <Chip size="small" label={`Fresh ${new Date(data.status.asOf).toLocaleString()}`} variant="outlined" />}
           {data?.status?.source && <Chip size="small" label={`Source: ${data.status.source}`} />}
           <Button startIcon={<RefreshIcon />} onClick={() => void query.refetch()} disabled={!scopeReady || query.isFetching}>Refresh</Button>
@@ -154,7 +154,7 @@ export function DataPage({ title, description, endpoint, columnKeys, actions, ch
       {namespaceScope && (
         <Card sx={{ mb: 2, bgcolor: 'rgba(102,217,196,.035)' }}>
           <CardContent sx={{ '&:last-child': { pb: 2 } }}>
-            <Stack direction={{ xs: 'column', md: 'row' }} gap={1.5} alignItems={{ md: 'center' }}>
+            <Stack direction={{ xs: 'column', md: 'row' }} sx={{ gap: 1.5, alignItems: { md: 'center' } }}>
               <Box sx={{ flex: 1 }}>
                 <Typography variant="subtitle2">Kubernetes namespace scope</Typography>
                 <Typography variant="body2" color="text.secondary">Start with one namespace. Fleet-wide listing is always an explicit choice.</Typography>
@@ -185,14 +185,14 @@ export function DataPage({ title, description, endpoint, columnKeys, actions, ch
         </Alert>
       ) : <Card>
         <CardContent>
-          <Stack direction={{ xs: 'column', md: 'row' }} gap={1.5} sx={{ mb: 2 }}>
+          <Stack direction={{ xs: 'column', md: 'row' }} sx={{ gap: 1.5, mb: 2 }}>
             <TextField
               size="small"
               label="Search records"
               value={search}
               onChange={(event) => updateSearchParam('q', event.target.value)}
               sx={{ minWidth: { md: 320 } }}
-              InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon fontSize="small" /></InputAdornment> }}
+              slotProps={{ input: { startAdornment: <InputAdornment position="start"><SearchIcon fontSize="small" /></InputAdornment> } }}
             />
             {!hideSort && <Select size="small" value={sort} onChange={(event) => updateSearchParam('sort', event.target.value)} inputProps={{ 'aria-label': 'Sort records' }}>
               {recommendationPage ? <MenuItem value="createdAt">Created</MenuItem> : <MenuItem value="name">Name</MenuItem>}
@@ -206,7 +206,7 @@ export function DataPage({ title, description, endpoint, columnKeys, actions, ch
           </Stack>
 
           {query.isLoading ? (
-            <Stack gap={1} aria-label="Loading data"><Skeleton height={48} /><Skeleton height={48} /><Skeleton height={48} /></Stack>
+            <Stack sx={{ gap: 1 }} aria-label="Loading data"><Skeleton height={48} /><Skeleton height={48} /><Skeleton height={48} /></Stack>
           ) : items.length === 0 && !query.error ? (
             <Box sx={{ textAlign: 'center', py: 8 }}>
               <CircularProgress size={28} variant="determinate" value={100} aria-hidden="true" aria-label={undefined} sx={{ color: 'text.secondary', mb: 2 }} />
@@ -229,7 +229,7 @@ export function DataPage({ title, description, endpoint, columnKeys, actions, ch
                     <TableCell padding="checkbox">
                       <Checkbox
                         size="small"
-                        inputProps={{ 'aria-label': 'Select all on this page' }}
+                        slotProps={{ input: { 'aria-label': 'Select all on this page' } }}
                         checked={selectableItems.length > 0 && selectableItems.every((item) => selection.selected.has(String(item.id)))}
                         indeterminate={selectableItems.some((item) => selection.selected.has(String(item.id))) && !selectableItems.every((item) => selection.selected.has(String(item.id)))}
                         disabled={selectableItems.length === 0}
@@ -257,7 +257,7 @@ export function DataPage({ title, description, endpoint, columnKeys, actions, ch
                         <TableCell padding="checkbox" onClick={(event) => event.stopPropagation()}>
                           <Checkbox
                             size="small"
-                            inputProps={{ 'aria-label': `Select ${String(item.workload ?? item.name ?? item.id)}` }}
+                            slotProps={{ input: { 'aria-label': `Select ${String(item.workload ?? item.name ?? item.id)}` } }}
                             checked={selection.selected.has(String(item.id))}
                             disabled={!(selection.isSelectable?.(item) ?? true)}
                             onChange={(event) => {

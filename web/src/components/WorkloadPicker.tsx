@@ -35,12 +35,12 @@ export function WorkloadPicker({ value, onChange }: WorkloadPickerProps) {
   }
 
   return (
-    <Stack gap={1.5}>
+    <Stack sx={{ gap: 1.5 }}>
       {query.error && <RequestAlert error={query.error} resource="workloads" namespaceScoped onRetry={() => void query.refetch()} />}
       {query.data?.status?.available === false && (
         <Alert severity="info">{query.data.status.reason ?? 'Workload inventory is unavailable.'}</Alert>
       )}
-      <Stack direction={{ xs: 'column', md: 'row' }} gap={1.5}>
+      <Stack direction={{ xs: 'column', md: 'row' }} sx={{ gap: 1.5 }}>
         <NamespaceSelect
           value={namespace}
           onChange={(nextNamespace) => {

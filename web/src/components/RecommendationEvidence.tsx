@@ -73,7 +73,7 @@ export function RecommendationEvidence({ record, source, compact = false, now }:
         {record.createdAt && <Fact label="Generated">{formatDate(record.createdAt)}</Fact>}
       </Box>
       {!compact && provenance && (
-        <Stack direction="row" gap={0.75} flexWrap="wrap" sx={{ mt: 1.25 }} aria-label="Technical provenance">
+        <Stack direction="row" sx={{ gap: 0.75, flexWrap: 'wrap', mt: 1.25 }} aria-label="Technical provenance">
           {provenance.workloadUid && <Chip size="small" variant="outlined" label={`UID ${provenance.workloadUid}`} sx={{ maxWidth: '100%' }} />}
           {provenance.workloadResourceVersion && <Chip size="small" variant="outlined" label={`Resource version ${provenance.workloadResourceVersion}`} />}
           {provenance.sourceSpecFingerprint && <Chip size="small" variant="outlined" label={`Spec ${provenance.sourceSpecFingerprint.slice(0, 12)}…`} />}
@@ -82,7 +82,7 @@ export function RecommendationEvidence({ record, source, compact = false, now }:
         </Stack>
       )}
       {!compact && replicas && (
-        <Stack direction="row" gap={0.75} flexWrap="wrap" sx={{ mt: 1.25 }} aria-label="Replica completeness">
+        <Stack direction="row" sx={{ gap: 0.75, flexWrap: 'wrap', mt: 1.25 }} aria-label="Replica completeness">
           <Chip size="small" variant="outlined" color={replicas.complete ? 'success' : 'error'} label={replicas.complete ? 'All expected replicas covered' : `${replicas.missingReplicas} replica${replicas.missingReplicas === 1 ? '' : 's'} missing`} />
           <Tooltip title="Share of expected replica-time, summed over every step, with samples">
             <Chip size="small" variant="outlined" label={`CPU replica-time ${Math.floor(replicas.cpuReplicaCoverage * 100)}%`} />

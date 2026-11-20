@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link as RouterLink } from 'react-router-dom'
 import { Alert, Box, Button, Card, CardActionArea, CardContent, Chip, LinearProgress, Skeleton, Stack, Typography } from '@mui/material'
-import CheckCircleOutline from '@mui/icons-material/CheckCircleOutline'
+import CheckCircleOutline from '@mui/icons-material/CheckCircleOutlineOutlined'
 import ShieldOutlined from '@mui/icons-material/ShieldOutlined'
 import SavingsOutlined from '@mui/icons-material/SavingsOutlined'
 import LanOutlined from '@mui/icons-material/LanOutlined'
@@ -80,7 +80,7 @@ export function Overview() {
         <Typography variant="overline" color="primary.main">FLEET INTELLIGENCE</Typography>
         <Typography variant="h2" component="h1" sx={{ maxWidth: 820 }}>Rightsize with evidence,<br />not instinct.</Typography>
         <Typography color="text.secondary" sx={{ mt: 1.5, maxWidth: 700 }}>KubeRight separates observed signals, forecasts, and estimated savings so platform teams can make controlled changes with a clear audit trail.</Typography>
-        <Stack direction={{ xs: 'column', sm: 'row' }} gap={1} sx={{ mt: 2.5 }} alignItems={{ sm: 'center' }}>
+        <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ gap: 1, alignItems: { sm: 'center' },  mt: 2.5 }}>
           <Button component={RouterLink} to="/workloads" variant="contained">Choose a workload</Button>
           <Button component={RouterLink} to="/approvals" variant="outlined">Review decision queue</Button>
           {value?.generatedAt && <Typography variant="caption" color="text.secondary" sx={{ ml: { sm: 1 } }}>Control-plane snapshot {new Date(value.generatedAt).toLocaleString()}</Typography>}
@@ -93,7 +93,7 @@ export function Overview() {
           <Card key={card.key}>
             <CardActionArea component={RouterLink} to={card.path} sx={{ height: '100%' }}>
               <CardContent>
-                <Stack direction="row" justifyContent="space-between" alignItems="center"><Typography color="text.secondary">{card.label}</Typography><Box color="primary.main">{card.icon}</Box></Stack>
+                <Stack direction="row" sx={{ justifyContent: 'space-between', alignItems: 'center' }}><Typography color="text.secondary">{card.label}</Typography><Box color="primary.main">{card.icon}</Box></Stack>
                 {query.isLoading ? <Skeleton width="45%" height={60} /> : <Typography variant="h3" sx={{ mt: 2 }}>{typeof metricValue(card.key) === 'number' ? metricValue(card.key) : '—'}</Typography>}
                 <Typography variant="caption" color="text.secondary">Confirmed by the control plane · open</Typography>
               </CardContent>
@@ -102,7 +102,7 @@ export function Overview() {
         ))}
         <Card>
           <CardContent>
-            <Stack direction="row" justifyContent="space-between"><Typography color="text.secondary">Estimated monthly savings</Typography><SavingsOutlined color="secondary" /></Stack>
+            <Stack direction="row" sx={{ justifyContent: 'space-between' }}><Typography color="text.secondary">Estimated monthly savings</Typography><SavingsOutlined color="secondary" /></Stack>
             {query.isLoading ? <Skeleton width="60%" height={60} /> : <Typography variant="h3" sx={{ mt: 2 }}>{typeof value?.estimatedMonthlySavings === 'number' ? new Intl.NumberFormat(undefined, { style: 'currency', currency: value.currency ?? 'USD', maximumFractionDigits: 0 }).format(value.estimatedMonthlySavings) : '—'}</Typography>}
             <Typography variant="caption" color="text.secondary">Estimate only; not realized billing savings</Typography>
           </CardContent>
@@ -129,9 +129,9 @@ export function Overview() {
       <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: '1.35fr .65fr' }, gap: 2, mt: 2 }}>
         <Card>
           <CardContent>
-            <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 2 }}><Typography variant="h6">Dependency posture</Typography>{value?.generatedAt && <Typography variant="caption" color="text.secondary">As of {new Date(value.generatedAt).toLocaleString()}</Typography>}</Stack>
+            <Stack direction="row" sx={{ justifyContent: 'space-between', alignItems: 'center', mb: 2 }}><Typography variant="h6">Dependency posture</Typography>{value?.generatedAt && <Typography variant="caption" color="text.secondary">As of {new Date(value.generatedAt).toLocaleString()}</Typography>}</Stack>
             {query.isLoading ? <LinearProgress /> : !value?.dependencies?.length ? <Typography color="text.secondary">No dependency status has been reported.</Typography> : value.dependencies.map((dependency) => (
-              <Stack key={dependency.name} direction="row" justifyContent="space-between" alignItems="center" gap={1.5} sx={{ py: 1.25, borderBottom: '1px solid', borderColor: 'divider' }}>
+              <Stack key={dependency.name} direction="row" sx={{ justifyContent: 'space-between', alignItems: 'center', gap: 1.5, py: 1.25, borderBottom: '1px solid', borderColor: 'divider' }}>
                 <Box sx={{ minWidth: 0 }}><Typography sx={{ fontWeight: 700 }}>{dependency.name}</Typography><Typography variant="caption" color="text.secondary" sx={{ overflowWrap: 'anywhere' }}>{dependency.detail ?? 'No detail supplied'}</Typography></Box>
                 <Chip size="small" label={dependency.healthy ? 'Healthy' : dependency.configured === false ? 'Not configured' : 'Unavailable'} color={dependency.healthy ? 'success' : dependency.configured === false ? 'default' : 'warning'} variant="outlined" sx={{ flexShrink: 0 }} />
               </Stack>

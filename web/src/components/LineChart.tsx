@@ -131,15 +131,15 @@ export function LineChart({ title, series, band, references = [], format, height
   return (
     <Box>
       {series.length >= 2 && (
-        <Stack direction="row" gap={2} sx={{ mb: 1 }} aria-label={`${title} legend`}>
+        <Stack direction="row" sx={{ gap: 2, mb: 1 }} aria-label={`${title} legend`}>
           {series.map((item) => (
-            <Stack key={item.name} direction="row" alignItems="center" gap={0.75}>
+            <Stack key={item.name} direction="row" sx={{ alignItems: 'center', gap: 0.75 }}>
               <Box sx={{ width: 14, height: 3, borderRadius: 2, bgcolor: item.color }} />
               <Typography variant="caption" color="text.secondary">{item.name}</Typography>
             </Stack>
           ))}
           {band && (
-            <Stack direction="row" alignItems="center" gap={0.75}>
+            <Stack direction="row" sx={{ alignItems: 'center', gap: 0.75 }}>
               <Box sx={{ width: 14, height: 10, borderRadius: 0.5, bgcolor: band.color, opacity: 0.25 }} />
               <Typography variant="caption" color="text.secondary">Confidence interval</Typography>
             </Stack>
@@ -204,7 +204,7 @@ export function LineChart({ title, series, band, references = [], format, height
           <Box role="status" sx={{ position: 'absolute', top: 8, left: tooltipLeft, width: 220, p: 1.25, borderRadius: 1.5, bgcolor: '#091621', border: '1px solid', borderColor: 'divider', pointerEvents: 'none' }}>
             <Typography variant="caption" color="text.secondary">{new Date(activeTime).toLocaleString()}</Typography>
             {readout.map((item) => (
-              <Stack key={item.name} direction="row" alignItems="center" gap={1}>
+              <Stack key={item.name} direction="row" sx={{ alignItems: 'center', gap: 1 }}>
                 <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: item.color, flexShrink: 0 }} />
                 <Typography sx={{ fontWeight: 800, color: textPrimary }}>{format(item.value)}</Typography>
                 <Typography variant="caption" color="text.secondary" noWrap>{item.name}</Typography>

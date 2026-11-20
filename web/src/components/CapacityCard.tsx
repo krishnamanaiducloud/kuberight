@@ -115,11 +115,11 @@ export function CapacityCard() {
   return (
     <Card sx={{ mb: 2 }}>
       <CardContent>
-        <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" gap={2}>
+        <Stack direction={{ xs: 'column', md: 'row' }} sx={{ justifyContent: 'space-between', gap: 2 }}>
           <Box>
             <Typography variant="h6">Node impact</Typography>
             <Typography variant="body2" color="text.secondary">Nodes needed to schedule every pod by its requests, now and with the newest recommendations applied.</Typography>
-            <Stack direction="row" alignItems="center" gap={2} sx={{ mt: 2 }}>
+            <Stack direction="row" sx={{ alignItems: 'center', gap: 2, mt: 2 }}>
               <Box>
                 <Typography variant="caption" color="text.secondary">Now</Typography>
                 <Typography variant="h3" component="p">{data.current?.nodesNeeded}</Typography>
@@ -149,7 +149,7 @@ export function CapacityCard() {
             )}
           </Box>
           <Box sx={{ maxWidth: { md: 520 } }}>
-            <Stack direction="row" gap={1} flexWrap="wrap" sx={{ mb: 1 }}>
+            <Stack direction="row" sx={{ gap: 1, flexWrap: 'wrap', mb: 1 }}>
               {autoscaling?.karpenter && <Chip size="small" variant="outlined" color="success" label="Karpenter detected" />}
               {autoscaling?.clusterAutoscaler && <Chip size="small" variant="outlined" color="success" label="Cluster Autoscaler detected" />}
               {autoscaling?.nodePools.map((pool) => (

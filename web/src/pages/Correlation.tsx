@@ -2,7 +2,7 @@ import { useMemo, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
 import { Alert, AlertTitle, Box, Card, CardContent, Chip, LinearProgress, MenuItem, Stack, Table, TableBody, TableCell, TableHead, TableRow, TextField, Tooltip, Typography } from '@mui/material'
-import ErrorOutline from '@mui/icons-material/ErrorOutline'
+import ErrorOutline from '@mui/icons-material/ErrorOutlineOutlined'
 import InfoOutlined from '@mui/icons-material/InfoOutlined'
 import WarningAmberOutlined from '@mui/icons-material/WarningAmberOutlined'
 import { api, ApiError, type CorrelationEvent, type CorrelationPair, type CorrelationResponse, type Subject, type UsageSeries } from '../api'
@@ -95,7 +95,7 @@ export function Correlation({ title, description }: { title: string; description
       <PageHeader eyebrow="EVIDENCE" title={title} description={description} />
       <Card sx={{ mb: 2 }}>
         <CardContent>
-          <Stack direction={{ xs: 'column', lg: 'row' }} gap={1.5}>
+          <Stack direction={{ xs: 'column', lg: 'row' }} sx={{ gap: 1.5 }}>
             <Box sx={{ flex: 1, minWidth: 0 }}><WorkloadPicker value={subject} onChange={choose} /></Box>
             <TextField select size="small" label="Window" value={usageWindow} onChange={(event) => { setUsageWindow(event.target.value); if (subject) setParams({ ...subject, window: event.target.value }) }} sx={{ minWidth: 140 }}>
               {usageWindows.filter((option) => option.value !== '6h').map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}
@@ -144,7 +144,7 @@ export function CorrelationView({ subject, usageWindow }: { subject: Subject; us
   const forecast = data.forecast
 
   return (
-    <Stack gap={2}>
+    <Stack sx={{ gap: 2 }}>
       <Alert severity="info" variant="outlined">
         <AlertTitle>Association, not causation</AlertTitle>
         {report.caveats.join(' ')}
@@ -155,7 +155,7 @@ export function CorrelationView({ subject, usageWindow }: { subject: Subject; us
           {report.findings.map((finding) => (
             <Card key={finding.title + finding.detail} sx={{ borderLeft: '3px solid', borderLeftColor: finding.severity === 'info' ? 'info.main' : statusColors[finding.severity] }}>
               <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
-                <Stack direction="row" gap={1} alignItems="center">
+                <Stack direction="row" sx={{ gap: 1, alignItems: 'center' }}>
                   {findingIcon[finding.severity]}
                   <Typography sx={{ fontWeight: 750 }}>{finding.title}</Typography>
                 </Stack>
@@ -195,7 +195,7 @@ export function CorrelationView({ subject, usageWindow }: { subject: Subject; us
       </Panel>
 
       <Panel title="Time-aligned signals" caption="Every chart shares one time axis. Vertical markers are rollouts, scaling, restarts, and OOM kills.">
-        <Stack gap={2}>
+        <Stack sx={{ gap: 2 }}>
           <LineChart title="CPU" series={[{ name: 'Busiest replica', color: seriesColors[0], points: points(signals.cpu) }, ...(perReplica.length ? [{ name: 'Per replica', color: seriesColors[1], points: perReplica }] : [])]} references={cpuReferences} format={formatMillicores} {...shared} />
           {signals.throttling && <LineChart title="CPU throttling" series={[{ name: 'Throttled', color: seriesColors[0], points: points(signals.throttling, 100) }]} references={[{ label: '5% threshold', value: 5 }]} format={percent} {...shared} />}
           <LineChart title="Memory" series={[{ name: 'Working set', color: seriesColors[0], points: points(signals.memory) }]} references={memoryReferences} format={formatBytes} {...shared} />
@@ -221,7 +221,7 @@ export function CorrelationView({ subject, usageWindow }: { subject: Subject; us
               format={formatMillicores}
               height={220}
             />
-            <Stack direction="row" gap={1} flexWrap="wrap" sx={{ mt: 1 }}>
+            <Stack direction="row" sx={{ gap: 1, flexWrap: 'wrap', mt: 1 }}>
               <Chip size="small" variant="outlined" label={`Mean error ${formatMillicores(forecast.overall.mae)}`} />
               <Chip size="small" variant="outlined" color={forecast.overall.coverage >= (forecast.nominalCoverage ?? 0.9) - 0.1 ? 'default' : 'warning'} label={`${Math.round(forecast.overall.coverage * 100)}% inside the ${Math.round((forecast.nominalCoverage ?? 0.9) * 100)}% interval`} />
               {forecast.overall.skill !== undefined && forecast.overall.skill !== null && <Chip size="small" variant="outlined" label={`${forecast.overall.skill >= 0 ? 'Beats' : 'Trails'} the seasonal baseline by ${Math.abs(Math.round(forecast.overall.skill * 100))}%`} />}
@@ -233,7 +233,7 @@ export function CorrelationView({ subject, usageWindow }: { subject: Subject; us
 
       <Panel title="Recommendation evidence" caption={recommendation ? `Latest recommendation, ${formatDate(recommendation.createdAt)} (${recommendation.reviewStatus})` : 'No recommendation has been generated for this container yet.'}>
         {recommendation && (
-          <Stack gap={2}>
+          <Stack sx={{ gap: 2 }}>
             {assessment ? <AssessmentPanel assessment={assessment} /> : <Alert severity="info">This recommendation predates the assessment; regenerate it for the full evidence.</Alert>}
             {recommendation.warnings.length > 0 && (
               <Alert severity="warning" variant="outlined">
@@ -246,10 +246,10 @@ export function CorrelationView({ subject, usageWindow }: { subject: Subject; us
       </Panel>
 
       <Panel title="Before and after" caption="Change around each event (an hour before against an hour after a 10-minute settling period), and post-change verification of the approved recommendation.">
-        <Stack gap={2}>
+        <Stack sx={{ gap: 2 }}>
           {data.verification && (
             <Box>
-              <Stack direction="row" gap={1} alignItems="center" sx={{ mb: 1 }}>
+              <Stack direction="row" sx={{ gap: 1, alignItems: 'center', mb: 1 }}>
                 <Typography variant="subtitle2">Post-change verification</Typography>
                 <Chip size="small" color={data.verification.status === 'regressed' ? 'error' : data.verification.status === 'verified' ? 'success' : 'default'} label={data.verification.status.replace('_', ' ')} />
                 {assessment && <AssessmentStatusChip status={assessment.status} />}

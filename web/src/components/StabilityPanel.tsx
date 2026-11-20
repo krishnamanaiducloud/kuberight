@@ -14,7 +14,7 @@ export function StabilityPanel({ stability }: { stability: Stability }) {
   return (
     <Box>
       <Typography variant="subtitle2" sx={{ mb: 0.75 }}>Stability</Typography>
-      <Stack direction="row" gap={0.75} flexWrap="wrap" aria-label="Stability controls">
+      <Stack direction="row" sx={{ gap: 0.75, flexWrap: 'wrap' }} aria-label="Stability controls">
         <Chip size="small" variant="outlined" label={`Minimum change ${Math.round(stability.minimumChangeRatio * 100)}%`} />
         <Chip
           size="small" variant="outlined" color={stability.cooldownActive ? 'warning' : 'default'}

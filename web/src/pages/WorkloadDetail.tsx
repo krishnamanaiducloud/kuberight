@@ -74,11 +74,11 @@ export function WorkloadDetail() {
   return (
     <Box sx={{ p: { xs: 2, md: 4 }, maxWidth: 1500, mx: 'auto' }}>
       <Button component={RouterLink} to={`/workloads?namespace=${encodeURIComponent(namespace)}`} startIcon={<ArrowBackIcon />} size="small" sx={{ mb: 1 }}>Workloads</Button>
-      <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" gap={2} sx={{ mb: 3 }}>
+      <Stack direction={{ xs: 'column', md: 'row' }} sx={{ justifyContent: 'space-between', gap: 2, mb: 3 }}>
         <Box sx={{ minWidth: 0 }}>
           <Typography variant="overline" color="primary.main">{kind.toUpperCase()}</Typography>
           <Typography variant="h3" component="h1" sx={{ fontSize: { xs: '2.125rem', sm: '3rem' }, overflowWrap: 'anywhere' }}>{name}</Typography>
-          <Stack direction="row" gap={1} flexWrap="wrap" alignItems="center" sx={{ mt: 1 }}>
+          <Stack direction="row" sx={{ gap: 1, flexWrap: 'wrap', alignItems: 'center', mt: 1 }}>
             <Typography color="text.secondary">{namespace}</Typography>
             {workload && <Chip size="small" variant="outlined" label={`${workload.readyReplicas ?? 0}/${workload.desiredReplicas ?? 0} ready`} color={workload.health === 'healthy' ? 'success' : 'warning'} />}
             {relatedAutoscalers.map((item) => (
@@ -86,7 +86,7 @@ export function WorkloadDetail() {
             ))}
           </Stack>
         </Box>
-        <Stack direction="row" gap={1} alignItems="flex-start" flexWrap="wrap">
+        <Stack direction="row" sx={{ gap: 1, alignItems: 'flex-start', flexWrap: 'wrap' }}>
           <Button variant="contained" startIcon={<PlaylistPlayOutlined />} disabled={!workload || containers.length === 0} onClick={() => setAnalyzeOpen(true)}>Analyze all containers</Button>
         </Stack>
       </Stack>
@@ -125,7 +125,7 @@ export function WorkloadDetail() {
                         <TableCell align="right">{item.memoryLimitBytes ? formatBytes(item.memoryLimitBytes) : 'unset'}</TableCell>
                         <TableCell>
                           {advice ? (
-                            <Stack direction="row" gap={1} alignItems="center" flexWrap="wrap">
+                            <Stack direction="row" sx={{ gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
                               <Typography variant="body2">CPU {formatMillicores(advice.cpuRequestMilli)} ({delta(advice.currentCpuRequestMilli, advice.cpuRequestMilli)})</Typography>
                               <Typography variant="body2">· Memory {formatBytes(advice.memoryRequestBytes)} ({delta(advice.currentMemoryRequestBytes, advice.memoryRequestBytes)})</Typography>
                               <EvidenceStatusChip record={advice} />
@@ -150,11 +150,11 @@ export function WorkloadDetail() {
 
       {activeContainer && (
         <Box sx={{ mb: 2 }}>
-          <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ sm: 'center' }} gap={1} sx={{ mb: 1.5 }}>
+          <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ justifyContent: 'space-between', alignItems: { sm: 'center' }, gap: 1,  mb: 1.5 }}>
             <Tabs value={activeContainer} onChange={(_, next) => updateView('container', next)} variant="scrollable" allowScrollButtonsMobile aria-label="Container usage">
               {containers.map((item) => <Tab key={item.name} value={item.name} label={item.name} />)}
             </Tabs>
-            <Stack direction="row" gap={1} alignItems="center">
+            <Stack direction="row" sx={{ gap: 1, alignItems: 'center' }}>
               <Button size="small" variant="outlined" startIcon={<InsightsOutlined />} component={RouterLink}
                 to={`/correlation?${new URLSearchParams({ ...subject(activeContainer), window: usageWindow === '6h' ? '24h' : usageWindow })}`}>
                 Correlation analysis

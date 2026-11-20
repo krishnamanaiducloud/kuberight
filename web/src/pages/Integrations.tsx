@@ -1,9 +1,9 @@
 import { useQuery } from '@tanstack/react-query'
 import { Alert, Box, Card, CardContent, Chip, Divider, Skeleton, Stack, Typography } from '@mui/material'
-import CheckCircleOutline from '@mui/icons-material/CheckCircleOutline'
-import ErrorOutline from '@mui/icons-material/ErrorOutline'
-import RemoveCircleOutline from '@mui/icons-material/RemoveCircleOutline'
-import HelpOutline from '@mui/icons-material/HelpOutline'
+import CheckCircleOutline from '@mui/icons-material/CheckCircleOutlineOutlined'
+import ErrorOutline from '@mui/icons-material/ErrorOutlineOutlined'
+import RemoveCircleOutline from '@mui/icons-material/RemoveCircleOutlineOutlined'
+import HelpOutline from '@mui/icons-material/HelpOutlineOutlined'
 import { api, ApiError, type DependencyStatus, type MetricCoverage } from '../api'
 import { PageHeader } from './PageHeader'
 
@@ -31,16 +31,16 @@ function MetricCoverageCard({ coverage }: { coverage: MetricCoverage[] }) {
           {coverage.map((item) => {
             const current = coverageState(item)
             return (
-              <Stack key={item.metric} direction={{ xs: 'column', sm: 'row' }} gap={{ xs: 0.5, sm: 2 }} sx={{ py: 1.25 }} alignItems={{ sm: 'center' }}>
+              <Stack key={item.metric} direction={{ xs: 'column', sm: 'row' }} sx={{ gap: { xs: 0.5, sm: 2 }, alignItems: { sm: 'center' },  py: 1.25 }}>
                 <Box sx={{ minWidth: { sm: 200 } }}>
-                  <Typography fontWeight={600}>{item.signal}</Typography>
+                  <Typography sx={{ fontWeight: 600 }}>{item.signal}</Typography>
                   <Typography variant="caption" color="text.secondary">{item.source}</Typography>
                 </Box>
                 <Box sx={{ flex: 1, minWidth: 0 }}>
                   <Typography variant="body2" sx={{ fontFamily: 'monospace', overflowWrap: 'anywhere' }}>{item.metric}</Typography>
                   <Typography variant="caption" color="text.secondary">Used for {item.usedFor}{item.note ? `. ${item.note}` : ''}</Typography>
                 </Box>
-                <Stack direction="row" gap={1} alignItems="center" sx={{ minWidth: { sm: 210 }, justifyContent: { sm: 'flex-end' } }}>
+                <Stack direction="row" sx={{ gap: 1, alignItems: 'center', minWidth: { sm: 210 }, justifyContent: { sm: 'flex-end' } }}>
                   {item.state === 'available' && <Typography variant="body2" color="text.secondary">{item.series.toLocaleString()} series</Typography>}
                   <Chip size="small" variant="outlined" icon={current.icon} label={current.label} color={current.color} />
                 </Stack>
@@ -70,7 +70,7 @@ export function Integrations({ title, description }: { title: string; descriptio
           return (
             <Card key={dependency.name}>
               <CardContent>
-                <Stack direction="row" justifyContent="space-between" alignItems="center" gap={1}>
+                <Stack direction="row" sx={{ justifyContent: 'space-between', alignItems: 'center', gap: 1 }}>
                   <Typography variant="h6">{dependency.name}</Typography>
                   <Chip size="small" variant="outlined" icon={current.icon} label={current.label} color={current.color} />
                 </Stack>

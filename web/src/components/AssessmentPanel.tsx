@@ -1,10 +1,10 @@
 import type { ReactNode } from 'react'
 import { Alert, AlertTitle, Box, Chip, Stack, Table, TableBody, TableCell, TableHead, TableRow, Tooltip, Typography } from '@mui/material'
-import CheckCircleOutline from '@mui/icons-material/CheckCircleOutline'
-import ErrorOutline from '@mui/icons-material/ErrorOutline'
-import HelpOutline from '@mui/icons-material/HelpOutline'
+import CheckCircleOutline from '@mui/icons-material/CheckCircleOutlineOutlined'
+import ErrorOutline from '@mui/icons-material/ErrorOutlineOutlined'
+import HelpOutline from '@mui/icons-material/HelpOutlineOutlined'
 import TuneOutlined from '@mui/icons-material/TuneOutlined'
-import RemoveCircleOutline from '@mui/icons-material/RemoveCircleOutline'
+import RemoveCircleOutline from '@mui/icons-material/RemoveCircleOutlineOutlined'
 import type { Assessment, AssessmentStatus, CheckStatus } from '../api'
 import { statusColors } from '../chartColors'
 import { formatBytes, formatMillicores } from '../format'
@@ -57,7 +57,7 @@ export function AssessmentPanel({ assessment }: { assessment: Assessment }) {
   const savings = assessment.expectedSavings
   const forecast = assessment.forecast
   return (
-    <Stack gap={2}>
+    <Stack sx={{ gap: 2 }}>
       <Alert severity={text.severity} variant="outlined">
         <AlertTitle>{text.label} · risk {Math.round(assessment.riskScore * 100)}/100 · valid for {assessment.validFor}</AlertTitle>
         {text.detail}
@@ -85,7 +85,7 @@ export function AssessmentPanel({ assessment }: { assessment: Assessment }) {
             </TableBody>
           </Table>
         </Box>
-        <Stack direction="row" gap={1} flexWrap="wrap" sx={{ mt: 1 }}>
+        <Stack direction="row" sx={{ gap: 1, flexWrap: 'wrap', mt: 1 }}>
           <Chip size="small" variant="outlined" label={`Requested CPU ${savings.cpuMilli >= 0 ? 'down' : 'up'} ${formatMillicores(Math.abs(savings.cpuMilli))}, memory ${savings.memoryBytes >= 0 ? 'down' : 'up'} ${formatBytes(Math.abs(savings.memoryBytes))} across replicas; billing changes only when nodes are removed`} color={savings.cpuMilli < 0 || savings.memoryBytes < 0 ? 'warning' : 'default'} sx={wrappingChip} />
           <Chip size="small" variant="outlined" label={`QoS ${assessment.qos.current} → ${assessment.qos.recommended}${assessment.qos.protected ? ' (protected)' : ''}`} />
           {assessment.workload && (
@@ -97,7 +97,7 @@ export function AssessmentPanel({ assessment }: { assessment: Assessment }) {
       </Section>
 
       <Section title="Safety margins">
-        <Stack direction="row" gap={1} flexWrap="wrap">
+        <Stack direction="row" sx={{ gap: 1, flexWrap: 'wrap' }}>
           {(['cpu', 'memory'] as const).map((resource) => {
             const breakdown = assessment.safetyMargins[resource]
             return (
@@ -114,9 +114,9 @@ export function AssessmentPanel({ assessment }: { assessment: Assessment }) {
       </Section>
 
       <Section title="Compatibility checks">
-        <Stack gap={0.75}>
+        <Stack sx={{ gap: 0.75 }}>
           {assessment.checks.map((check) => (
-            <Stack key={check.name} direction="row" gap={1} alignItems="flex-start">
+            <Stack key={check.name} direction="row" sx={{ gap: 1, alignItems: 'flex-start' }}>
               {checkIcon[check.status]}
               <Box sx={{ minWidth: 0 }}>
                 <Typography variant="body2" sx={{ fontWeight: 650 }}>{check.name} · {checkLabel[check.status]}</Typography>

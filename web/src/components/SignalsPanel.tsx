@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Alert, Box, Card, CardContent, Chip, LinearProgress, Stack, Table, TableBody, TableCell, TableHead, TableRow, Tooltip, Typography } from '@mui/material'
-import ErrorOutline from '@mui/icons-material/ErrorOutline'
+import ErrorOutline from '@mui/icons-material/ErrorOutlineOutlined'
 import InfoOutlined from '@mui/icons-material/InfoOutlined'
 import WarningAmberOutlined from '@mui/icons-material/WarningAmberOutlined'
 import { api, ApiError, type SignalEvent, type SignalsResponse, type Subject, type UsageSeries } from '../api'
@@ -80,13 +80,13 @@ export function SignalsPanel({ subject, usageWindow }: { subject: Subject; usage
   const shared = { domain, markers, height: 200 }
 
   return (
-    <Stack gap={2}>
+    <Stack sx={{ gap: 2 }}>
       {(data.insights ?? []).length > 0 && (
         <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(2, 1fr)' }, gap: 1.5 }}>
           {data.insights!.map((insight) => (
             <Card key={insight.title} sx={{ borderLeft: '3px solid', borderLeftColor: insight.severity === 'info' ? 'info.main' : statusColors[insight.severity] }}>
               <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
-                <Stack direction="row" gap={1} alignItems="center">
+                <Stack direction="row" sx={{ gap: 1, alignItems: 'center' }}>
                   {insightIcon[insight.severity]}
                   <Typography sx={{ fontWeight: 750 }}>{insight.title}</Typography>
                 </Stack>
@@ -97,7 +97,7 @@ export function SignalsPanel({ subject, usageWindow }: { subject: Subject; usage
         </Box>
       )}
 
-      <Stack direction="row" gap={1} flexWrap="wrap" alignItems="center">
+      <Stack direction="row" sx={{ gap: 1, flexWrap: 'wrap', alignItems: 'center' }}>
         {correlations.map(([key, label]) => (
           <Tooltip key={key} title="Pearson correlation over shared timestamps: 1 moves together, −1 moves opposite, 0 unrelated">
             <Chip size="small" variant="outlined" label={`${label}: r = ${data.correlations![key]!.toFixed(2)}`} color={Math.abs(data.correlations![key]!) >= 0.5 ? 'warning' : 'default'} />
@@ -106,9 +106,9 @@ export function SignalsPanel({ subject, usageWindow }: { subject: Subject; usage
         {data.spikes && spikeLabel(data.spikes) && <Chip size="small" variant="outlined" color={data.spikes.classification === 'rare' ? 'default' : 'warning'} label={spikeLabel(data.spikes)} />}
         {!data.latencyConfigured && <Typography variant="caption" color="text.secondary">Set KUBERIGHT_LATENCY_QUERY to correlate application latency.</Typography>}
         <Box sx={{ flexGrow: 1 }} />
-        <Stack direction="row" gap={1.5} aria-label="Event legend">
+        <Stack direction="row" sx={{ gap: 1.5 }} aria-label="Event legend">
           {Object.values(eventStyle).map((style) => (
-            <Stack key={style.label} direction="row" gap={0.5} alignItems="center">
+            <Stack key={style.label} direction="row" sx={{ gap: 0.5, alignItems: 'center' }}>
               <Box sx={{ width: 3, height: 14, bgcolor: statusColors[style.tone], borderRadius: 1 }} />
               <Typography variant="caption" color="text.secondary">{style.label}</Typography>
             </Stack>
@@ -149,7 +149,7 @@ export function SignalsPanel({ subject, usageWindow }: { subject: Subject; usage
                   <TableRow key={`${event.timestamp}-${event.kind}`}>
                     <TableCell>{formatDate(event.timestamp)}</TableCell>
                     <TableCell>
-                      <Stack direction="row" gap={0.75} alignItems="center">
+                      <Stack direction="row" sx={{ gap: 0.75, alignItems: 'center' }}>
                         <Box sx={{ width: 3, height: 14, bgcolor: statusColors[eventStyle[event.kind].tone], borderRadius: 1 }} />
                         {eventStyle[event.kind].label}{event.count && event.count > 1 ? ` ×${event.count}` : ''}
                       </Stack>

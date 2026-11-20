@@ -20,7 +20,7 @@ type PolicyTunerProps = {
 function PercentSlider({ label, value, max, onChange }: { label: string; value: number; max: number; onChange: (value: number) => void }) {
   return (
     <Box>
-      <Stack direction="row" justifyContent="space-between">
+      <Stack direction="row" sx={{ justifyContent: 'space-between' }}>
         <Typography variant="body2">{label}</Typography>
         <Typography variant="body2" sx={{ fontWeight: 750 }}>{Math.round(value * 100)}%</Typography>
       </Stack>
@@ -34,7 +34,7 @@ export function PolicyTuner({ profiles, profile, policy, customized, onChange }:
   const selected = profiles.find((item) => item.name === profile)
   const tune = (patch: Partial<Policy>) => onChange(profile, { ...policy, ...patch }, true)
   return (
-    <Stack gap={1.5}>
+    <Stack sx={{ gap: 1.5 }}>
       <Box>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 0.75 }}>Profile</Typography>
         <ToggleButtonGroup
@@ -55,8 +55,8 @@ export function PolicyTuner({ profiles, profile, policy, customized, onChange }:
       <Accordion disableGutters elevation={0} sx={{ bgcolor: 'transparent', border: '1px solid', borderColor: 'divider', borderRadius: 1.5, '&:before': { display: 'none' } }}>
         <AccordionSummary expandIcon={<ExpandMoreIcon />}><Typography variant="body2" sx={{ fontWeight: 700 }}>Fine-tune</Typography></AccordionSummary>
         <AccordionDetails>
-          <Stack gap={1.5}>
-            <Stack direction={{ xs: 'column', sm: 'row' }} gap={1.5}>
+          <Stack sx={{ gap: 1.5 }}>
+            <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ gap: 1.5 }}>
               <TextField select size="small" fullWidth label="CPU sized from" value={policy.cpuPercentile} onChange={(event) => tune({ cpuPercentile: Number(event.target.value) })}>
                 {percentiles.map((item) => <MenuItem key={item.value} value={item.value}>{item.label}</MenuItem>)}
               </TextField>
@@ -81,7 +81,7 @@ export function PolicyTuner({ profiles, profile, policy, customized, onChange }:
             <PercentSlider label="Memory safety margin" value={policy.memorySafetyMargin} max={1} onChange={(value) => tune({ memorySafetyMargin: value })} />
             <PercentSlider label="Maximum reduction per change" value={policy.maximumReduction} max={0.5} onChange={(value) => tune({ maximumReduction: value })} />
             <Typography variant="body2" sx={{ fontWeight: 700, mt: 0.5 }}>Stability</Typography>
-            <Stack direction={{ xs: 'column', sm: 'row' }} gap={1.5}>
+            <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ gap: 1.5 }}>
               <TextField
                 select size="small" fullWidth label="Minimum change" value={policy.minimumChangeRatio ?? 0.05}
                 onChange={(event) => tune({ minimumChangeRatio: Number(event.target.value) })}

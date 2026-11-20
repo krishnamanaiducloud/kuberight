@@ -35,8 +35,8 @@ type GenerateDialogProps = {
 function PreviewPanel({ preview }: { preview: RecommendationPreview }) {
   const { recommendation, events } = preview
   return (
-    <Stack gap={1.5}>
-      <Stack direction="row" gap={1} flexWrap="wrap">
+    <Stack sx={{ gap: 1.5 }}>
+      <Stack direction="row" sx={{ gap: 1, flexWrap: 'wrap' }}>
         <Chip size="small" variant="outlined" color={riskColor[recommendation.risk]} label={`Risk: ${recommendation.risk}`} />
         <Chip size="small" variant="outlined" label={`Confidence: ${recommendation.confidence} (${Math.round(recommendation.confidenceScore * 100)}%)`} />
         {events.available && events.oomKills > 0 && <Chip size="small" variant="outlined" color="error" label={`${events.oomKills} OOM kill${events.oomKills === 1 ? '' : 's'}`} />}
@@ -126,14 +126,14 @@ export function GenerateDialog({ open, onClose, onCreated, initialSubject }: Gen
       <DialogTitle>Generate a recommendation</DialogTitle>
       <DialogContent dividers>
         <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '5fr 6fr' }, gap: 3 }}>
-          <Stack gap={2}>
+          <Stack sx={{ gap: 2 }}>
             <Typography variant="body2" color="text.secondary">
               KubeRight reads the container's current requests, limits, replicas, and autoscalers from Kubernetes, and its CPU, memory, throttling, restart, and OOM history from Prometheus.
             </Typography>
             {initialSubject
               ? <Typography sx={{ fontWeight: 700 }}>{initialSubject.namespace} / {initialSubject.kind} / {initialSubject.workload} · {initialSubject.container}</Typography>
               : <WorkloadPicker value={subject} onChange={(next) => { setSubject(next); changed() }} />}
-            <Stack direction={{ xs: 'column', sm: 'row' }} gap={1.5}>
+            <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ gap: 1.5 }}>
               <TextField select size="small" label="Usage window" value={usageWindow} onChange={(event) => { setUsageWindow(event.target.value); changed() }} sx={{ flex: 1 }}>
                 {windows.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}
               </TextField>
@@ -155,7 +155,7 @@ export function GenerateDialog({ open, onClose, onCreated, initialSubject }: Gen
             )}
           </Stack>
           <Box>
-            <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
+            <Stack direction="row" sx={{ alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
               <Typography variant="h6">Live preview</Typography>
               {preview.data && <Typography variant="caption" color="text.secondary">Not saved until you choose Save</Typography>}
             </Stack>

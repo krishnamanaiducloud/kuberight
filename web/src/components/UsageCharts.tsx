@@ -8,7 +8,7 @@ import { LineChart, type ChartReference } from './LineChart'
 function QualityChips({ series }: { series: UsageSeries }) {
   const issues = series.quality.issues ?? []
   return (
-    <Stack direction="row" gap={1} flexWrap="wrap">
+    <Stack direction="row" sx={{ gap: 1, flexWrap: 'wrap' }}>
       <Chip size="small" variant="outlined" label={`Coverage ${Math.round(series.quality.coverage * 100)}%`} color={series.quality.coverage >= 0.8 ? 'success' : 'warning'} />
       {issues.map((issue) => <Chip key={issue} size="small" variant="outlined" color="warning" label={issue} />)}
     </Stack>
@@ -19,7 +19,7 @@ function UsageCard({ title, series, references, format }: { title: string; serie
   return (
     <Card>
       <CardContent>
-        <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ sm: 'center' }} gap={1} sx={{ mb: 2 }}>
+        <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ justifyContent: 'space-between', alignItems: { sm: 'center' }, gap: 1,  mb: 2 }}>
           <Typography variant="h6">{title}</Typography>
           {series && <QualityChips series={series} />}
         </Stack>
@@ -56,7 +56,7 @@ export function UsageCharts({ subject, usageWindow }: { subject: Subject; usageW
     ...(current?.memoryLimitBytes ? [{ label: 'Limit', value: current.memoryLimitBytes }] : []),
   ]
   return (
-    <Stack gap={2}>
+    <Stack sx={{ gap: 2 }}>
       {query.isFetching && <LinearProgress />}
       {query.error && <Alert severity="error">{query.error instanceof ApiError ? query.error.message : 'Usage history could not be loaded.'}</Alert>}
       {data?.status && (data.status.available === false || data.status.reason) && <Alert severity="info">{data.status.reason}</Alert>}

@@ -6,8 +6,8 @@ import {
   TableContainer, TableHead, TableRow, TextField, Typography,
 } from '@mui/material'
 import AddTaskOutlined from '@mui/icons-material/AddTaskOutlined'
-import PauseCircleOutline from '@mui/icons-material/PauseCircleOutline'
-import PlayCircleOutline from '@mui/icons-material/PlayCircleOutline'
+import PauseCircleOutline from '@mui/icons-material/PauseCircleOutlineOutlined'
+import PlayCircleOutline from '@mui/icons-material/PlayCircleOutlineOutlined'
 import RefreshIcon from '@mui/icons-material/Refresh'
 import { api, newIdempotencyKey, type ApiStatus } from '../api'
 import { NamespaceSelect } from '../components/NamespaceSelect'
@@ -115,7 +115,7 @@ function ScanDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
     <Dialog open={open} onClose={mutation.isPending ? undefined : onClose} fullWidth maxWidth="sm">
       <DialogTitle>Queue an evidence scan</DialogTitle>
       <DialogContent>
-        <Stack gap={2} sx={{ pt: 1 }}>
+        <Stack sx={{ gap: 2, pt: 1 }}>
           <Alert severity="info">The scan reads Kubernetes and Prometheus evidence and creates recommendations. It never changes workloads.</Alert>
           {mutation.error && <RequestAlert error={mutation.error} resource="fleet scan" />}
           <NamespaceSelect
@@ -174,13 +174,13 @@ export function Fleet({ title, description }: { title: string; description: stri
 
   return (
     <Box sx={{ p: { xs: 2, md: 4 }, maxWidth: 1500, mx: 'auto' }}>
-      <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ sm: 'flex-end' }} gap={2} sx={{ mb: 3 }}>
+      <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ justifyContent: 'space-between', alignItems: { sm: 'flex-end' }, gap: 2,  mb: 3 }}>
         <Box>
           <Typography variant="overline" color="primary.main">CONTINUOUS OPTIMIZATION</Typography>
           <Typography variant="h3" component="h1" sx={{ fontSize: { xs: '2.125rem', sm: '3rem' } }}>{title}</Typography>
           <Typography color="text.secondary" sx={{ mt: 1, maxWidth: 780 }}>{description}</Typography>
         </Box>
-        <Stack direction="row" gap={1}>
+        <Stack direction="row" sx={{ gap: 1 }}>
           <Button startIcon={<RefreshIcon />} onClick={refresh} disabled={scans.isFetching || schedules.isFetching}>Refresh</Button>
           <Button variant="contained" startIcon={<AddTaskOutlined />} onClick={() => setDialogOpen(true)}>New scan</Button>
         </Stack>
@@ -239,7 +239,7 @@ export function Fleet({ title, description }: { title: string; description: stri
                 {!schedules.isLoading && (schedules.data?.items.length ?? 0) === 0 && <TableRow><TableCell colSpan={7}><Typography color="text.secondary">No schedules are configured. Manual scans remain available.</Typography></TableCell></TableRow>}
                 {schedules.data?.items.map((schedule) => (
                   <TableRow key={schedule.id} hover>
-                    <TableCell><Typography fontWeight={700}>{schedule.name}</Typography><Typography variant="caption" color="text.secondary">v{schedule.version}</Typography></TableCell>
+                    <TableCell><Typography sx={{ fontWeight: 700 }}>{schedule.name}</Typography><Typography variant="caption" color="text.secondary">v{schedule.version}</Typography></TableCell>
                     <TableCell><Chip size="small" label={schedule.enabled ? 'enabled' : 'paused'} color={schedule.enabled ? 'success' : 'default'} /></TableCell>
                     <TableCell>{scopeLabel(schedule.scope)}</TableCell>
                     <TableCell>{duration(schedule.intervalSeconds)}</TableCell>

@@ -42,9 +42,9 @@ export function Forecasting({ title, description }: { title: string; description
       <PageHeader eyebrow="EXPERIMENTAL" title={title} description={description} />
       <Card sx={{ mb: 2 }}>
         <CardContent>
-          <Stack gap={1.5}>
+          <Stack sx={{ gap: 1.5 }}>
             <WorkloadPicker value={subject} onChange={(next) => { setSubject(next); mutation.reset() }} />
-            <Stack direction={{ xs: 'column', sm: 'row' }} gap={1.5} alignItems={{ sm: 'center' }}>
+            <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ gap: 1.5, alignItems: { sm: 'center' } }}>
               <ToggleButtonGroup size="small" exclusive value={resource} onChange={(_, next) => { if (next) { setResource(next); mutation.reset() } }} aria-label="Resource">
                 <ToggleButton value="cpu">CPU</ToggleButton>
                 <ToggleButton value="memory">Memory</ToggleButton>
@@ -61,12 +61,12 @@ export function Forecasting({ title, description }: { title: string; description
       {mutation.error && <Alert severity="error" sx={{ mb: 2 }}>{mutation.error instanceof ApiError ? mutation.error.message : 'The forecast could not be produced.'}</Alert>}
       {!result && !mutation.error && <Alert severity="info">Forecasts use Prometheus history and KubeRight's built-in engine, which picks its model by testing it on this history. Hourly forecasts reach a week; 30- and 90-day forecasts use daily history and need at least 48 days of it. Forecasts are advisory and never change recommendations or workloads.</Alert>}
       {result && (
-        <Stack gap={2}>
+        <Stack sx={{ gap: 2 }}>
           <Card>
             <CardContent>
-              <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={1} sx={{ mb: 2 }}>
+              <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ justifyContent: 'space-between', gap: 1, mb: 2 }}>
                 <Typography variant="h6">{result.resource === 'cpu' ? 'CPU' : 'Memory'} forecast</Typography>
-                <Stack direction="row" gap={1} flexWrap="wrap">
+                <Stack direction="row" sx={{ gap: 1, flexWrap: 'wrap' }}>
                   <Chip size="small" variant="outlined" label={`Model: ${result.diagnostics.model}`} />
                   <Chip size="small" variant="outlined" label={`Confidence ${Math.round(result.diagnostics.confidence * 100)}%`} />
                   {result.diagnostics.fallbackUsed && <Chip size="small" variant="outlined" color="warning" label="Fallback model" />}
