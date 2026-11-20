@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: KubeRight API
-  version: 0.1.0-rc.9
+  version: 0.1.0-rc.10
   description: |
     The HTTP contract implemented by the KubeRight Go service. KubeRight has
     no sign-in, like Goldilocks: every operation is served without
@@ -3510,6 +3510,10 @@ components:
         healthy: { type: boolean }
         critical: { type: boolean }
         detail: { type: string }
+        state:
+          type: string
+          description: Prometheus and forecasting only. Prometheus is healthy only in state connected; forecasting only in state ready.
+          enum: [connected, connected_metrics_missing, authentication_failed, authorization_denied, query_invalid, timeout, unavailable, disabled, ready, insufficient_data]
 
     PolicyScopeLevel:
       type: string
@@ -3881,6 +3885,10 @@ components:
         series: { type: integer, minimum: 0, description: Series scraped in the last 10 minutes. }
         usedFor: { type: string, description: The KubeRight features that depend on the metric. }
         note: { type: string, description: A limit on what the count covers, such as namespace-scoped access. }
+        failure:
+          type: string
+          description: Why the family could not be checked when state is unknown.
+          enum: [invalid_query, authentication_failed, authorization_denied, endpoint_not_found, rate_limited, upstream_error, tls_error, dns_error, connection_failed, proxy_error, timeout, canceled, credentials_unavailable, invalid_response]
 
     PullRequestResult:
       type: object
