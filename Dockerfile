@@ -2,7 +2,7 @@
 
 # The dashboard bundle is platform independent and the API is cross-compiled, so both build
 # stages run natively on the build platform; only the final stage is per target platform.
-FROM --platform=$BUILDPLATFORM node:24.22.2-bookworm-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9 AS web-build
+FROM --platform=$BUILDPLATFORM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS web-build
 USER root
 WORKDIR /app
 RUN chown 1000:1000 /app
