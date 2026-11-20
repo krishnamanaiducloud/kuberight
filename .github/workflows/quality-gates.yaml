@@ -280,7 +280,7 @@ jobs:
             -strict -summary -ignore-missing-schemas -kubernetes-version 1.35.0 \
             /manifests/production.yaml /manifests/openshift.yaml \
             /manifests/openshift-cluster-wide.yaml
-      - uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
+      - uses: helm/kind-action@ea822c7bf1874f08e5a491df991c228edffc3376 # v1.15.2
         with:
           cluster_name: kuberight-schema
           version: v0.33.0
@@ -354,7 +354,7 @@ jobs:
           trap 'docker logs kuberight-smoke || true; docker rm -f kuberight-smoke || true' EXIT
           for _ in {1..30}; do curl --fail --silent http://127.0.0.1:18080/healthz && break; sleep 1; done
           curl --fail --silent http://127.0.0.1:18080/readyz
-      - uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
+      - uses: helm/kind-action@ea822c7bf1874f08e5a491df991c228edffc3376 # v1.15.2
         with:
           cluster_name: kuberight-integration
           version: v0.33.0
