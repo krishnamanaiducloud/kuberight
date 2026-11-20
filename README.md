@@ -39,7 +39,7 @@ KubeRight is a Kubernetes resource-inventory and right-sizing project. It is a s
   - A development-only static token.
 - Every request is authorized with `SubjectAccessReview`. Verified identities and decisions are cached briefly; see [Single sign-on](#single-sign-on).
 - [GitOps pull requests](#gitops-pull-requests): an approved recommendation can be proposed as a pull request (GitHub, Gitea/Forgejo) or merge request (GitLab) that edits the workload's manifest.
-- A dashboard backed by the versioned Go API. It opens on CPU recommendations; the fleet overview is at `/overview`. It passes an automated WCAG 2.1 AA audit on every view. Views whose integrations are unavailable display that state instead of fabricated data.
+- A dashboard backed by the versioned Go API. It opens on CPU recommendations. The fleet overview, at `/overview`, counts pods, healthy workloads and those that need attention, OOM kills, restart anomalies, unschedulable pods, and CPU hotspots, next to Prometheus and forecasting health. Health counts use the same rules as the workload health view and cover workloads that have pods. It passes an automated WCAG 2.1 AA audit on every view. Views whose integrations are unavailable display that state instead of fabricated data.
 - Prometheus metric coverage on the Integrations page: whether CPU usage, memory usage, CPU throttling, kube-state-metrics, and node condition series are present, counted over the last 10 minutes, and which features need each. Missing metrics are reported as missing, never treated as zero.
 - Secure-by-default workload settings in a Helm chart, plus development, production-shaped, OpenShift, and cluster-wide rendering profiles.
 

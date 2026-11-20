@@ -1028,3 +1028,32 @@ func TestIntegrationsReportMetricCoverage(t *testing.T) {
 		t.Fatalf("coverage without Prometheus = %v", body["metricCoverage"])
 	}
 }
+
+type summarizingInventory struct {
+	fakeInventory
+	summary HealthSummary
+	err     error
+}
+
+func (inventory summarizingInventory) HealthSummary(context.Context) (HealthSummary, error) {
+	return inventory.summary, inventory.err
+}
+
+func TestOverviewReportsWorkloadHealth(t *testing.T) {
+	summary := HealthSummary{Available: true, Pods: 42, WorkloadsWithPods: 12, HealthyWorkloads: 10, WorkloadsNeedingAttention: 2, Findings: map[string]int{"OOMKilled": 1}}
+	api := newTestAPI(t, nil, Dependencies{Provider: summarizingInventory{fakeInventory: fakeInventory{spec: checkoutSpec()}, summary: summary}})
+	_, body := api.do(t, http.MethodGet, "/api/v1/overview", "alice", "")
+	health, ok := body["health"].(map[string]any)
+	if !ok || health["available"] != true || health["pods"] != float64(42) || health["workloadsNeedingAttention"] != float64(2) || health["findings"].(map[string]any)["OOMKilled"] != float64(1) {
+		t.Fatalf("health = %v", body["health"])
+	}
+
+	// A failed pod listing is reported as unavailable, with no invented counts
+	// and no Kubernetes error text.
+	api = newTestAPI(t, nil, Dependencies{Provider: summarizingInventory{fakeInventory: fakeInventory{spec: checkoutSpec()}, err: errors.New("pods is forbidden: secret detail")}})
+	_, body = api.do(t, http.MethodGet, "/api/v1/overview", "alice", "")
+	health = body["health"].(map[string]any)
+	if health["available"] != false || health["pods"] != float64(0) || strings.Contains(health["reason"].(string), "secret") {
+		t.Fatalf("failed health = %v", health)
+	}
+}

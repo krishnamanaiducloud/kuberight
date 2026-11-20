@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kuberight/kuberight/internal/httpapi"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -157,6 +158,41 @@ func podDiagnostics(pod corev1.Pod, now time.Time) []map[string]any {
 // diagnostics lists observed workload health problems and, with a
 // cluster-wide inventory, nodes that are not ready.
 func (provider *KubernetesProvider) diagnostics(ctx context.Context, requestedNamespace string) ([]map[string]any, []string, error) {
+	records, _, warnings, err := provider.diagnosticsWithPods(ctx, requestedNamespace)
+	return records, warnings, err
+}
+
+// HealthSummary counts pods, the workloads that own them, and findings by
+// category, using the same rules as the diagnostics list. Workloads without
+// pods (scaled to zero, or a CronJob between runs) are not counted.
+func (provider *KubernetesProvider) HealthSummary(ctx context.Context) (httpapi.HealthSummary, error) {
+	records, pods, warnings, err := provider.diagnosticsWithPods(ctx, "")
+	if err != nil {
+		return httpapi.HealthSummary{}, err
+	}
+	summary := httpapi.HealthSummary{Available: true, Pods: len(pods), Findings: map[string]int{}, Warnings: warnings}
+	owners := map[string]bool{}
+	for _, pod := range pods {
+		kind, name := diagnosticOwner(pod)
+		owners[pod.Namespace+"/"+kind+"/"+name] = true
+	}
+	attention := map[string]bool{}
+	for _, record := range records {
+		category, _ := record["category"].(string)
+		summary.Findings[category]++
+		if record["kind"] == "Node" {
+			summary.NodesWithProblems++
+			continue
+		}
+		attention[fmt.Sprint(record["namespace"], "/", record["kind"], "/", record["workload"])] = true
+	}
+	summary.WorkloadsWithPods = len(owners)
+	summary.WorkloadsNeedingAttention = len(attention)
+	summary.HealthyWorkloads = len(owners) - len(attention)
+	return summary, nil
+}
+
+func (provider *KubernetesProvider) diagnosticsWithPods(ctx context.Context, requestedNamespace string) ([]map[string]any, []corev1.Pod, []string, error) {
 	namespace := provider.effectiveNamespace(requestedNamespace)
 	pods, err := listAll(ctx, func(ctx context.Context, options metav1.ListOptions) ([]corev1.Pod, string, error) {
 		result, listErr := provider.client.CoreV1().Pods(namespace).List(ctx, options)
@@ -166,7 +202,7 @@ func (provider *KubernetesProvider) diagnostics(ctx context.Context, requestedNa
 		return result.Items, result.Continue, nil
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("%w: list pods: %s", errInventoryUnavailable, safeKubernetesError(err))
+		return nil, nil, nil, fmt.Errorf("%w: list pods: %s", errInventoryUnavailable, safeKubernetesError(err))
 	}
 	now := time.Now()
 	records := []map[string]any{}
@@ -217,5 +253,5 @@ func (provider *KubernetesProvider) diagnostics(ctx context.Context, requestedNa
 			}
 		}
 	}
-	return records, warnings, nil
+	return records, pods, warnings, nil
 }

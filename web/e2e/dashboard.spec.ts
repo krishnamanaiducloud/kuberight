@@ -104,6 +104,10 @@ async function mockControlPlane(page: Page) {
           estimatedMonthlySavings: 2_480,
           currency: 'USD',
           dependencies: [],
+          health: {
+            available: true, pods: 412, workloadsWithPods: 140, healthyWorkloads: 131, workloadsNeedingAttention: 9, nodesWithProblems: 0,
+            findings: { OOMKilled: 3, CrashLoopBackOff: 2, RepeatedRestarts: 4, InsufficientCPU: 1 },
+          },
         }
         break
       case '/api/v1/recommendations':
@@ -183,6 +187,10 @@ test('renders verified fleet posture without browser or accessibility failures',
   await expect(page.getByRole('heading', { level: 1, name: 'Rightsize with evidence, not instinct.' })).toBeVisible()
   await expect(page.getByText('148')).toBeVisible()
   await expect(page.getByText('7')).toBeVisible()
+  const health = page.getByRole('region', { name: 'Workload health' })
+  await expect(health.getByText('131 of 140')).toBeVisible()
+  await expect(health.getByText('412')).toBeVisible()
+  await expect(health.getByText('6', { exact: true })).toBeVisible()
   await expectNoSeriousAccessibilityViolations(page)
   await attachScreenshot(page, testInfo, 'overview')
   expect(failures).toEqual([])

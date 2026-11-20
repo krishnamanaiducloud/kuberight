@@ -674,6 +674,45 @@ func (server *apiServer) inventoryCount(ctx context.Context, resource string) (i
 	return result.Total, true
 }
 
+// HealthSummary counts observed workload health for the overview. Workloads
+// are those that own at least one pod.
+type HealthSummary struct {
+	Available                 bool           `json:"available"`
+	Reason                    string         `json:"reason,omitempty"`
+	Pods                      int            `json:"pods"`
+	WorkloadsWithPods         int            `json:"workloadsWithPods"`
+	HealthyWorkloads          int            `json:"healthyWorkloads"`
+	WorkloadsNeedingAttention int            `json:"workloadsNeedingAttention"`
+	NodesWithProblems         int            `json:"nodesWithProblems"`
+	Findings                  map[string]int `json:"findings"`
+	Warnings                  []string       `json:"warnings,omitempty"`
+}
+
+// HealthSummarizer is implemented by inventory providers that can count
+// workload health findings in one pass.
+type HealthSummarizer interface {
+	HealthSummary(context.Context) (HealthSummary, error)
+}
+
+// healthSummaryTimeout bounds the pod listing behind the overview's health
+// counts, which takes longer than a readiness probe on large clusters.
+const healthSummaryTimeout = 10 * time.Second
+
+func (server *apiServer) healthSummary(ctx context.Context) *HealthSummary {
+	summarizer, ok := server.provider.(HealthSummarizer)
+	if !ok {
+		return nil
+	}
+	summaryContext, cancel := context.WithTimeout(ctx, healthSummaryTimeout)
+	defer cancel()
+	summary, err := summarizer.HealthSummary(summaryContext)
+	if err != nil {
+		server.logger.Warn("workload health summary failed", "request_id", requestIDFromContext(ctx), "error", err)
+		return &HealthSummary{Reason: "pod inventory is unavailable or access was denied", Findings: map[string]int{}}
+	}
+	return &summary
+}
+
 func (server *apiServer) overview(w http.ResponseWriter, r *http.Request) {
 	if !server.authorize(w, r, AccessAttributes{Verb: "get", Resource: "overview"}) {
 		return
@@ -710,6 +749,12 @@ func (server *apiServer) overview(w http.ResponseWriter, r *http.Request) {
 		defer wait.Done()
 		dependencies = server.dependencyStatuses(ctx)
 	}()
+	var health *HealthSummary
+	wait.Add(1)
+	go func() {
+		defer wait.Done()
+		health = server.healthSummary(ctx)
+	}()
 
 	recommendations := map[string]any{"source": server.repository.Kind()}
 	total, err := server.repository.CountRecommendations(ctx)
@@ -741,6 +786,9 @@ func (server *apiServer) overview(w http.ResponseWriter, r *http.Request) {
 		body[resource] = count
 	}
 	body["dependencies"] = dependencies
+	if health != nil {
+		body["health"] = health
+	}
 	respondJSON(w, http.StatusOK, body)
 }
 

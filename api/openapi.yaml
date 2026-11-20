@@ -1740,9 +1740,35 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/DependencyStatus"
+        health:
+          $ref: "#/components/schemas/HealthSummary"
         generatedAt:
           type: string
           format: date-time
+
+    HealthSummary:
+      type: object
+      additionalProperties: false
+      description: >-
+        Observed workload health counted from live pod and node status with the same rules as
+        /api/v1/diagnostics. Workloads are those that own at least one pod, so workloads scaled to
+        zero are not counted. Absent when the inventory provider cannot summarize.
+      required: [available, pods, workloadsWithPods, healthyWorkloads, workloadsNeedingAttention, nodesWithProblems, findings]
+      properties:
+        available: { type: boolean }
+        reason: { type: string }
+        pods: { type: integer, minimum: 0 }
+        workloadsWithPods: { type: integer, minimum: 0 }
+        healthyWorkloads: { type: integer, minimum: 0 }
+        workloadsNeedingAttention: { type: integer, minimum: 0 }
+        nodesWithProblems: { type: integer, minimum: 0, description: Node condition findings (not ready or under pressure). }
+        findings:
+          type: object
+          description: Diagnostic findings by category, such as OOMKilled, CrashLoopBackOff, RepeatedRestarts, or InsufficientCPU.
+          additionalProperties: { type: integer, minimum: 0 }
+        warnings:
+          type: array
+          items: { type: string }
 
     Availability:
       type: object

@@ -118,3 +118,38 @@ func TestDiagnosticOwnerKeepsNonDeploymentReplicaSets(t *testing.T) {
 		t.Fatalf("a bare pod = %s/%s", kind, name)
 	}
 }
+
+func TestHealthSummaryCountsWorkloadsWithFindings(t *testing.T) {
+	controller := true
+	statefulPod := func(name string, restarts int32) *corev1.Pod {
+		return &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "data", OwnerReferences: []metav1.OwnerReference{{Kind: "StatefulSet", Name: "db", Controller: &controller}}},
+			Status: corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{Name: "db", RestartCount: restarts,
+				LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "OOMKilled", ExitCode: 137}}}}},
+		}
+	}
+	healthyDeployment := diagnosticPod("checkout-1", func(*corev1.Pod) {})
+	crashing := diagnosticPod("checkout-2", func(pod *corev1.Pod) {
+		pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "api", RestartCount: 9,
+			State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}}}}
+	})
+	other := diagnosticPod("web-1", func(pod *corev1.Pod) {
+		pod.Labels["pod-template-hash"] = "abc12"
+		pod.OwnerReferences[0].Name = "web-abc12"
+	})
+	client := kubernetesfake.NewSimpleClientset(healthyDeployment, crashing, other, statefulPod("db-0", 2), statefulPod("db-1", 3),
+		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-a"}, Status: corev1.NodeStatus{Conditions: []corev1.NodeCondition{
+			{Type: corev1.NodeMemoryPressure, Status: corev1.ConditionTrue},
+		}}})
+	summary, err := testProvider(client).HealthSummary(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Workloads: Deployment checkout (one crashing pod), Deployment web, StatefulSet db (two OOM kills).
+	if !summary.Available || summary.Pods != 5 || summary.WorkloadsWithPods != 3 || summary.WorkloadsNeedingAttention != 2 || summary.HealthyWorkloads != 1 || summary.NodesWithProblems != 1 {
+		t.Fatalf("summary = %+v", summary)
+	}
+	if summary.Findings["OOMKilled"] != 2 || summary.Findings["CrashLoopBackOff"] != 1 || summary.Findings["RepeatedRestarts"] != 1 || summary.Findings["NodeMemoryPressure"] != 1 {
+		t.Fatalf("findings = %v", summary.Findings)
+	}
+}
