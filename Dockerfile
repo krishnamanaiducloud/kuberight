@@ -2,7 +2,7 @@
 
 # The dashboard bundle is platform independent and the API is cross-compiled, so both build
 # stages run natively on the build platform; only the final stage is per target platform.
-FROM --platform=$BUILDPLATFORM node:24.22.2-bookworm-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9 AS web-build
+FROM --platform=$BUILDPLATFORM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS web-build
 USER root
 WORKDIR /app
 RUN chown 1000:1000 /app
@@ -46,7 +46,7 @@ USER 65532:65532
 EXPOSE 8080
 ENTRYPOINT ["/app/kuberight"]
 
-FROM gcr.io/distroless/static-debian13:nonroot@sha256:25ac8f0c3b2334a9eb05452266bd4697864a8c8ef0ef71e5e6480d7f92868329 AS production
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:aafe993665bf6200db38a02c11a9351e782a84b6a45e7f33b6695638c88e3931 AS production
 ARG VERSION=dev
 ARG VCS_REF=unknown
 ARG BUILD_DATE=unknown
