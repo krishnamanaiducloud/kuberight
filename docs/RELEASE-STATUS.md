@@ -1,8 +1,31 @@
 # Release status
 
-- Candidate: `0.1.0-rc.7`, published from a local build (below); read-only, one application Deployment, built-in forecasting, authentication disabled by default
-- Status: release candidate; see [production readiness](PRODUCTION-READINESS.md) (88/100)
-- Previous releases: `0.1.0-rc.6` (local build, below) and `v0.1.0-rc.4` (release workflow, 2026-11-19)
+- Candidate: `0.1.0-rc.8`, published from a local build (below); read-only, one application Deployment, built-in forecasting, no sign-in (like Goldilocks)
+- Status: release candidate; see [production readiness](PRODUCTION-READINESS.md) (87/100)
+- Previous releases: `0.1.0-rc.7` and `0.1.0-rc.6` (local builds, below) and `v0.1.0-rc.4` (release workflow, 2026-11-19)
+
+## Published `0.1.0-rc.8` images (2026-11-20)
+
+Built locally with Docker Buildx for linux/amd64 and linux/arm64 from `69997c2`, with SBOM and provenance attestations, and pushed to Docker Hub. Like `rc.6` and `rc.7`, they have no keyless signature and no GitHub release or tag; the next release through the workflow must be `rc.9`.
+
+| Image | Index digest |
+| --- | --- |
+| `mohankrishna999/kuberight:0.1.0-rc.8` | `sha256:e3107f0b3fcf274924c6227e149e122396840da7c8972d53994595f3dcca4cc6` |
+| `mohankrishna999/kuberight:0.1.0-rc.8-debug` | `sha256:533616237dda7d8a10348530342d8aebbd57d5bc9e715b5e1f84c454e3296d4d` |
+
+What changed:
+- **No sign-in at all.** The authentication modes, the oauth-proxy and oauth2-proxy sidecars, the cookie-secret init container, and the TokenReview and SubjectAccessReview RBAC are removed. Every request is served as `system:anonymous`, and the dashboard has no Connect button or token dialog.
+- **Upgrade-safe.** Old `auth`, `approvals`, and `rbac.authReviews` values are accepted and ignored, and old sign-in environment variables are logged as removed.
+
+Checks before the push:
+- **Tests:** Go race tests in 17 packages; dashboard typecheck, lint, and 61 unit tests; Helm lint of every profile, CI's checks that unsafe chart values are rejected, kubeconform (37 resources valid, 2 skipped); no breaking `/api/v1` change.
+- **Trivy 0.76.2:** all four platform images had 0 HIGH or CRITICAL findings, and the pushed digests equal the scanned images.
+- **On kind (Kubernetes 1.35.1),** upgraded with `--reuse-values` from a release that still carried `auth` values, using the pushed amd64 production image:
+  - the pod ran one container, with no sign-in settings and no sign-in RBAC rendered;
+  - `/api/v1/overview` returned 200 with no credentials, a bogus bearer token, and a Basic header, and never asked for credentials;
+  - the live browser test passed without a token, with no Connect button and no "unconfirmed" label;
+  - the pod ran 10 minutes through the default scan with 0 restarts and no panic.
+- **Layout:** six views at 1440 and 390 px with no horizontal overflow.
 
 ## Published `0.1.0-rc.7` images (2026-11-20)
 
@@ -105,5 +128,5 @@ The immutable `v0.1.0-rc.5` tag is also retained as a failed release attempt. It
 ## Pending repository evidence
 
 - An all-green quality-gates run on `main` at `5c193ae` or later.
-- A release through the release workflow (the next version, since `0.1.0-rc.6` already exists on Docker Hub): keyless signatures and attestations on the published digests.
+- A release through the release workflow (`0.1.0-rc.9` or later, since `rc.6` to `rc.8` already exist on Docker Hub): keyless signatures and attestations on the published digests.
 - The packaged Helm chart, checksum, and Sigstore bundle attached to the GitHub prerelease.
