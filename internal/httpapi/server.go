@@ -399,10 +399,12 @@ func (server *apiServer) health(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (server *apiServer) ready(w http.ResponseWriter, r *http.Request) {
-	checks := map[string]string{"configuration": "ready"}
+	// "authentication" is kept for clients of earlier releases, which require
+	// it; KubeRight has no sign-in, so it mirrors the configuration check.
+	checks := map[string]string{"configuration": "ready", "authentication": "ready"}
 	ready := true
 	if err := server.access.Ready(r.Context()); err != nil {
-		checks["configuration"] = "invalid"
+		checks["configuration"], checks["authentication"] = "invalid", "unavailable"
 		ready = false
 	}
 	if server.provider != nil {

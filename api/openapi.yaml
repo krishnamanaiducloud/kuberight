@@ -1588,11 +1588,16 @@ components:
             critical and make the service not ready. Prometheus
             (`usageMetrics`) and forecasting are optional and report
             `degraded` without failing.
-          required: [configuration, dataProvider, repository, usageMetrics, forecasting]
+          required: [authentication, dataProvider, repository, usageMetrics, forecasting]
           properties:
             configuration:
               type: string
               enum: [ready, invalid]
+            authentication:
+              type: string
+              enum: [ready, unavailable]
+              deprecated: true
+              description: Kept for earlier clients. KubeRight has no sign-in; this mirrors `configuration`.
             dataProvider:
               type: string
               enum: [ready, unavailable, not_configured]
