@@ -21,6 +21,9 @@ bin/
 **/.ruff_cache/
 **/coverage/
 **/dist/
+web/test-results/
+web/test-results-live/
+web/playwright-report/
 *.tsbuildinfo
 web/vite.config.js
 web/vite.config.d.ts

@@ -1,8 +1,59 @@
 # Release status
 
-- Candidate: `0.1.0-rc.8`, published from a local build (below); read-only, one application Deployment, built-in forecasting, no sign-in (like Goldilocks)
+- Candidate: `0.1.0-rc.10`, published from a local build (below); read-only, one application Deployment, built-in forecasting, no sign-in (like Goldilocks)
 - Status: release candidate; see [production readiness](PRODUCTION-READINESS.md) (87/100)
-- Previous releases: `0.1.0-rc.7` and `0.1.0-rc.6` (local builds, below) and `v0.1.0-rc.4` (release workflow, 2026-11-19)
+- Previous releases: `0.1.0-rc.9` to `0.1.0-rc.6` (local builds, below) and `v0.1.0-rc.4` (release workflow, 2026-11-19)
+- The next release through the release workflow must be `0.1.0-rc.11` or later.
+
+## Published `0.1.0-rc.10` images (2026-11-20)
+
+Built locally with Docker Buildx for linux/amd64 and linux/arm64 from `142fb8c`, with SBOM and provenance attestations, and pushed to Docker Hub. No keyless signature, GitHub release, or tag.
+
+| Image | Index digest |
+| --- | --- |
+| `mohankrishna999/kuberight:0.1.0-rc.10` | `sha256:c74449664ef8d9d866b14a4e04bc040c7290d8a22285ff43ee9e23b2604e24a9` |
+| `mohankrishna999/kuberight:0.1.0-rc.10-debug` | `sha256:39a53c7f45c0492fa99e2627db38784dce7e3647794a70ab784041379df240f1` |
+
+What changed: Prometheus and Thanos queries.
+
+- **The cause of the "Prometheus request failed" errors on OpenShift.** A request that got no response lost its cause, so every TLS, DNS, connection, proxy, timeout, token, and cancellation failure looked the same. Two setups failed this way while a direct query worked:
+  - `prometheus.url` set by hand to `thanos-querier.openshift-monitoring.svc`, which got neither the ServiceAccount token nor the service CA;
+  - an `HTTPS_PROXY` in the pod without `.svc` in `NO_PROXY`, which sent Thanos requests to the proxy.
+- **Reproduced against `rc.9`.** Against a simulated Thanos Querier (TLS from a test service CA, bearer token required), the published `rc.9` image reported both setups only as "configured but not responding". `rc.10` connects in both.
+- **Fixes.**
+  - A configured OpenShift monitoring URL uses the projected ServiceAccount token, re-read as it rotates, and the service CA.
+  - `*.svc`, `*.cluster.local`, and loopback hosts bypass the HTTP proxy.
+  - Every failure is classified and logged without secrets.
+  - Prometheus and forecasting report their real state.
+  - `kuberight prometheus-check` diagnoses from inside the pod.
+- **Checks before the push.**
+  - Go race tests pass in 17 packages, including the new mock-server tests for each HTTP status, TLS, timeout, proxy, token rotation, and log contents.
+  - The dashboard passes its unit tests and 52 browser tests.
+  - Trivy 0.76.2 finds 0 HIGH or CRITICAL in all four platform images, and the pushed digests equal the scanned images.
+  - **Thanos simulation, both images.** With an explicit Thanos URL, a projected-style token and service CA, and a dead `HTTPS_PROXY`, the query succeeds. A wrong token gives `authentication_failed`, another CA gives `tls_error`, and an external host through a dead proxy gives `proxy_error`.
+  - **On kind.** `prometheus-check` in the pod: readiness and CPU queries succeed, and all 8 metric families are available. Integrations: Prometheus `connected`, Forecasting `ready`. No usage-query errors after the live browser tests. 0 restarts in 10 minutes.
+
+## Published `0.1.0-rc.9` images (2026-11-20)
+
+Built locally from `b81623b` for linux/amd64 and linux/arm64, with SBOM and provenance attestations.
+
+| Image | Index digest |
+| --- | --- |
+| `mohankrishna999/kuberight:0.1.0-rc.9` | `sha256:485892a3e6821c467aa4828f91b2db08fe50d21c7fa751a322c8a4a155f8c66b` |
+| `mohankrishna999/kuberight:0.1.0-rc.9-debug` | `sha256:e0eaaf4d798c41e8c717dace6fbfd409d25613de84ab5de3d37715156445b94e` |
+
+What changed:
+
+- **Branding.** An original KubeRight favicon set and mark, the "KubeRight | Kubernetes Resource Intelligence" title, and the manifest.
+- **Static files.** Explicit icon media types and cache headers, and 404 instead of the dashboard page for missing files.
+- **`basePath`.** Serves the dashboard under a URL prefix.
+
+Checks before the push:
+
+- Trivy found 0 HIGH or CRITICAL.
+- All 8 icon files return 200 with their media types in both images, through a reverse proxy at `/kuberight`, and through the kind Service.
+- The live browser tests passed at the root and under the prefix.
+- 0 restarts in 10 minutes.
 
 ## Published `0.1.0-rc.8` images (2026-11-20)
 
@@ -128,5 +179,5 @@ The immutable `v0.1.0-rc.5` tag is also retained as a failed release attempt. It
 ## Pending repository evidence
 
 - An all-green quality-gates run on `main` at `5c193ae` or later.
-- A release through the release workflow (`0.1.0-rc.9` or later, since `rc.6` to `rc.8` already exist on Docker Hub): keyless signatures and attestations on the published digests.
+- A release through the release workflow (`0.1.0-rc.11` or later, since `rc.6` to `rc.10` already exist on Docker Hub): keyless signatures and attestations on the published digests.
 - The packaged Helm chart, checksum, and Sigstore bundle attached to the GitHub prerelease.
