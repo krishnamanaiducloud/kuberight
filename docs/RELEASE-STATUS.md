@@ -1,8 +1,33 @@
 # Release status
 
-- Candidate: `0.1.0-rc.6`, published from a local build (below); read-only, one application Deployment, built-in forecasting
+- Candidate: `0.1.0-rc.7`, published from a local build (below); read-only, one application Deployment, built-in forecasting, authentication disabled by default
 - Status: release candidate; see [production readiness](PRODUCTION-READINESS.md) (88/100)
-- Previous release: `v0.1.0-rc.4`, published to Docker Hub as `mohankrishna999/kuberight:0.1.0-rc.4` (2026-11-19)
+- Previous releases: `0.1.0-rc.6` (local build, below) and `v0.1.0-rc.4` (release workflow, 2026-11-19)
+
+## Published `0.1.0-rc.7` images (2026-11-20)
+
+Built locally with Docker Buildx for linux/amd64 and linux/arm64 from `2eb99f7`, with SBOM and provenance attestations, and pushed to Docker Hub. Like `rc.6`, they have no keyless signature and no GitHub release or tag.
+
+| Image | Index digest |
+| --- | --- |
+| `mohankrishna999/kuberight:0.1.0-rc.7` | `sha256:3859773c84ec28633283a875e67ad5e113cb085371d5ca87d1535feadd5ba203` |
+| `mohankrishna999/kuberight:0.1.0-rc.7-debug` | `sha256:1a6ceea0d97c26a624eb1b8b3f85660a77da10afa12e811eebabe4bd83c3f389` |
+
+What changed:
+- **Authentication disabled by default.** `auth.mode=disabled` is the default in the chart, every profile, and all four manifests, so the dashboard no longer shows the mode as unconfirmed for lack of a token.
+- **No sign-in sidecar on OpenShift.** The pod no longer runs oauth-proxy, and the liveness probe reaches the API directly instead of through the proxy.
+- **Panics no longer end the process.** A panic in a fleet scan, scheduling tick, or verification pass fails that run, and its stack is logged.
+- **Memory headroom.** The Go runtime keeps its heap under 85% of the container memory limit, and the default limit is 1Gi.
+- **Probe tolerance.** Probes allow 5 seconds, and liveness restarts the pod only after 2 minutes of failures.
+
+Checks before the push:
+- **Trivy 0.76.2:** all four platform images had 0 HIGH or CRITICAL findings, and the pushed digests equal the scanned images.
+- **Image contents:** the production image runs as UID 65532 and has no shell.
+- **API on kind (Kubernetes 1.35.1),** using the pushed amd64 production image with authentication disabled:
+  - API requests without a token, or with a bogus one, got 200;
+  - the dashboard showed `recommend mode` with no Connect button and no "unconfirmed" label;
+  - the CI live browser test passed.
+- **Stability:** the pod ran through the default scan with 0 restarts, and no panic was logged.
 
 ## Published `0.1.0-rc.6` images (2026-11-20)
 
