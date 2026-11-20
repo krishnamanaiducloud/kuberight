@@ -1,9 +1,26 @@
 # Release status
 
-- Candidate: `v0.1.0-rc.6` (pending)
-- Branch: `feat/standalone-read-only`: read-only, one application Deployment, built-in forecasting
+- Candidate: `0.1.0-rc.6`, published from a local build (below); read-only, one application Deployment, built-in forecasting
 - Status: release candidate; see [production readiness](PRODUCTION-READINESS.md) (90/100)
 - Previous release: `v0.1.0-rc.4`, published to Docker Hub as `mohankrishna999/kuberight:0.1.0-rc.4` (2026-11-19)
+
+## Published `0.1.0-rc.6` images (2026-11-20)
+
+Built locally with Docker Buildx for linux/amd64 and linux/arm64, with SBOM and provenance attestations, and pushed to Docker Hub. They did not go through the release workflow, so they carry no keyless signature and there is no GitHub release or `v0.1.0-rc.6` tag. The workflow refuses to replace an existing version tag.
+
+| Image | Source | Index digest |
+| --- | --- | --- |
+| `mohankrishna999/kuberight:0.1.0-rc.6` | `5c193ae` | `sha256:7e65c1ffb12a80af2e6fc0e77391a3e463a126121cc08144bd2328a341658399` |
+| `mohankrishna999/kuberight:0.1.0-rc.6-debug` | `f80a2a2` (same application code) | `sha256:0d4d48b79b6d0626988604bf7e3b8e46c327c1708d76c90cf30330b4697fbeed` |
+
+Before the push, each platform image was scanned with Trivy 0.76.2 and had 0 HIGH or CRITICAL findings. The production image runs as UID 65532 and has no shell. The amd64 production image, at the same digest that was pushed, ran on kind (Kubernetes 1.35.1) with Kubernetes authentication:
+
+- unauthenticated API requests got 401;
+- every Prometheus metric family was available;
+- the Overview health counts matched kubectl (30 pods);
+- the CI live browser test passed.
+
+CI on `main` at `f80a2a2` passed every gate except that live browser test, which still expected the Overview at `/`. `5c193ae` fixes the test.
 
 ## CI on the candidate pull request
 
@@ -62,6 +79,6 @@ The immutable `v0.1.0-rc.5` tag is also retained as a failed release attempt. It
 
 ## Pending repository evidence
 
-- An all-green quality-gates run for `feat/standalone-read-only`, followed by merge to `main`.
-- The release workflow on the `v0.1.0-rc.6` tag: published digests, signatures, and attestations.
+- An all-green quality-gates run on `main` at `5c193ae` or later.
+- A release through the release workflow (the next version, since `0.1.0-rc.6` already exists on Docker Hub): keyless signatures and attestations on the published digests.
 - The packaged Helm chart, checksum, and Sigstore bundle attached to the GitHub prerelease.
