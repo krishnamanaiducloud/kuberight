@@ -28,6 +28,11 @@ imagePullSecrets: []
 # recommendations and reviews. KubeRight never changes workloads in either.
 operationMode: recommend
 
+# URL prefix to serve the dashboard and API under, such as /kuberight, when an
+# Ingress or Route shares a host by path. Empty serves them at the root. Set
+# the Ingress path (or route.path) to the same prefix; it is not stripped.
+basePath: ""
+
 inventory:
   enabled: true
   # Empty uses the release name as the stable cluster identity.

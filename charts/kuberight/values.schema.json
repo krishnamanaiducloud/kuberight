@@ -26,6 +26,7 @@
     "image": { "$ref": "#/definitions/image" },
     "imagePullSecrets": { "$ref": "#/definitions/imagePullSecrets" },
     "operationMode": { "type": "string", "enum": ["observe", "recommend"], "description": "KubeRight is read-only in both modes; apply mode was removed." },
+    "basePath": { "type": "string", "maxLength": 200, "pattern": "^$|^(/[A-Za-z0-9._~-]+)+$", "description": "URL prefix such as /kuberight; empty serves at the root." },
     "inventory": {
       "type": "object",
       "additionalProperties": false,

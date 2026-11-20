@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { CssBaseline, ThemeProvider } from '@mui/material'
 import { App } from './App'
 import { theme } from './theme'
+import { basePath } from './basePath'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -17,7 +18,7 @@ createRoot(document.getElementById('root')!).render(
     <ThemeProvider theme={theme}>
       <CssBaseline />
       <QueryClientProvider client={queryClient}>
-        <BrowserRouter>
+        <BrowserRouter basename={basePath || undefined}>
           <App />
         </BrowserRouter>
       </QueryClientProvider>

@@ -240,7 +240,7 @@ func (server *apiServer) routes() (http.Handler, error) {
 		})
 	}
 	if cfg.WebRoot != "" {
-		spa, err := newSPAHandler(cfg.WebRoot)
+		spa, err := newSPAHandler(cfg.WebRoot, cfg.BasePath)
 		if err != nil {
 			return nil, err
 		}
@@ -258,6 +258,8 @@ func (server *apiServer) routes() (http.Handler, error) {
 	handler = withTelemetry(handler, logger, server.metrics)
 	handler = withSecurityHeaders(handler)
 	handler = withRequestID(handler)
+	// Outermost, so every layer sees the path without the URL prefix.
+	handler = withBasePath(handler, cfg.BasePath)
 	return handler, nil
 }
 

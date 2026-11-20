@@ -2,7 +2,7 @@ KubeRight {{ .Chart.AppVersion }} has been rendered in {{ .Values.operationMode 
 
 Service:
   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "kuberight.fullname" . }} 8080:{{ .Values.service.port }}
-  http://127.0.0.1:8080/
+  http://127.0.0.1:8080{{ .Values.basePath }}/
 
 KubeRight has no sign-in, like Goldilocks: anyone who can reach this release's Service, Route, or Ingress can read the cluster inventory and approve or reject recommendations. Keep it on port-forward, or restrict who can reach the Route or Ingress.
 {{- if and .Values.networkPolicy.enabled .Values.ingress.enabled }}

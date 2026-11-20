@@ -66,6 +66,10 @@ spec:
           env:
             - name: KUBERIGHT_LISTEN_ADDR
               value: ":8080"
+            {{- with .Values.basePath }}
+            - name: KUBERIGHT_BASE_PATH
+              value: {{ . | quote }}
+            {{- end }}
             # The Go runtime keeps its heap under 85% of this limit.
             - name: KUBERIGHT_MEMORY_LIMIT
               valueFrom:

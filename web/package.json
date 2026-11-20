@@ -1,6 +1,6 @@
 {
   "name": "kuberight-dashboard",
-  "version": "0.1.0-rc.8",
+  "version": "0.1.0-rc.9",
   "private": true,
   "type": "module",
   "engines": {
@@ -13,7 +13,8 @@
     "test": "vitest run",
     "test:e2e": "playwright test",
     "test:e2e:live": "playwright test --config playwright.live.config.ts",
-    "typecheck": "node node_modules/typescript-7/bin/tsc -b --pretty false"
+    "typecheck": "node node_modules/typescript-7/bin/tsc -b --pretty false",
+    "brand:assets": "node scripts/brand-assets.mjs"
   },
   "dependencies": {
     "@emotion/react": "11.14.0",

@@ -14,6 +14,9 @@ spec:
   {{- with .Values.route.host }}
   host: {{ . | quote }}
   {{- end }}
+  {{- with .Values.basePath }}
+  path: {{ . | quote }}
+  {{- end }}
   to:
     kind: Service
     name: {{ include "kuberight.fullname" . }}

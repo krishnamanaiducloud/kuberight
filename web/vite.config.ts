@@ -3,6 +3,9 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
+  // Relative URLs, resolved against the <base href> the server sets, so the
+  // dashboard and its icons work under a URL prefix (KUBERIGHT_BASE_PATH).
+  base: './',
   server: {
     port: 5173,
     proxy: {
@@ -21,7 +24,7 @@ export default defineConfig({
     pool: 'threads',
     fileParallelism: false,
     setupFiles: './src/test/setup.ts',
-    include: ['src/**/*.test.{ts,tsx}'],
+    include: ['src/**/*.test.{ts,tsx}', 'scripts/**/*.test.mjs'],
     coverage: { reporter: ['text', 'lcov'] },
   },
 })

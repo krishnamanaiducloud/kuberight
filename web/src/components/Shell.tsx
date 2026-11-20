@@ -42,7 +42,8 @@ export function Shell({ children }: { children: ReactNode }) {
   const drawer = (
     <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <Toolbar sx={{ minHeight: 76, gap: 1.5 }}>
-        <Box aria-hidden sx={{ width: 34, height: 34, borderRadius: 2, bgcolor: 'primary.main', color: '#051718', display: 'grid', placeItems: 'center', fontWeight: 900 }}>K</Box>
+        {/* The same mark as the favicon, resolved against <base href>. */}
+        <Box component="img" src="favicon.svg" alt="" aria-hidden width={34} height={34} sx={{ width: 34, height: 34, flexShrink: 0, display: 'block' }} />
         <Box>
           <Typography variant="h6" sx={{ fontWeight: 800, lineHeight: 1.05 }}>KubeRight</Typography>
           <Typography variant="caption" color="text.secondary">Resource intelligence</Typography>

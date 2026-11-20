@@ -1,3 +1,5 @@
+import { appUrl } from './basePath'
+
 export type ApiStatus = {
   available: boolean
   reason?: string
@@ -35,7 +37,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   headers.set('Accept', 'application/json')
   if (init?.body) headers.set('Content-Type', 'application/json')
 
-  const response = await fetch(path, { ...init, headers, credentials: 'same-origin' })
+  const response = await fetch(appUrl(path), { ...init, headers, credentials: 'same-origin' })
   const requestId = response.headers.get('X-Request-ID') ?? undefined
   const body = await response.json().catch(() => ({})) as Record<string, unknown>
   if (!response.ok) {

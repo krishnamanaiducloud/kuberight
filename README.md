@@ -1,3 +1,5 @@
+<img src="web/public/favicon.svg" alt="KubeRight logo" width="72" height="72">
+
 # KubeRight
 
 KubeRight is a Kubernetes resource-inventory and right-sizing project. It is a single Go service that serves the API, the React dashboard, recommendations, diagnostics, and a built-in forecasting engine, installed with a Helm chart or standalone manifests. It needs only an existing Prometheus.
@@ -353,6 +355,19 @@ Then browse to `http://127.0.0.1:8080/`. Every request is served as the anonymou
 - **Who can use it is decided by the network.** Anyone who can reach the Service, Route, or Ingress can read the cluster inventory and approve or reject recommendations. KubeRight never changes workloads, but keep it on a port-forward, or restrict the Route or Ingress with the NetworkPolicy, an IP allowlist, or your own authenticating ingress.
 - **What KubeRight can see is decided by its ServiceAccount.** `rbac.scope=namespace` (the default) shows one namespace; `rbac.scope=cluster` shows every namespace.
 - **Upgrades from releases with sign-in.** The `auth`, `approvals`, and `rbac.authReviews` values are accepted and ignored, and the `KUBERIGHT_AUTH_MODE`, `KUBERIGHT_API_TOKEN`, `KUBERIGHT_OIDC_*`, `KUBERIGHT_TOKEN_AUDIENCE`, and `KUBERIGHT_REQUIRE_DISTINCT_APPROVER` settings are logged at startup as removed. The oauth-proxy and oauth2-proxy sidecars, the cookie-secret init container, and the TokenReview and SubjectAccessReview RBAC are no longer rendered.
+
+### Serving under a URL prefix
+
+To share a host with other tools, set `basePath` (`KUBERIGHT_BASE_PATH`), for example `/kuberight`, and route that path to KubeRight without rewriting it:
+
+- **Ingress:** set the host's path to `/kuberight` with `pathType: Prefix`.
+- **OpenShift Route:** the chart sets the Route's `path` from `basePath`.
+
+The dashboard, API, icons, and manifest are then served under `/kuberight/`, and `/kuberight` redirects there. KubeRight writes the prefix into the page's `<base href>`, so every asset URL is relative to it. A proxy that strips the prefix also works, because unprefixed paths are still served, and the probes keep using `/healthz` and `/readyz`.
+
+### Browser icons
+
+The dashboard ships its own icon set: `favicon.ico` (16, 32, and 48 px), 16 and 32 px PNGs, `favicon.svg`, a 180 px Apple touch icon, 192 and 512 px Android icons, and `site.webmanifest`. They are served with their own media types, and cached for an hour, so a new icon shows after a cache refresh. Content-hashed scripts and styles under `/assets/` are cached for a year. A request for a missing file, such as an icon size that does not exist, gets a 404 rather than the dashboard page. To change the mark, edit `web/public/favicon.svg` and run `npm run brand:assets` in `web/`.
 
 ## Data safety
 

@@ -37,3 +37,30 @@ test('uses the deployed API without any sign-in and renders live Kubernetes inve
   await testInfo.attach('live-workloads', { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' })
   expect(failures).toEqual([])
 })
+
+test('serves the KubeRight favicon set from the deployed image', async ({ page }) => {
+  const missing: string[] = []
+  page.on('response', (response) => {
+    if (response.status() === 404) missing.push(response.url())
+  })
+  await page.goto('/overview')
+  await expect(page).toHaveTitle('KubeRight | Kubernetes Resource Intelligence')
+  for (const [file, type] of Object.entries({
+    'favicon.ico': 'image/x-icon',
+    'favicon.svg': 'image/svg+xml',
+    'favicon-16x16.png': 'image/png',
+    'favicon-32x32.png': 'image/png',
+    'apple-touch-icon.png': 'image/png',
+    'android-chrome-192x192.png': 'image/png',
+    'android-chrome-512x512.png': 'image/png',
+    'site.webmanifest': 'application/manifest+json',
+  })) {
+    const response = await page.request.get(file)
+    expect(response.status(), file).toBe(200)
+    expect(response.headers()['content-type'], file).toBe(type)
+  }
+  const absent = await page.request.get('favicon-64x64.png')
+  expect(absent.status()).toBe(404)
+  expect(absent.headers()['content-type']).not.toMatch(/html/)
+  expect(missing).toEqual([])
+})

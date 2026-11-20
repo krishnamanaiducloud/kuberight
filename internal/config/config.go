@@ -20,9 +20,12 @@ const (
 // Config contains the security- and reliability-relevant API server settings.
 // Secrets are intentionally kept separate from values which are safe to log.
 type Config struct {
-	ListenAddress         string
-	OperationMode         string
-	WebRoot               string
+	ListenAddress string
+	OperationMode string
+	WebRoot       string
+	// BasePath is the URL prefix the dashboard is served under, such as
+	// "/kuberight" behind an Ingress or Route path; "" serves it at the root.
+	BasePath              string
 	MaxBodyBytes          int64
 	RequestTimeout        time.Duration
 	ReadHeaderTimeout     time.Duration
@@ -170,6 +173,7 @@ func Load() (Config, error) {
 		ListenAddress:             envOr("KUBERIGHT_LISTEN_ADDR", ":8080"),
 		OperationMode:             strings.ToLower(envOr("KUBERIGHT_OPERATION_MODE", ModeRecommend)),
 		WebRoot:                   os.Getenv("KUBERIGHT_WEB_ROOT"),
+		BasePath:                  strings.TrimRight(strings.TrimSpace(os.Getenv("KUBERIGHT_BASE_PATH")), "/"),
 		InventoryNamespace:        os.Getenv("KUBERIGHT_INVENTORY_NAMESPACE"),
 		ClusterID:                 envOr("KUBERIGHT_CLUSTER_ID", "local"),
 		PrometheusURL:             os.Getenv("KUBERIGHT_PROMETHEUS_URL"),
@@ -294,6 +298,9 @@ func (c Config) Validate() error {
 	}
 	if _, _, err := net.SplitHostPort(c.ListenAddress); err != nil {
 		return fmt.Errorf("invalid KUBERIGHT_LISTEN_ADDR: %w", err)
+	}
+	if err := ValidateBasePath(c.BasePath); err != nil {
+		return err
 	}
 	if c.DefaultScanInterval != 0 && c.DefaultScanInterval < 5*time.Minute {
 		return errors.New("KUBERIGHT_DEFAULT_SCAN_INTERVAL must be 0 or at least 5m")
@@ -522,4 +529,27 @@ func parseDuration(name string, fallback, minimum, maximum time.Duration) (time.
 		return 0, fmt.Errorf("%s must be a duration between %s and %s", name, minimum, maximum)
 	}
 	return value, nil
+}
+
+// ValidateBasePath accepts "" or a prefix such as "/kuberight" or
+// "/tools/kuberight": URL-safe segments, no trailing slash, and no "." or ".."
+// segments, so the prefix can be written into HTML and matched literally.
+func ValidateBasePath(basePath string) error {
+	if basePath == "" {
+		return nil
+	}
+	if !strings.HasPrefix(basePath, "/") || strings.HasSuffix(basePath, "/") || len(basePath) > 200 {
+		return errors.New("KUBERIGHT_BASE_PATH must start with / and not end with /, for example /kuberight")
+	}
+	for _, segment := range strings.Split(basePath[1:], "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return errors.New("KUBERIGHT_BASE_PATH must not contain empty, . or .. segments")
+		}
+		for _, r := range segment {
+			if !strings.ContainsRune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.~", r) {
+				return fmt.Errorf("KUBERIGHT_BASE_PATH may contain only letters, digits, and - _ . ~ in each segment, not %q", r)
+			}
+		}
+	}
+	return nil
 }
