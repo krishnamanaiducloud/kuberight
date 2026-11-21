@@ -207,6 +207,25 @@ func (source *Source) Rollouts(ctx context.Context, subject Subject, start, end 
 	return events, nil
 }
 
+// RolloutsFromOwners dates Deployment rollouts in [start, end] from the
+// creation of the ReplicaSets the Kubernetes API links to the Deployment UID.
+// It covers retained revisions only and is used where kube-state-metrics
+// does not export kube_replicaset_created.
+func RolloutsFromOwners(subject Subject, owners []OwnerIdentity, start, end time.Time) []Event {
+	if subject.Kind != "Deployment" {
+		return nil
+	}
+	events := []Event{}
+	for _, owner := range owners {
+		if owner.Kind != "ReplicaSet" || owner.CreatedAt.Before(start) || owner.CreatedAt.After(end) {
+			continue
+		}
+		events = append(events, Event{Timestamp: owner.CreatedAt.UTC(), Kind: EventRollout, Detail: owner.Name})
+	}
+	sort.Slice(events, func(left, right int) bool { return events[left].Timestamp.Before(events[right].Timestamp) })
+	return events
+}
+
 // Pearson returns the correlation of two series over their shared
 // timestamps, or nil with fewer than ten shared points or no variance.
 func Pearson(left, right *Series) *float64 {

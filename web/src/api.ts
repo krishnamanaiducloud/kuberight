@@ -26,6 +26,8 @@ export class ApiError extends Error {
     message: string,
     readonly status: number,
     readonly requestId?: string,
+    /** The API's machine-readable error code, such as metric_attribution_incomplete. */
+    readonly code?: string,
   ) {
     super(message)
   }
@@ -45,7 +47,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const message = typeof problem === 'string'
       ? problem
       : String(problem?.message ?? body.message ?? `Request failed (${response.status})`)
-    throw new ApiError(message, response.status, requestId)
+    const code = typeof problem === 'object' && typeof problem?.code === 'string' ? problem.code : undefined
+    throw new ApiError(message, response.status, requestId, code)
   }
   // A collection's items are always an array, even when an older server
   // encoded an empty page as null.
@@ -581,6 +584,9 @@ export type Insight = { severity: 'info' | 'warning' | 'critical'; title: string
 
 export type SignalsResponse = {
   status: ApiStatus
+  /** When returned samples begin; note explains a range that predates them. */
+  range?: { requestedStart: string; requestedEnd: string; dataStart?: string; note?: string }
+  step?: string
   signals?: {
     start: string
     end: string
@@ -737,4 +743,56 @@ export type PolicyResolution = {
   candidates?: PolicyRecord[]
   ambiguous?: boolean
   warning?: string
+}
+
+/** GET /api/v1/attribution: how usage is attributed to one workload container. */
+export type AttributionOutcome = 'attributed' | 'insufficient_history' | 'missing_metrics' | 'incomplete_attribution' | 'provider_unavailable'
+
+export type AttributionDiagnostics = {
+  window: string
+  step: string
+  identity: {
+    kind: string
+    name: string
+    namespace: string
+    uid: string
+    createdAt: string
+    expectedReplicas?: number
+    owners: { kind: string; name: string; uid: string; createdAt: string; replicas: number }[]
+    pods: { name: string; uid: string; createdAt: string; deletedAt?: string; phase?: string; containers?: string[] }[]
+    resolutionIssues: string[]
+  }
+  report: {
+    start: string
+    end: string
+    step: string
+    workloadUid: string
+    workloadCreatedAt?: string
+    owners: { kind: string; name: string; uid?: string; verified: boolean; recorded: boolean; createdAt?: string; replicas?: number }[]
+    pods: {
+      pod: string
+      uid?: string
+      ownerKind?: string
+      owner?: string
+      live: boolean
+      createdAt?: string
+      createdFrom?: 'kube_pod_created' | 'kube_pod_start_time'
+      hasUsage: boolean
+      attributed: boolean
+      excluded?: boolean
+      reason: string
+    }[]
+    podsTruncated?: boolean
+    usagePods: number
+    attributedPods: number
+    unattributedPods: number
+    excludedPods: number
+    families: { name: string; purpose: string; required: boolean; alternative?: string; series: number }[]
+    missingFamilies: string[]
+    coverage?: { complete: boolean; issues: string[]; discoveredReplicas: number; revisions: number; unattributedSteps: number; ambiguousSteps: number; cpuReplicaCoverage: number; memoryReplicaCoverage: number }
+    coveragePercent: number
+    eligible: boolean
+    outcome: AttributionOutcome
+    reason: string
+  }
 }

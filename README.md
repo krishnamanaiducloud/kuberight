@@ -489,6 +489,28 @@ A token is never printed. It exits 0 when Prometheus answered. On OpenShift:
 - Requests to `*.svc` and `*.cluster.local` hosts never go through an `HTTP_PROXY` or `HTTPS_PROXY`.
 - TLS verification is always on.
 
+**"Workload metric attribution is incomplete"?** KubeRight only sizes a container from usage it can prove belongs to the current workload. It never matches on pod-name prefixes alone:
+
+1. `kube_pod_owner` ties each pod UID to its controller.
+2. The Kubernetes API ties that ReplicaSet or Job to the workload UID. `kube_replicaset_owner` or `kube_job_owner` covers revisions the API no longer keeps.
+3. The pod's creation time must not predate the workload object, so a deleted workload with the same name is never mixed in. It comes from `kube_pod_created`, or from `kube_pod_start_time` on OpenShift, whose kube-state-metrics drops every `*_created` family.
+
+Open a workload, choose a container, and expand **Metric attribution**, or call the same read-only endpoint:
+
+```sh
+curl "http://localhost:8080/api/v1/attribution?namespace=default&kind=Deployment&workload=netshoot&container=netshoot&window=168h"
+```
+
+It shows:
+
+- the UID chain;
+- every pod identity with usage, and why it was or was not attributed;
+- which metric families are present;
+- replica-time coverage;
+- whether a recommendation can be calculated.
+
+The Analyze dialog reports each container as one of: recommendation created, already right-sized, held, insufficient usage history, missing metrics, incomplete workload attribution, provider unavailable, or unsupported.
+
 **No forecast?** A forecast needs at least 48 samples with no gap longer than three steps, and no fewer samples than the horizon. That is 48 hours for hourly forecasts and 48 days for 30- and 90-day forecasts. The error says how many samples exist. On OpenShift, platform Prometheus keeps 15 days by default.
 
 **A shell for debugging.** The production image has no shell. Build the debug variant, which adds a BusyBox shell (`/busybox/sh`) and still runs as non-root, with `docker build --target debug -t <registry>/kuberight:<version>-debug .`. Then attach it to the running pod without restarting it, or start a copy on OpenShift:

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -72,19 +73,37 @@ type replayPod struct {
 	cpuPressure, memoryPressure float64
 	// cpuRequestCores, when set, emits kube_pod_container_resource_requests.
 	cpuRequestCores float64
+	// namespace, when set, places the pod outside the profile namespaces;
+	// it is written once, unchanged.
+	namespace string
+	// ksmFrom, when set, is when kube-state-metrics started reporting the
+	// pod, for example because it was installed after the pod started.
+	ksmFrom time.Time
 }
 
 func (fixture *replayFixture) pod(pod replayPod) {
+	namespace, ksmFrom := replayNamespace, pod.from
+	if pod.namespace != "" {
+		namespace = pod.namespace
+	}
+	if !pod.ksmFrom.IsZero() {
+		ksmFrom = pod.ksmFrom
+	}
 	if !pod.noKSM {
-		fixture.add("kube_pod_info", map[string]string{"namespace": replayNamespace, "pod": pod.name, "uid": pod.uid, "created_by_kind": pod.ownerKind, "created_by_name": pod.owner, "node": "node-a"}, pod.from, pod.to, constant(1))
-		fixture.add("kube_pod_created", map[string]string{"namespace": replayNamespace, "pod": pod.name, "uid": pod.uid}, pod.from, pod.to, constant(float64(pod.from.Unix())))
-		fixture.add("kube_pod_status_phase", map[string]string{"namespace": replayNamespace, "pod": pod.name, "uid": pod.uid, "phase": "Running"}, pod.from, pod.to, constant(1))
-		fixture.add("kube_pod_container_status_restarts_total", map[string]string{"namespace": replayNamespace, "pod": pod.name, "uid": pod.uid, "container": "app"}, pod.from, pod.to, constant(0))
+		fixture.add("kube_pod_info", map[string]string{"namespace": namespace, "pod": pod.name, "uid": pod.uid, "created_by_kind": pod.ownerKind, "created_by_name": pod.owner, "node": "node-a"}, ksmFrom, pod.to, constant(1))
+		// kube_pod_owner's uid label is the pod's UID; the owner is only
+		// identified by kind and name.
+		fixture.add("kube_pod_owner", map[string]string{"namespace": namespace, "pod": pod.name, "uid": pod.uid, "owner_kind": pod.ownerKind, "owner_name": pod.owner, "owner_is_controller": "true"}, ksmFrom, pod.to, constant(1))
+		fixture.add("kube_pod_created", map[string]string{"namespace": namespace, "pod": pod.name, "uid": pod.uid}, ksmFrom, pod.to, constant(float64(pod.from.Unix())))
+		// The kubelet acknowledges a pod a few seconds after it is created.
+		fixture.add("kube_pod_start_time", map[string]string{"namespace": namespace, "pod": pod.name, "uid": pod.uid}, ksmFrom, pod.to, constant(float64(pod.from.Add(3*time.Second).Unix())))
+		fixture.add("kube_pod_status_phase", map[string]string{"namespace": namespace, "pod": pod.name, "uid": pod.uid, "phase": "Running"}, ksmFrom, pod.to, constant(1))
+		fixture.add("kube_pod_container_status_restarts_total", map[string]string{"namespace": namespace, "pod": pod.name, "uid": pod.uid, "container": "app"}, ksmFrom, pod.to, constant(0))
 		if pod.cpuRequestCores > 0 {
-			fixture.add("kube_pod_container_resource_requests", map[string]string{"namespace": replayNamespace, "pod": pod.name, "uid": pod.uid, "container": "app", "resource": "cpu", "unit": "core"}, pod.from, pod.to, constant(pod.cpuRequestCores))
+			fixture.add("kube_pod_container_resource_requests", map[string]string{"namespace": namespace, "pod": pod.name, "uid": pod.uid, "container": "app", "resource": "cpu", "unit": "core"}, ksmFrom, pod.to, constant(pod.cpuRequestCores))
 		}
 		if pod.oom {
-			fixture.add("kube_pod_container_status_last_terminated_reason", map[string]string{"namespace": replayNamespace, "pod": pod.name, "uid": pod.uid, "container": "app", "reason": "OOMKilled"}, pod.from, pod.to, constant(1))
+			fixture.add("kube_pod_container_status_last_terminated_reason", map[string]string{"namespace": namespace, "pod": pod.name, "uid": pod.uid, "container": "app", "reason": "OOMKilled"}, ksmFrom, pod.to, constant(1))
 		}
 	}
 	if pod.noCAdvisor {
@@ -97,7 +116,7 @@ func (fixture *replayFixture) pod(pod replayPod) {
 	if !pod.reportTo.IsZero() {
 		to = pod.reportTo
 	}
-	labels := map[string]string{"namespace": replayNamespace, "pod": pod.name, "container": "app"}
+	labels := map[string]string{"namespace": namespace, "pod": pod.name, "container": "app"}
 	cumulative := 0.0
 	fixture.add("container_cpu_usage_seconds_total", labels, from, to, func(at time.Time) float64 {
 		cumulative += pod.cpuMilli(at) / 1000 * 60
@@ -113,8 +132,12 @@ func (fixture *replayFixture) pod(pod replayPod) {
 }
 
 func (fixture *replayFixture) replicaSet(deployment, name string, created, from, to time.Time) {
-	fixture.add("kube_replicaset_owner", map[string]string{"namespace": replayNamespace, "replicaset": name, "owner_kind": "Deployment", "owner_name": deployment, "owner_is_controller": "true"}, from, to, constant(1))
-	fixture.add("kube_replicaset_created", map[string]string{"namespace": replayNamespace, "replicaset": name}, from, to, constant(float64(created.Unix())))
+	fixture.replicaSetIn(replayNamespace, deployment, name, created, from, to)
+}
+
+func (fixture *replayFixture) replicaSetIn(namespace, deployment, name string, created, from, to time.Time) {
+	fixture.add("kube_replicaset_owner", map[string]string{"namespace": namespace, "replicaset": name, "owner_kind": "Deployment", "owner_name": deployment, "owner_is_controller": "true"}, from, to, constant(1))
+	fixture.add("kube_replicaset_created", map[string]string{"namespace": namespace, "replicaset": name}, from, to, constant(float64(created.Unix())))
 }
 
 func (fixture *replayFixture) desired(kind, label, name string, from, to time.Time, value func(time.Time) float64) {
@@ -265,6 +288,34 @@ func buildReplayFixture() *replayFixture {
 	before[0].cpuRequestCores, after[0].cpuRequestCores = 1, 0.5
 	all(before, after)
 
+	// netshoot: the reported single-replica Deployment. One pod has run for
+	// the whole window with little CPU and a few MiB of memory.
+	fixture.replicaSet("netshoot", "netshoot-697fd6796", replayCreated, replayOrigin, replayEnd)
+	fixture.desired("Deployment", "deployment", "netshoot", replayOrigin, replayEnd, constant(1))
+	fixture.pod(replayPod{name: "netshoot-697fd6796-42dmb", uid: "a1fd6710-fbcf-491d-a9e4-a5effa0acd91", ownerKind: "ReplicaSet", owner: "netshoot-697fd6796",
+		from: replayOrigin, to: replayEnd, cpuMilli: constant(2), memoryBytes: 3 << 20})
+
+	// delayed: kube-state-metrics has not reported the new ReplicaSet's
+	// ownership series (watch lag after a rollout); the API knows its UID.
+	fixture.desired("Deployment", "deployment", "delayed", replayOrigin, replayEnd, constant(1))
+	fixture.pod(replayPod{name: "delayed-cccc3-p0000", uid: "delayed-cccc3-0", ownerKind: "ReplicaSet", owner: "delayed-cccc3",
+		from: replayOrigin, to: replayEnd, cpuMilli: constant(120), memoryBytes: 64 << 20})
+
+	// twin: a Deployment named steady in another namespace runs 4000m. It
+	// must never be mixed into the replay namespaces' steady.
+	fixture.replicaSetIn(replayNamespace+"-twin", "steady", "steady-aaaa1", replayCreated, replayOrigin, replayEnd)
+	for _, pod := range steadyPods("steady", "aaaa1", 3, replayOrigin, replayEnd, 4000) {
+		pod.namespace, pod.uid = replayNamespace+"-twin", "twin-"+pod.uid
+		fixture.pod(pod)
+	}
+
+	// lateksm: usage covers the whole window, but kube-state-metrics only
+	// started reporting the pod halfway through.
+	fixture.replicaSet("lateksm", "lateksm-aaaa1", replayCreated, replayMiddle, replayEnd)
+	fixture.desired("Deployment", "deployment", "lateksm", replayMiddle, replayEnd, constant(1))
+	fixture.pod(replayPod{name: "lateksm-aaaa1-p0000", uid: "lateksm-aaaa1-0", ownerKind: "ReplicaSet", owner: "lateksm-aaaa1",
+		from: replayOrigin, to: replayEnd, ksmFrom: replayMiddle, cpuMilli: constant(150), memoryBytes: 64 << 20})
+
 	// cron: two Jobs, each running one pod for twenty minutes.
 	for index, at := range []time.Time{replayStart.Add(time.Hour), replayStart.Add(4 * time.Hour)} {
 		job := fmt.Sprintf("cron-%d", 29000000+index)
@@ -277,7 +328,24 @@ func buildReplayFixture() *replayFixture {
 	return fixture
 }
 
-// OpenMetrics renders the fixture for promtool tsdb create-blocks-from.
+// replayProfile is one monitoring stack the fixture is replayed under. Each
+// profile has its own namespace so one Prometheus serves all of them.
+type replayProfile struct {
+	name, namespace string
+	// drop removes metric families the stack does not export.
+	drop *regexp.Regexp
+}
+
+var replayProfiles = []replayProfile{
+	{name: "upstream kube-state-metrics", namespace: replayNamespace},
+	// OpenShift's cluster-monitoring-operator starts kube-state-metrics with
+	// --metric-denylist=^kube_.+_created$,... so no creation-time series
+	// exist (assets/kube-state-metrics/deployment.yaml).
+	{name: "OpenShift kube-state-metrics", namespace: replayNamespace + "-ocp", drop: regexp.MustCompile(`^kube_.+_created$`)},
+}
+
+// OpenMetrics renders the fixture for promtool tsdb create-blocks-from, once
+// per profile.
 func (fixture *replayFixture) OpenMetrics() string {
 	var output strings.Builder
 	names := make([]string, 0, len(fixture.series))
@@ -285,8 +353,28 @@ func (fixture *replayFixture) OpenMetrics() string {
 		names = append(names, name)
 	}
 	sort.Strings(names)
+	// OpenMetrics families must not interleave, so each family is written
+	// for every profile before the next family starts.
 	for _, name := range names {
+		for index, profile := range replayProfiles {
+			if profile.drop != nil && profile.drop.MatchString(name) {
+				continue
+			}
+			fixture.writeFamily(&output, name, profile.namespace, index == 0)
+		}
+	}
+	output.WriteString("# EOF\n")
+	return output.String()
+}
+
+// writeFamily writes one family into a profile namespace. Series placed in
+// another namespace are written once, unchanged, with the first profile.
+func (fixture *replayFixture) writeFamily(output *strings.Builder, name, namespace string, first bool) {
+	{
 		for _, series := range fixture.series[name] {
+			if series.labels["namespace"] != replayNamespace && !first {
+				continue
+			}
 			keys := make([]string, 0, len(series.labels))
 			for key := range series.labels {
 				keys = append(keys, key)
@@ -294,7 +382,11 @@ func (fixture *replayFixture) OpenMetrics() string {
 			sort.Strings(keys)
 			pairs := make([]string, 0, len(keys))
 			for _, key := range keys {
-				pairs = append(pairs, key+"="+strconv.Quote(series.labels[key]))
+				value := series.labels[key]
+				if key == "namespace" && value == replayNamespace {
+					value = namespace
+				}
+				pairs = append(pairs, key+"="+strconv.Quote(value))
 			}
 			times := make([]int64, 0, len(series.samples))
 			for at := range series.samples {
@@ -302,12 +394,10 @@ func (fixture *replayFixture) OpenMetrics() string {
 			}
 			sort.Slice(times, func(left, right int) bool { return times[left] < times[right] })
 			for _, at := range times {
-				fmt.Fprintf(&output, "%s{%s} %s %d\n", name, strings.Join(pairs, ","), strconv.FormatFloat(series.samples[at], 'f', -1, 64), at)
+				fmt.Fprintf(output, "%s{%s} %s %d\n", name, strings.Join(pairs, ","), strconv.FormatFloat(series.samples[at], 'f', -1, 64), at)
 			}
 		}
 	}
-	output.WriteString("# EOF\n")
-	return output.String()
 }
 
 func TestWriteAttributionReplayFixture(t *testing.T) {
@@ -328,10 +418,6 @@ func livePod(name, uid string, created time.Time) PodIdentity {
 	return PodIdentity{Name: name, UID: uid, CreatedAt: created, Phase: "Running", Containers: []string{"app"}}
 }
 
-func replaySubject(kind, workload string) Subject {
-	return Subject{Namespace: replayNamespace, Kind: kind, Workload: workload, Container: "app"}
-}
-
 func maxValue(series Series) float64 {
 	maximum := math.Inf(-1)
 	for _, point := range series.Points {
@@ -350,7 +436,19 @@ func TestAttributionReplayAgainstPrometheus(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := NewSource(client)
+	for _, profile := range replayProfiles {
+		t.Run(profile.name, func(t *testing.T) { replayAttribution(t, source, profile.namespace) })
+	}
+}
+
+// replayAttribution runs every lifecycle scenario against one profile's
+// namespace. Every scenario must behave identically with and without the
+// kube-state-metrics creation-time families.
+func replayAttribution(t *testing.T, source *Source, namespace string) {
 	ctx := context.Background()
+	replaySubject := func(kind, workload string) Subject {
+		return Subject{Namespace: namespace, Kind: kind, Workload: workload, Container: "app"}
+	}
 	history := func(t *testing.T, kind, workload string, identity WorkloadIdentity) History {
 		t.Helper()
 		result, err := source.HistoryForIdentity(ctx, replaySubject(kind, workload), identity, replayWindow)
@@ -476,6 +574,92 @@ func TestAttributionReplayAgainstPrometheus(t *testing.T) {
 		steady := replayIdentity(replayCreated, 3, livePod("steady-aaaa1-p0000", "steady-aaaa1-0", replayOrigin))
 		if unchanged, err := source.ResourceChangedAt(ctx, replaySubject("Deployment", "steady"), steady, replayWindow); err != nil || unchanged != nil {
 			t.Fatalf("steady workload reported a change: %v err=%v", unchanged, err)
+		}
+	})
+	t.Run("single-replica netshoot Deployment is attributed", func(t *testing.T) {
+		// Regression: on OpenShift the ownership join required
+		// kube_pod_created and kube_replicaset_created, which OpenShift's
+		// kube-state-metrics never exports, so usage existed but nothing was
+		// attributed to the Deployment UID.
+		identity := replayIdentity(replayCreated, 1, livePod("netshoot-697fd6796-42dmb", "a1fd6710-fbcf-491d-a9e4-a5effa0acd91", replayOrigin))
+		result := history(t, "Deployment", "netshoot", identity)
+		coverage := result.ReplicaCoverage
+		if !coverage.Complete || coverage.DiscoveredReplicas != 1 || coverage.UnattributedSteps != 0 || math.Abs(maxValue(result.CPU)-2) > 0.5 || math.Abs(maxValue(result.Memory)-float64(3<<20)) > 1 {
+			t.Fatalf("coverage=%+v cpuMax=%v memoryMax=%v", coverage, maxValue(result.CPU), maxValue(result.Memory))
+		}
+		events, err := source.EventsForIdentity(ctx, replaySubject("Deployment", "netshoot"), identity, replayWindow)
+		if err != nil || !events.Available || len(events.Replicas) != 1 || events.Replicas[0].UID != "a1fd6710-fbcf-491d-a9e4-a5effa0acd91" {
+			t.Fatalf("events=%+v err=%v", events, err)
+		}
+	})
+	t.Run("API-verified ReplicaSet attributes pods before kube-state-metrics reports its owner", func(t *testing.T) {
+		identity := replayIdentity(replayCreated, 1, livePod("delayed-cccc3-p0000", "delayed-cccc3-0", replayOrigin))
+		// Without the UID chain from the API the pods cannot be linked.
+		if _, err := source.HistoryForIdentity(ctx, replaySubject("Deployment", "delayed"), identity, replayWindow); !errors.Is(err, ErrAttributionIncomplete) {
+			t.Fatalf("err=%v, want attribution incomplete without the verified owner", err)
+		}
+		identity.Owners = []OwnerIdentity{{Kind: "ReplicaSet", Name: "delayed-cccc3", UID: "rs-delayed-cccc3", CreatedAt: replayCreated, Replicas: 1}}
+		result := history(t, "Deployment", "delayed", identity)
+		if !result.ReplicaCoverage.Complete || result.ReplicaCoverage.DiscoveredReplicas != 1 || math.Abs(maxValue(result.CPU)-120) > 1 {
+			t.Fatalf("coverage=%+v cpuMax=%v", result.ReplicaCoverage, maxValue(result.CPU))
+		}
+	})
+	t.Run("same-name Deployment in another namespace is never mixed in", func(t *testing.T) {
+		result := history(t, "Deployment", "steady", replayIdentity(replayCreated, 3,
+			livePod("steady-aaaa1-p0000", "steady-aaaa1-0", replayOrigin), livePod("steady-aaaa1-p0001", "steady-aaaa1-1", replayOrigin), livePod("steady-aaaa1-p0002", "steady-aaaa1-2", replayOrigin)))
+		for _, observation := range result.ReplicaCoverage.Observations {
+			if strings.HasPrefix(observation.UID, "twin-") {
+				t.Fatalf("a pod from the other namespace was attributed: %+v", observation)
+			}
+		}
+		if math.Abs(maxValue(result.CPU)-200) > 1 || result.ReplicaCoverage.DiscoveredReplicas != 3 {
+			t.Fatalf("cpuMax=%v discovered=%d", maxValue(result.CPU), result.ReplicaCoverage.DiscoveredReplicas)
+		}
+	})
+	t.Run("ownership history that starts mid-window is reported, not filled in", func(t *testing.T) {
+		result := history(t, "Deployment", "lateksm", replayIdentity(replayCreated, 1, livePod("lateksm-aaaa1-p0000", "lateksm-aaaa1-0", replayOrigin)))
+		coverage := result.ReplicaCoverage
+		requireIssue(t, coverage, "of the requested window")
+		if coverage.UnattributedSteps == 0 || coverage.CPUTemporalCoverage > 0.6 {
+			t.Fatalf("unattributed=%d temporal=%v, want the first half reported as unattributed", coverage.UnattributedSteps, coverage.CPUTemporalCoverage)
+		}
+	})
+	t.Run("attribution report explains every pod identity", func(t *testing.T) {
+		report, err := source.AttributionReport(ctx, replaySubject("Deployment", "netshoot"), replayIdentity(replayCreated, 1, livePod("netshoot-697fd6796-42dmb", "a1fd6710-fbcf-491d-a9e4-a5effa0acd91", replayOrigin)), replayWindow)
+		if err != nil || report.Outcome != OutcomeAttributed || !report.Eligible || report.AttributedPods != 1 || report.UnattributedPods != 0 || len(report.MissingFamilies) != 0 || report.CoveragePercent < 99 {
+			t.Fatalf("netshoot report=%+v err=%v", report, err)
+		}
+		if len(report.Owners) != 1 || !report.Owners[0].Recorded || report.Pods[0].Reason != "attributed" || report.Pods[0].CreatedFrom == "" {
+			t.Fatalf("owners=%+v pods=%+v", report.Owners, report.Pods)
+		}
+
+		recreated, err := source.AttributionReport(ctx, replaySubject("Deployment", "recreated"), replayIdentity(replayMiddle, 2, livePod("recreated-bbbb2-p0000", "recreated-bbbb2-0", replayMiddle.Add(time.Minute)), livePod("recreated-bbbb2-p0001", "recreated-bbbb2-1", replayMiddle.Add(time.Minute))), replayWindow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		predecessors := 0
+		for _, pod := range recreated.Pods {
+			if strings.HasPrefix(pod.Pod, "recreated-aaaa1") {
+				if pod.Attributed || !pod.Excluded || !strings.Contains(pod.Reason, "before the current workload object") {
+					t.Fatalf("predecessor pod %+v", pod)
+				}
+				predecessors++
+			} else if !pod.Attributed {
+				t.Fatalf("current pod not attributed: %+v", pod)
+			}
+		}
+		if predecessors != 2 || recreated.AttributedPods != 2 || recreated.ExcludedPods != 2 || recreated.UnattributedPods != 0 {
+			t.Fatalf("recreated report pods=%+v", recreated.Pods)
+		}
+
+		noksm, err := source.AttributionReport(ctx, replaySubject("Deployment", "noksm"), replayIdentity(replayCreated, 2), replayWindow)
+		if err != nil || noksm.Eligible || noksm.UnattributedPods != 2 || noksm.Outcome != OutcomeMissingMetrics || !strings.Contains(strings.Join(noksm.MissingFamilies, ","), "kube_pod_owner") {
+			t.Fatalf("noksm report outcome=%s missing=%v unattributed=%d err=%v", noksm.Outcome, noksm.MissingFamilies, noksm.UnattributedPods, err)
+		}
+		for _, pod := range noksm.Pods {
+			if !strings.Contains(pod.Reason, "no kube_pod_owner series") {
+				t.Fatalf("noksm pod %+v", pod)
+			}
 		}
 	})
 	t.Run("live-pods mode excludes the replaced revision", func(t *testing.T) {

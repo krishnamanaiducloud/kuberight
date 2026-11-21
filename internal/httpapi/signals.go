@@ -128,11 +128,12 @@ func (server *apiServer) signals(w http.ResponseWriter, r *http.Request) {
 		respondError(w, r, http.StatusBadRequest, "invalid_request", err.Error()+"; namespace, kind, workload, and container are required")
 		return
 	}
-	window, err := parseDuration(r.URL.Query().Get("window"), 24*time.Hour, time.Hour)
+	span, err := parseChartRange(r, 24*time.Hour, server.config.RecommendationStep, server.now())
 	if err != nil {
 		respondError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
+	step := span.step
 	if !server.authorize(w, r, AccessAttributes{Verb: "list", Resource: "metrics-history", Namespace: subject.Namespace}) {
 		return
 	}
@@ -140,8 +141,7 @@ func (server *apiServer) signals(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusOK, map[string]any{"status": Availability{Available: false, Source: "prometheus", Reason: "Prometheus is not configured"}})
 		return
 	}
-	step := chartStep(window, server.config.RecommendationStep)
-	signals, err := server.usage.Signals(r.Context(), subject, usage.Window{Duration: window, Step: step, End: server.now()}, usage.LatencyTemplate(server.config.LatencyQuery))
+	signals, err := server.usage.Signals(r.Context(), subject, span.window(), usage.LatencyTemplate(server.config.LatencyQuery))
 	if err != nil {
 		server.usageFailure(w, r, err)
 		return
@@ -169,6 +169,8 @@ func (server *apiServer) signals(w http.ResponseWriter, r *http.Request) {
 		"insights":          buildInsights(signals, current, found, int64(step/time.Second)),
 		"spikes":            spikeProfile(signals.CPU, int64(step/time.Second)),
 		"latencyConfigured": server.config.LatencyQuery != "",
+		"range":             dataAvailability(span, signals.CPU, signals.Memory),
+		"step":              step.String(),
 	})
 }
 

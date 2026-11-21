@@ -8,6 +8,7 @@ import { api, ApiError, type SignalEvent, type SignalsResponse, type Subject, ty
 import { seriesColors, statusColors } from '../chartColors'
 import { formatBytes, formatDate, formatMillicores, spikeLabel } from '../format'
 import { LineChart, type ChartMarker, type ChartReference } from './LineChart'
+import type { CustomRange } from '../timeRange'
 
 const eventStyle: Record<SignalEvent['kind'], { tone: ChartMarker['tone']; label: string }> = {
   oom_kill: { tone: 'critical', label: 'OOM kill' },
@@ -51,10 +52,10 @@ function SignalChart({ title, caption, children }: { title: string; caption?: st
  * optional latency on one time axis, with restarts, OOM kills, and rollouts
  * marked on every chart, plus the findings derived from them.
  */
-export function SignalsPanel({ subject, usageWindow }: { subject: Subject; usageWindow: string }) {
+export function SignalsPanel({ subject, usageWindow, range }: { subject: Subject; usageWindow: string; range?: CustomRange }) {
   const query = useQuery({
-    queryKey: ['signals', subject, usageWindow],
-    queryFn: ({ signal }) => api.get<SignalsResponse>(`/api/v1/metrics/signals?${new URLSearchParams({ ...subject, window: usageWindow })}`, { signal }),
+    queryKey: ['signals', subject, usageWindow, range],
+    queryFn: ({ signal }) => api.get<SignalsResponse>(`/api/v1/metrics/signals?${new URLSearchParams(range ? { ...subject, start: range.start, end: range.end } : { ...subject, window: usageWindow })}`, { signal }),
   })
   const data = query.data
   const signals = data?.signals
@@ -81,6 +82,7 @@ export function SignalsPanel({ subject, usageWindow }: { subject: Subject; usage
 
   return (
     <Stack sx={{ gap: 2 }}>
+      {data.range?.note && <Alert severity="info" variant="outlined">{data.range.note}.</Alert>}
       {(data.insights ?? []).length > 0 && (
         <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(2, 1fr)' }, gap: 1.5 }}>
           {data.insights!.map((insight) => (

@@ -63,7 +63,10 @@ var (
 	// to the current workload UID. Callers must not fall back to pod-name
 	// inference because a recreated same-name workload could then be mixed in.
 	ErrAttributionIncomplete = errors.New("workload metric attribution is incomplete")
-	uidToken                 = regexp.MustCompile(`^[A-Za-z0-9_.:-]+$`)
+	// ErrInsufficientHistory means the workload is too young for one
+	// observation step; it is not an attribution or metrics failure.
+	ErrInsufficientHistory = errors.New("insufficient usage history")
+	uidToken               = regexp.MustCompile(`^[A-Za-z0-9_.:-]+$`)
 )
 
 // PodIdentity is immutable Kubernetes identity and lifecycle information for
@@ -122,6 +125,19 @@ func (pod PodIdentity) hasContainer(name string) bool {
 	return false
 }
 
+// OwnerIdentity is an intermediate controller, a Deployment's ReplicaSet or
+// a CronJob's Job, whose controller ownerReference UID the Kubernetes API
+// confirmed to be the workload UID.
+type OwnerIdentity struct {
+	Kind      string    `json:"kind"`
+	Name      string    `json:"name"`
+	UID       string    `json:"uid"`
+	CreatedAt time.Time `json:"createdAt"`
+	// Replicas is the owner's current pod count (status.replicas, or the
+	// active pods of a Job).
+	Replicas int32 `json:"replicas"`
+}
+
 // WorkloadIdentity is the exact, live Kubernetes identity of a workload.
 // The workload UID and creation time bound historical attribution: only pods
 // created by owners of this name after the current object was created can
@@ -133,7 +149,11 @@ type WorkloadIdentity struct {
 	CreatedAt        time.Time     `json:"workloadCreatedAt"`
 	ExpectedReplicas int32         `json:"expectedReplicas"`
 	Pods             []PodIdentity `json:"pods"`
-	ResolutionIssues []string      `json:"resolutionIssues,omitempty"`
+	// Owners are the live ReplicaSets or Jobs that the API links to the
+	// workload UID. Their pods are attributed even when kube-state-metrics
+	// has not (yet) recorded the owner's own ownership series.
+	Owners           []OwnerIdentity `json:"owners,omitempty"`
+	ResolutionIssues []string        `json:"resolutionIssues,omitempty"`
 	// LivePodsOnly restricts attribution to the UIDs in Pods.
 	LivePodsOnly bool `json:"livePodsOnly,omitempty"`
 }
@@ -287,6 +307,11 @@ func validateIdentity(identity WorkloadIdentity) error {
 			return fmt.Errorf("%w: %d pods exceed the live-pod query limit of %d", ErrAttributionIncomplete, len(identity.Pods), maximumLivePodsOnly)
 		}
 	}
+	for _, owner := range identity.Owners {
+		if len(owner.Name) > 253 || !dnsSubdomain.MatchString(owner.Name) || owner.UID == "" || len(owner.UID) > 128 || !uidToken.MatchString(owner.UID) {
+			return fmt.Errorf("%w: owner identity is missing a valid name or UID", ErrAttributionIncomplete)
+		}
+	}
 	seenNames, seenUIDs := map[string]bool{}, map[string]bool{}
 	for _, pod := range identity.Pods {
 		if len(pod.Name) > 253 || !dnsSubdomain.MatchString(pod.Name) || pod.UID == "" || len(pod.UID) > 128 || !uidToken.MatchString(pod.UID) || pod.CreatedAt.IsZero() {
@@ -328,44 +353,100 @@ type attributionQueries struct {
 	desired     string
 }
 
-// ownershipExpression follows controller ownership recorded by
-// kube-state-metrics rather than the live API, so deleted pods remain
-// attributable. A same-name workload that existed earlier is excluded because
-// every pod and intermediate owner must have been created at or after the
-// current workload's creation.
+// maximumVerifiedOwners bounds the API-verified owner names embedded in one
+// query. Older revisions are still attributed through kube-state-metrics'
+// own ownership history.
+const maximumVerifiedOwners = 32
+
+// intermediateOwner describes the controller between a workload and its pods.
+type intermediateOwner struct {
+	kind, label, metric, pattern string
+}
+
+// intermediateOwnerOf returns the ReplicaSet or Job level for Deployments and
+// CronJobs; other kinds own their pods directly.
+func intermediateOwnerOf(subject Subject) (intermediateOwner, bool) {
+	switch subject.Kind {
+	case "Deployment":
+		return intermediateOwner{kind: "ReplicaSet", label: "replicaset", metric: "kube_replicaset_owner", pattern: regexp.QuoteMeta(subject.Workload) + "-[a-z0-9]{1,10}"}, true
+	case "CronJob":
+		return intermediateOwner{kind: "Job", label: "job_name", metric: "kube_job_owner", pattern: regexp.QuoteMeta(subject.Workload) + "-[0-9]+"}, true
+	}
+	return intermediateOwner{}, false
+}
+
+// verifiedOwnerNames returns the newest API-verified owners whose names the
+// workload's pod-name pattern can match, as escaped regular expressions.
+func verifiedOwnerNames(identity WorkloadIdentity, parent intermediateOwner) []string {
+	pattern := regexp.MustCompile("^(?:" + parent.pattern + ")$")
+	owners := make([]OwnerIdentity, 0, len(identity.Owners))
+	for _, owner := range identity.Owners {
+		if owner.Kind == parent.kind && pattern.MatchString(owner.Name) {
+			owners = append(owners, owner)
+		}
+	}
+	sort.Slice(owners, func(left, right int) bool { return owners[left].CreatedAt.After(owners[right].CreatedAt) })
+	names := make([]string, 0, min(len(owners), maximumVerifiedOwners))
+	for _, owner := range owners[:min(len(owners), maximumVerifiedOwners)] {
+		names = append(names, regexp.QuoteMeta(owner.Name))
+	}
+	sort.Strings(names)
+	return names
+}
+
+// podStartedExpression is each pod's creation time by (namespace, pod, uid).
+// OpenShift's kube-state-metrics drops every ^kube_.+_created$ family, so the
+// kubelet-reported start time, which is never earlier than creation, stands
+// in when kube_pod_created is absent.
+func podStartedExpression(subject Subject) string {
+	selector := "{namespace=" + strconv.Quote(subject.Namespace) + ",pod=~" + strconv.Quote(podPattern(subject)) + "}"
+	return "(max by (namespace, pod, uid) (kube_pod_created" + selector + ") or max by (namespace, pod, uid) (kube_pod_start_time" + selector + "))"
+}
+
+// ownershipExpression attributes pods to the workload through controller
+// ownership recorded by kube-state-metrics, so deleted pods remain
+// attributable:
+//
+//   - kube_pod_owner links each pod UID to its controller's kind and name;
+//   - a Deployment's ReplicaSets (a CronJob's Jobs) are those the Kubernetes
+//     API links to the workload UID, plus those kube_replicaset_owner
+//     (kube_job_owner) records as owned by the workload's name;
+//   - a same-name workload that existed earlier is excluded because every
+//     pod must have been created at or after the current workload's
+//     creation.
+//
+// No kube-state-metrics *_created family is required.
 func ownershipExpression(subject Subject, identity WorkloadIdentity) string {
 	quote := strconv.Quote
 	namespace := quote(subject.Namespace)
-	created := strconv.FormatInt(identity.CreatedAt.Unix(), 10)
-	pods := quote(podPattern(subject))
-	info := "namespace=" + namespace
+	live := ""
 	if identity.LivePodsOnly {
 		uids := make([]string, 0, len(identity.Pods))
 		for _, pod := range identity.Pods {
 			uids = append(uids, regexp.QuoteMeta(pod.UID))
 		}
 		sort.Strings(uids)
-		info += ",uid=~" + quote(strings.Join(uids, "|"))
+		live = ",uid=~" + quote(strings.Join(uids, "|"))
+	}
+	// kube_pod_owner's uid label is the pod UID; created_by_name carries the
+	// owner name so revisions can be counted.
+	podOwners := func(kind, nameMatcher string) string {
+		return "max by (namespace, pod, uid, created_by_name) (label_replace(kube_pod_owner{namespace=" + namespace + live +
+			",owner_kind=" + quote(kind) + ",owner_name" + nameMatcher + `,owner_is_controller="true"}, "created_by_name", "$1", "owner_name", "(.+)"))`
 	}
 	var owned string
-	switch subject.Kind {
-	case "Deployment", "CronJob":
-		parentKind, parentLabel, ownerMetric, createdMetric := "ReplicaSet", "replicaset", "kube_replicaset_owner", "kube_replicaset_created"
-		parents := quote(regexp.QuoteMeta(subject.Workload) + "-[a-z0-9]{1,10}")
-		if subject.Kind == "CronJob" {
-			parentKind, parentLabel, ownerMetric, createdMetric = "Job", "job_name", "kube_job_owner", "kube_job_created"
-			parents = quote(regexp.QuoteMeta(subject.Workload) + "-[0-9]+")
+	if parent, ok := intermediateOwnerOf(subject); ok {
+		recorded := "max by (namespace, created_by_name) (label_replace(" + parent.metric + "{namespace=" + namespace + "," + parent.label + "=~" + quote(parent.pattern) +
+			",owner_kind=" + quote(subject.Kind) + ",owner_name=" + quote(subject.Workload) + `,owner_is_controller="true"}, "created_by_name", "$1", "` + parent.label + `", "(.+)"))`
+		owned = podOwners(parent.kind, "=~"+quote(parent.pattern)) + " * on (namespace, created_by_name) group_left () " + recorded
+		if names := verifiedOwnerNames(identity, parent); len(names) > 0 {
+			owned = podOwners(parent.kind, "=~"+quote(strings.Join(names, "|"))) + " or (" + owned + ")"
 		}
-		owners := "label_replace(" + ownerMetric + "{namespace=" + namespace + "," + parentLabel + "=~" + parents +
-			",owner_kind=" + quote(subject.Kind) + ",owner_name=" + quote(subject.Workload) + `,owner_is_controller="true"}` +
-			" and on (namespace, " + parentLabel + ") (" + createdMetric + "{namespace=" + namespace + "," + parentLabel + "=~" + parents + "} >= " + created + ")" +
-			`, "created_by_name", "$1", "` + parentLabel + `", "(.+)")`
-		owned = "kube_pod_info{" + info + ",created_by_kind=" + quote(parentKind) + ",created_by_name=~" + parents + "}" +
-			" * on (namespace, created_by_name) group_left () max by (namespace, created_by_name) (" + owners + ")"
-	default:
-		owned = "kube_pod_info{" + info + ",created_by_kind=" + quote(subject.Kind) + ",created_by_name=" + quote(subject.Workload) + "}"
+	} else {
+		owned = podOwners(subject.Kind, "="+quote(subject.Workload))
 	}
-	return "max by (namespace, pod, uid, created_by_name) ((" + owned + ") and on (namespace, pod) (kube_pod_created{namespace=" + namespace + ",pod=~" + pods + "} >= " + created + "))"
+	created := strconv.FormatInt(identity.CreatedAt.Unix(), 10)
+	return "max by (namespace, pod, uid, created_by_name) ((" + owned + ") and on (namespace, pod, uid) (" + podStartedExpression(subject) + " >= " + created + "))"
 }
 
 func buildAttributionQueries(subject Subject, identity WorkloadIdentity, step time.Duration) (attributionQueries, error) {
@@ -451,7 +532,7 @@ func newAttributionPlan(subject Subject, identity WorkloadIdentity, window Windo
 		plan.effectiveStart = plan.start.Add(time.Duration(steps) * window.Step)
 	}
 	if plan.effectiveStart.After(end) {
-		return attributionPlan{}, fmt.Errorf("%w: the current workload has existed for less than one observation step", ErrAttributionIncomplete)
+		return attributionPlan{}, fmt.Errorf("%w: the current workload has existed for less than one %s observation step", ErrInsufficientHistory, window.Step)
 	}
 	return plan, nil
 }
@@ -552,8 +633,10 @@ func (requests historyRequests) all() []*promRequest {
 	return all
 }
 
+// podCreatedExpression is the creation (or, without kube_pod_created, start)
+// time of every attributed pod in the window.
 func (plan attributionPlan) podCreatedExpression() string {
-	return "max by (pod, uid) (last_over_time((max by (namespace, pod) (kube_pod_created{namespace=" + strconv.Quote(plan.subject.Namespace) + ",pod=~" + strconv.Quote(podPattern(plan.subject)) + "}) * on (namespace, pod) group_left (uid) " + plan.unambiguous + ")" + plan.subqueryRange() + "))"
+	return "max by (pod, uid) (last_over_time((" + podStartedExpression(plan.subject) + " * on (namespace, pod, uid) group_left () max by (namespace, pod, uid) (" + plan.unambiguous + "))" + plan.subqueryRange() + "))"
 }
 
 func (plan attributionPlan) historyRequests() historyRequests {
@@ -1101,7 +1184,7 @@ func (source *Source) HistoryForIdentity(ctx context.Context, subject Subject, i
 	}
 	if len(history.CPU.Points) == 0 && len(history.Memory.Points) == 0 {
 		if summary.unattrib > 0 {
-			return history, fmt.Errorf("%w: usage exists for pods matching the workload's names, but kube-state-metrics attributes none of them to the current workload UID", ErrAttributionIncomplete)
+			return history, fmt.Errorf("%w: usage exists for pods matching the workload's names, but kube-state-metrics attributes none of them to the current workload UID%s", ErrAttributionIncomplete, source.ownershipGaps(ctx, plan))
 		}
 		return history, ErrNoData
 	}

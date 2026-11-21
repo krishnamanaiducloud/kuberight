@@ -9,9 +9,11 @@ import (
 	"github.com/kuberight/kuberight/internal/httpapi"
 	"github.com/kuberight/kuberight/internal/usage"
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	kubernetesfake "k8s.io/client-go/kubernetes/fake"
 )
@@ -45,6 +47,38 @@ func TestWorkloadMetricIdentityFollowsExactDeploymentUIDChain(t *testing.T) {
 	}
 	if len(identity.Pods) != 1 || identity.Pods[0].UID != "pod-current" || identity.Pods[0].Name != "checkout-abc-11111" || len(identity.Pods[0].Containers) != 1 {
 		t.Fatalf("resolved pods = %#v", identity.Pods)
+	}
+	// Only the ReplicaSet whose controller reference carries the current
+	// Deployment UID is a verified owner; the same-name predecessor's is not.
+	if len(identity.Owners) != 1 || identity.Owners[0].UID != "rs-current" || identity.Owners[0].Name != "checkout-abc" || identity.Owners[0].Kind != "ReplicaSet" || !identity.Owners[0].CreatedAt.Equal(created.Add(time.Minute)) {
+		t.Fatalf("verified owners = %#v", identity.Owners)
+	}
+}
+
+func TestWorkloadMetricIdentityKeepsEveryRetainedRevisionAndCronJobJobs(t *testing.T) {
+	created := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	metadata := identityMetadata("checkout", "deployment-current", created)
+	objects := []runtime.Object{}
+	for index, name := range []string{"checkout-r3", "checkout-r1", "checkout-r2"} {
+		replicaSet := &appsv1.ReplicaSet{ObjectMeta: identityMetadata(name, types.UID("rs-"+name), created.Add(time.Duration(index)*time.Hour))}
+		replicaSet.OwnerReferences = []metav1.OwnerReference{controlledBy("apps/v1", "Deployment", "checkout", "deployment-current")}
+		replicaSet.Status.Replicas = int32(index)
+		objects = append(objects, replicaSet)
+	}
+	identity := testProvider(kubernetesfake.NewSimpleClientset(objects...)).workloadMetricIdentity(context.Background(), httpapi.WorkloadSpec{Namespace: "shop", Kind: "Deployment", Name: "checkout"}, metadata)
+	if len(identity.Owners) != 3 || identity.Owners[0].Name != "checkout-r3" || identity.Owners[2].Name != "checkout-r2" || identity.Owners[2].Replicas != 2 {
+		t.Fatalf("rolling-update revisions must all be kept, oldest first: %#v", identity.Owners)
+	}
+
+	cron := identityMetadata("nightly", "cron-current", created)
+	job := &batchv1.Job{ObjectMeta: identityMetadata("nightly-29000000", "job-current", created.Add(time.Hour))}
+	job.OwnerReferences = []metav1.OwnerReference{controlledBy("batch/v1", "CronJob", "nightly", "cron-current")}
+	job.Status.Active = 1
+	stale := &batchv1.Job{ObjectMeta: identityMetadata("nightly-28000000", "job-old", created.Add(-time.Hour))}
+	stale.OwnerReferences = []metav1.OwnerReference{controlledBy("batch/v1", "CronJob", "nightly", "cron-old")}
+	identity = testProvider(kubernetesfake.NewSimpleClientset(job, stale)).workloadMetricIdentity(context.Background(), httpapi.WorkloadSpec{Namespace: "shop", Kind: "CronJob", Name: "nightly"}, cron)
+	if len(identity.Owners) != 1 || identity.Owners[0].UID != "job-current" || identity.Owners[0].Kind != "Job" || identity.Owners[0].Replicas != 1 {
+		t.Fatalf("CronJob owners = %#v", identity.Owners)
 	}
 }
 

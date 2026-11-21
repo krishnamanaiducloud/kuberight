@@ -870,8 +870,10 @@ paths:
         - $ref: "#/components/parameters/SubjectContainer"
         - name: window
           in: query
-          description: Go duration from 1h to 720h. Defaults to the recommendation window.
+          description: Go duration from 1m to 8760h (365 days), ending now. Mutually exclusive with start and end.
           schema: { type: string, example: 24h }
+        - $ref: "#/components/parameters/RangeStart"
+        - $ref: "#/components/parameters/RangeEnd"
       responses:
         "200":
           description: CPU (millicores) and memory (bytes) series with data-quality reports.
@@ -881,6 +883,48 @@ paths:
                 $ref: "#/components/schemas/UsageHistory"
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/DependencyUnavailable" }
+        "504": { $ref: "#/components/responses/DependencyUnavailable" }
+
+  /api/v1/attribution:
+    get:
+      tags: [Inventory]
+      operationId: getAttributionDiagnostics
+      summary: How usage is attributed to one workload container
+      description: |
+        Read-only. Shows the Kubernetes UID chain (workload, the ReplicaSets
+        or Jobs whose controller reference carries the workload UID, and the
+        live pods), the kube-state-metrics and cAdvisor series that matched,
+        every pod identity with the reason it was or was not attributed,
+        which metric families are present, replica-time coverage, and
+        whether a recommendation can be calculated.
+
+        Ownership never relies on pod-name prefixes: `kube_pod_owner` ties a
+        pod UID to its controller, the API (or `kube_replicaset_owner` /
+        `kube_job_owner` for revisions already deleted) ties that controller
+        to the workload, and the pod's creation time (`kube_pod_created`, or
+        `kube_pod_start_time` where OpenShift drops `*_created` families)
+        must not predate the current workload object. Credentials and
+        request headers are never included.
+      parameters:
+        - $ref: "#/components/parameters/SubjectNamespace"
+        - $ref: "#/components/parameters/SubjectKind"
+        - $ref: "#/components/parameters/SubjectWorkload"
+        - $ref: "#/components/parameters/SubjectContainer"
+        - name: window
+          in: query
+          description: Go duration from 1h to 720h. Defaults to the recommendation window.
+          schema: { type: string, example: 168h }
+      responses:
+        "200":
+          description: Attribution evidence and outcome.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttributionDiagnostics"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
         "503": { $ref: "#/components/responses/DependencyUnavailable" }
         "504": { $ref: "#/components/responses/DependencyUnavailable" }
 
@@ -1075,7 +1119,10 @@ paths:
         - $ref: "#/components/parameters/SubjectContainer"
         - name: window
           in: query
+          description: Go duration from 1m to 8760h (365 days), ending now. Mutually exclusive with start and end.
           schema: { type: string, default: 24h }
+        - $ref: "#/components/parameters/RangeStart"
+        - $ref: "#/components/parameters/RangeEnd"
       responses:
         "200":
           description: Signals, correlations, and findings.
@@ -1472,6 +1519,19 @@ components:
       in: query
       required: true
       schema: { type: string, maxLength: 253 }
+    RangeStart:
+      name: start
+      in: query
+      description: |
+        Range start, RFC 3339 with any offset (evaluated in UTC). Requires
+        `end`; the range must be between 1m and 365 days and may not end in
+        the future.
+      schema: { type: string, format: date-time }
+    RangeEnd:
+      name: end
+      in: query
+      description: Range end, RFC 3339. Requires `start`.
+      schema: { type: string, format: date-time }
     SubjectContainer:
       name: container
       in: query
@@ -3018,6 +3078,8 @@ components:
           items: { $ref: "#/components/schemas/Insight" }
         latencyConfigured: { type: boolean }
         spikes: { $ref: "#/components/schemas/SpikeProfile" }
+        step: { type: string, description: Query step chosen for the range. }
+        range: { $ref: "#/components/schemas/RangeAvailability" }
 
     CorrelationPair:
       type: object
@@ -3307,6 +3369,129 @@ components:
           items: { type: string }
         current:
           $ref: "#/components/schemas/ContainerSpec"
+        range: { $ref: "#/components/schemas/RangeAvailability" }
+
+    RangeAvailability:
+      type: object
+      description: |
+        When returned samples begin. `note` is set when the range starts
+        before Prometheus has samples for the container (before the
+        workload ran, or beyond the data source's retention), so a long
+        range is never presented as complete history.
+      required: [requestedStart, requestedEnd]
+      properties:
+        requestedStart: { type: string, format: date-time }
+        requestedEnd: { type: string, format: date-time }
+        dataStart: { type: string, format: date-time }
+        note: { type: string }
+
+    AttributionDiagnostics:
+      type: object
+      required: [identity, report, window, step]
+      properties:
+        window: { type: string }
+        step: { type: string }
+        identity:
+          type: object
+          description: The ownership chain read from the Kubernetes API.
+          required: [kind, name, namespace, uid, createdAt, owners, pods, resolutionIssues]
+          properties:
+            kind: { type: string }
+            name: { type: string }
+            namespace: { type: string }
+            uid: { type: string }
+            createdAt: { type: string, format: date-time }
+            expectedReplicas: { type: integer, format: int32 }
+            owners:
+              type: array
+              description: ReplicaSets (Deployment) or Jobs (CronJob) whose controller reference carries the workload UID.
+              items:
+                type: object
+                properties:
+                  kind: { type: string }
+                  name: { type: string }
+                  uid: { type: string }
+                  createdAt: { type: string, format: date-time }
+                  replicas: { type: integer, format: int32 }
+            pods:
+              type: array
+              items:
+                type: object
+                properties:
+                  name: { type: string }
+                  uid: { type: string }
+                  createdAt: { type: string, format: date-time }
+                  deletedAt: { type: string, format: date-time }
+                  phase: { type: string }
+                  containers: { type: array, items: { type: string } }
+            resolutionIssues: { type: array, items: { type: string } }
+        report:
+          type: object
+          required: [subject, start, end, step, workloadUid, owners, pods, families, missingFamilies, eligible, outcome, reason]
+          properties:
+            subject: { type: object }
+            start: { type: string, format: date-time }
+            end: { type: string, format: date-time }
+            step: { type: string }
+            workloadUid: { type: string }
+            workloadCreatedAt: { type: string, format: date-time }
+            expectedReplicas: { type: integer, format: int32 }
+            owners:
+              type: array
+              items:
+                type: object
+                properties:
+                  kind: { type: string }
+                  name: { type: string }
+                  uid: { type: string }
+                  verified: { type: boolean, description: The Kubernetes API links this owner to the workload UID. }
+                  recorded: { type: boolean, description: kube-state-metrics recorded this owner as the workload's in the window. }
+                  createdAt: { type: string, format: date-time }
+                  replicas: { type: integer, format: int32 }
+            pods:
+              type: array
+              description: Every pod identity with usage or ownership series in the window, at most 200.
+              items:
+                type: object
+                properties:
+                  pod: { type: string }
+                  uid: { type: string }
+                  ownerKind: { type: string }
+                  owner: { type: string }
+                  live: { type: boolean }
+                  createdAt: { type: string, format: date-time }
+                  createdFrom: { type: string, enum: [kube_pod_created, kube_pod_start_time] }
+                  hasUsage: { type: boolean }
+                  attributed: { type: boolean }
+                  excluded: { type: boolean, description: Created before the current workload object (a same-name predecessor or an adopted pod); left out by design. }
+                  reason: { type: string }
+            podsTruncated: { type: boolean }
+            usagePods: { type: integer }
+            attributedPods: { type: integer }
+            unattributedPods: { type: integer }
+            excludedPods: { type: integer }
+            families:
+              type: array
+              items:
+                type: object
+                properties:
+                  name: { type: string }
+                  purpose: { type: string }
+                  required: { type: boolean }
+                  alternative: { type: string }
+                  series: { type: integer }
+            missingFamilies: { type: array, items: { type: string } }
+            coverage:
+              type: object
+              description: Replica-time coverage, as reported with recommendations.
+            coveragePercent: { type: number }
+            eligible:
+              type: boolean
+              description: Attributed CPU and memory history exists, so a recommendation can be calculated. Reductions additionally require complete coverage.
+            outcome:
+              type: string
+              enum: [attributed, insufficient_history, missing_metrics, incomplete_attribution, provider_unavailable]
+            reason: { type: string }
 
     ForecastRequest:
       type: object
@@ -3380,6 +3565,17 @@ components:
             confidence: { type: number }
         experimental: { type: boolean, const: true }
         warning: { type: string }
+        attribution:
+          type: object
+          description: |
+            How the history was tied to the workload. `workload-uid` is the
+            same UID-chain attribution recommendations use, so usage from a
+            deleted same-name workload is never forecast; `pod-name` is used
+            only when the inventory cannot resolve workload identity.
+          properties:
+            mode: { type: string, enum: [workload-uid, pod-name] }
+            complete: { type: boolean }
+            issues: { type: array, items: { type: string } }
 
     SavingsItem:
       type: object

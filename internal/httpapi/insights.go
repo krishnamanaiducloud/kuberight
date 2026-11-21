@@ -51,8 +51,7 @@ func (server *apiServer) metricsHistory(w http.ResponseWriter, r *http.Request) 
 		respondError(w, r, http.StatusBadRequest, "invalid_request", err.Error()+"; namespace, kind, workload, and container are required")
 		return
 	}
-	requestedWindow := r.URL.Query().Get("window")
-	window, err := parseDuration(requestedWindow, server.config.RecommendationWindow, time.Hour)
+	span, err := parseChartRange(r, server.config.RecommendationWindow, server.config.RecommendationStep, server.now())
 	if err != nil {
 		respondError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		return
@@ -67,8 +66,8 @@ func (server *apiServer) metricsHistory(w http.ResponseWriter, r *http.Request) 
 		})
 		return
 	}
-	step := chartStep(window, server.config.RecommendationStep)
-	history, err := server.usage.History(r.Context(), subject, usage.Window{Duration: window, Step: step, End: server.now()})
+	step := span.step
+	history, err := server.usage.History(r.Context(), subject, span.window())
 	status := Availability{Available: true, Source: "prometheus"}
 	if errors.Is(err, usage.ErrNoData) {
 		status.Reason = "Prometheus returned no usage for this container in the requested window"
@@ -82,6 +81,7 @@ func (server *apiServer) metricsHistory(w http.ResponseWriter, r *http.Request) 
 		"status":     status,
 		"subject":    subject, "start": history.Start, "end": history.End, "step": step.String(),
 		"warnings": history.Warnings,
+		"range":    dataAvailability(span, history.CPU, history.Memory),
 	}
 	// Current settings let a chart overlay requests and limits; their
 	// absence is reported rather than treated as zero.
@@ -187,10 +187,33 @@ func (server *apiServer) createForecast(w http.ResponseWriter, r *http.Request) 
 		respondError(w, r, http.StatusServiceUnavailable, "integration_not_configured", "forecasting requires Prometheus usage history, which is not configured")
 		return
 	}
-	history, err := server.usage.History(r.Context(), subject, usage.Window{Duration: window, Step: step, End: server.now()})
+	// Forecasts consume the same UID-attributed history as recommendations,
+	// so a same-name predecessor's usage never shapes them. Pod-name history
+	// is only used by providers that cannot resolve workload identity.
+	var spec *WorkloadSpec
+	if resolver, ok := server.provider.(WorkloadResolver); ok && server.provider != nil {
+		if resolved, resolveErr := resolver.Workload(r.Context(), subject.Namespace, subject.Kind, subject.Workload); resolveErr == nil {
+			if _, found := resolved.Container(subject.Container); found {
+				spec = &resolved
+			}
+		}
+	}
+	queryWindow := usage.Window{Duration: window, Step: step, End: server.now().UTC().Truncate(time.Second)}
+	attribution := "pod-name"
+	var history usage.History
+	if exact, ok := server.usage.(attributedUsageSource); ok && spec != nil && spec.MetricIdentity != nil {
+		attribution = "workload-uid"
+		history, err = exact.HistoryForIdentity(r.Context(), subject, spec.MetricIdentity.ForContainer(subject.Container), queryWindow)
+	} else {
+		history, err = server.usage.History(r.Context(), subject, queryWindow)
+	}
 	if err != nil {
 		server.usageFailure(w, r, err)
 		return
+	}
+	attributionIssues := []string{}
+	if history.ReplicaCoverage != nil {
+		attributionIssues = append(attributionIssues, history.ReplicaCoverage.Issues...)
 	}
 	series := history.CPU
 	scale := 1000.0 // The engine forecasts CPU in cores.
@@ -214,12 +237,8 @@ func (server *apiServer) createForecast(w http.ResponseWriter, r *http.Request) 
 		timestamps[index] = point.Timestamp
 	}
 	seriesID := ""
-	if resolver, ok := server.provider.(WorkloadResolver); ok {
-		if spec, resolveErr := resolver.Workload(r.Context(), subject.Namespace, subject.Kind, subject.Workload); resolveErr == nil {
-			if _, found := spec.Container(subject.Container); found {
-				seriesID = forecastSeriesID(spec, subject.Container, request.Resource)
-			}
-		}
+	if spec != nil {
+		seriesID = forecastSeriesID(*spec, subject.Container, request.Resource)
 	}
 	response, err := server.forecaster.Forecast(r.Context(), forecast.Request{
 		Samples: samples, Timestamps: timestamps, Horizon: request.Horizon,
@@ -256,7 +275,8 @@ func (server *apiServer) createForecast(w http.ResponseWriter, r *http.Request) 
 		"subject": subject, "resource": request.Resource, "unit": series.Unit, "step": step.String(),
 		"history": series.Points, "historyQuality": series.Quality, "forecast": points,
 		"confidenceLevel": request.ConfidenceLevel, "diagnostics": diagnostics, "experimental": true,
-		"warning": "Forecasts are experimental and advisory; they never change recommendations or workloads.",
+		"warning":     "Forecasts are experimental and advisory; they never change recommendations or workloads.",
+		"attribution": map[string]any{"mode": attribution, "complete": len(attributionIssues) == 0, "issues": attributionIssues},
 	})
 }
 

@@ -205,6 +205,7 @@ func (server *apiServer) routes() (http.Handler, error) {
 	mux.HandleFunc("POST /api/v1/recommendations/{id}/pull-request", server.openPullRequest)
 	mux.HandleFunc("GET /api/v1/approvals", server.approvals)
 	mux.HandleFunc("GET /api/v1/metrics/history", server.metricsHistory)
+	mux.HandleFunc("GET /api/v1/attribution", server.attributionDiagnostics)
 	mux.HandleFunc("GET /api/v1/forecasts", server.forecastStatus)
 	mux.HandleFunc("POST /api/v1/forecasts", server.createForecast)
 	mux.HandleFunc("GET /api/v1/savings", server.savings)

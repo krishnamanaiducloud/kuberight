@@ -123,6 +123,10 @@ func (provider *KubernetesProvider) workloadMetricIdentity(ctx context.Context, 
 		for _, replicaSet := range replicaSets {
 			if replicaSet.UID != "" && exactController(replicaSet.OwnerReferences, "Deployment", spec.Name, metadata.UID) {
 				allowedOwners[replicaSet.UID] = struct{}{}
+				identity.Owners = append(identity.Owners, usage.OwnerIdentity{
+					Kind: "ReplicaSet", Name: replicaSet.Name, UID: string(replicaSet.UID),
+					CreatedAt: replicaSet.CreationTimestamp.Time.UTC(), Replicas: replicaSet.Status.Replicas,
+				})
 			}
 		}
 	case "CronJob":
@@ -140,6 +144,9 @@ func (provider *KubernetesProvider) workloadMetricIdentity(ctx context.Context, 
 		for _, job := range jobs {
 			if job.UID != "" && exactController(job.OwnerReferences, "CronJob", spec.Name, metadata.UID) {
 				allowedOwners[job.UID] = struct{}{}
+				identity.Owners = append(identity.Owners, usage.OwnerIdentity{
+					Kind: "Job", Name: job.Name, UID: string(job.UID), CreatedAt: job.CreationTimestamp.Time.UTC(), Replicas: job.Status.Active,
+				})
 			}
 		}
 	default:
@@ -180,6 +187,12 @@ func (provider *KubernetesProvider) workloadMetricIdentity(ctx context.Context, 
 	if ambiguous > 0 {
 		identity.ResolutionIssues = append(identity.ResolutionIssues, fmt.Sprintf("%d plausible pods lack immutable UID metadata", ambiguous))
 	}
+	sort.Slice(identity.Owners, func(left, right int) bool {
+		if !identity.Owners[left].CreatedAt.Equal(identity.Owners[right].CreatedAt) {
+			return identity.Owners[left].CreatedAt.Before(identity.Owners[right].CreatedAt)
+		}
+		return identity.Owners[left].Name < identity.Owners[right].Name
+	})
 	sort.Slice(identity.Pods, func(left, right int) bool {
 		if identity.Pods[left].Name != identity.Pods[right].Name {
 			return identity.Pods[left].Name < identity.Pods[right].Name

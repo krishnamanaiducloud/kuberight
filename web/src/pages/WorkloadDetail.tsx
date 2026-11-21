@@ -2,8 +2,8 @@ import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link as RouterLink, useParams, useSearchParams } from 'react-router-dom'
 import {
-  Alert, Box, Button, Card, CardContent, Chip, MenuItem, Skeleton, Stack, Tab, Table, TableBody, TableCell,
-  TableContainer, TableHead, TableRow, Tabs, TextField, Typography,
+  Alert, Box, Button, Card, CardContent, Chip, Skeleton, Stack, Tab, Table, TableBody, TableCell,
+  TableContainer, TableHead, TableRow, Tabs, Typography,
 } from '@mui/material'
 import ArrowBackIcon from '@mui/icons-material/ArrowBack'
 import AutoFixHighOutlined from '@mui/icons-material/AutoFixHighOutlined'
@@ -11,13 +11,15 @@ import InsightsOutlined from '@mui/icons-material/InsightsOutlined'
 import PlaylistPlayOutlined from '@mui/icons-material/PlaylistPlayOutlined'
 import { api, type ApiRecord, type CollectionEnvelope, type RecommendationRecord, type Subject, type WorkloadRecord } from '../api'
 import { AnalyzeDialog } from '../components/AnalyzeDialog'
+import { AttributionPanel } from '../components/AttributionPanel'
+import { TimeRangePicker } from '../components/TimeRangePicker'
 import { GenerateDialog } from '../components/GenerateDialog'
 import { RecommendationDrawer } from '../components/RecommendationDrawer'
 import { EvidenceStatusChip } from '../components/RecommendationEvidence'
 import { RequestAlert } from '../components/RequestAlert'
 import { SignalsPanel } from '../components/SignalsPanel'
 import { formatBytes, formatDate, formatMillicores, formatPercent } from '../format'
-import { usageWindows } from '../usageWindows'
+import { analysisWindow, customRangeError, rangePresets, type CustomRange } from '../timeRange'
 
 type WorkloadDetailRecord = WorkloadRecord & { desiredReplicas?: number; readyReplicas?: number; health?: string; cluster?: string }
 
@@ -33,7 +35,10 @@ export function WorkloadDetail() {
   const { namespace = '', kind = '', name = '' } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
   const requestedWindow = searchParams.get('window') ?? '24h'
-  const usageWindow = usageWindows.some((option) => option.value === requestedWindow) ? requestedWindow : '24h'
+  const usageWindow = rangePresets.some((option) => option.value === requestedWindow) ? requestedWindow : '24h'
+  const from = searchParams.get('from')
+  const to = searchParams.get('to')
+  const custom: CustomRange | undefined = from && to && !customRangeError({ start: from, end: to }) ? { start: from, end: to } : undefined
   const container = searchParams.get('container') ?? undefined
   const [generateFor, setGenerateFor] = useState<Subject>()
   const [analyzeOpen, setAnalyzeOpen] = useState(false)
@@ -67,9 +72,23 @@ export function WorkloadDetail() {
     setSearchParams((current) => {
       const next = new URLSearchParams(current)
       next.set(key, value)
+      if (key === 'window') {
+        next.delete('from')
+        next.delete('to')
+      }
       return next
     }, { replace: true })
   }
+  const updateRange = (range: CustomRange) => {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current)
+      next.delete('window')
+      next.set('from', range.start)
+      next.set('to', range.end)
+      return next
+    }, { replace: true })
+  }
+  const analysis = analysisWindow(usageWindow, custom)
 
   return (
     <Box sx={{ p: { xs: 2, md: 4 }, maxWidth: 1500, mx: 'auto' }}>
@@ -154,17 +173,16 @@ export function WorkloadDetail() {
             <Tabs value={activeContainer} onChange={(_, next) => updateView('container', next)} variant="scrollable" allowScrollButtonsMobile aria-label="Container usage">
               {containers.map((item) => <Tab key={item.name} value={item.name} label={item.name} />)}
             </Tabs>
-            <Stack direction="row" sx={{ gap: 1, alignItems: 'center' }}>
-              <Button size="small" variant="outlined" startIcon={<InsightsOutlined />} component={RouterLink}
-                to={`/correlation?${new URLSearchParams({ ...subject(activeContainer), window: usageWindow === '6h' ? '24h' : usageWindow })}`}>
+            <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ gap: 1, alignItems: { xs: 'stretch', sm: 'flex-start' } }}>
+              <Button size="small" variant="outlined" startIcon={<InsightsOutlined />} component={RouterLink} sx={{ mt: { sm: 0.5 } }}
+                to={`/correlation?${new URLSearchParams({ ...subject(activeContainer), window: analysis })}`}>
                 Correlation analysis
               </Button>
-              <TextField select size="small" label="Window" value={usageWindow} onChange={(event) => updateView('window', event.target.value)} sx={{ minWidth: 140 }}>
-                {usageWindows.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}
-              </TextField>
+              <TimeRangePicker preset={usageWindow} custom={custom} onPreset={(value) => updateView('window', value)} onCustom={updateRange} />
             </Stack>
           </Stack>
-          <SignalsPanel subject={subject(activeContainer)} usageWindow={usageWindow} />
+          <AttributionPanel subject={subject(activeContainer)} usageWindow={analysis} />
+          <SignalsPanel subject={subject(activeContainer)} usageWindow={usageWindow} range={custom} />
         </Box>
       )}
 

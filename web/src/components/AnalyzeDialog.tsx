@@ -6,10 +6,12 @@ import {
 } from '@mui/material'
 import { api, ApiError, newIdempotencyKey, type CollectionEnvelope, type RecommendationRecord, type Subject, type WorkloadRecord } from '../api'
 import { formatPercent } from '../format'
+import { analysisOutcomes, outcomeOf, type AnalysisOutcome } from '../analysisOutcome'
 
 const concurrency = 3
 
-type Target = Subject & { state: 'queued' | 'running' | 'done' | 'failed'; message?: string; record?: RecommendationRecord }
+type Target = Subject & { state: 'queued' | 'running' | 'done' | 'failed'; message?: string; code?: string; record?: RecommendationRecord }
+
 
 type AnalyzeDialogProps = {
   open: boolean
@@ -35,6 +37,19 @@ function changeLabel(current: number, next: number) {
  * few at a time from the browser, so each one keeps the caller's own
  * authorization and the API's normal request deadline.
  */
+function TargetResult({ target }: { target: Target }) {
+  const outcome = outcomeOf(target)
+  if (!outcome) return <Chip size="small" variant="outlined" label={target.state} />
+  const style = analysisOutcomes[outcome]
+  return (
+    <Stack sx={{ gap: 0.5, alignItems: 'flex-start' }}>
+      <Chip size="small" variant="outlined" color={style.color} label={style.label} />
+      {target.state === 'failed' && <Typography variant="body2" color="text.secondary" sx={{ overflowWrap: 'anywhere' }}>{target.message}</Typography>}
+      {target.state === 'done' && target.record && <Typography variant="caption" color="text.secondary">Risk: {target.record.risk}</Typography>}
+    </Stack>
+  )
+}
+
 export function AnalyzeDialog({ open, onClose, namespace, workload }: AnalyzeDialogProps) {
   const client = useQueryClient()
   const [profile, setProfile] = useState('balanced')
@@ -80,7 +95,7 @@ export function AnalyzeDialog({ open, onClose, namespace, workload }: AnalyzeDia
             update(index, { state: 'queued' })
             return
           }
-          update(index, { state: 'failed', message: error instanceof ApiError ? error.message : 'Request failed' })
+          update(index, { state: 'failed', message: error instanceof ApiError ? error.message : 'Request failed', code: error instanceof ApiError ? error.code : undefined })
         }
       }
     }
@@ -92,8 +107,11 @@ export function AnalyzeDialog({ open, onClose, namespace, workload }: AnalyzeDia
   }
 
   const finished = targets.filter((item) => item.state === 'done' || item.state === 'failed').length
-  const created = targets.filter((item) => item.state === 'done').length
-  const failed = targets.filter((item) => item.state === 'failed').length
+  const tally = new Map<AnalysisOutcome, number>()
+  for (const item of targets) {
+    const outcome = outcomeOf(item)
+    if (outcome) tally.set(outcome, (tally.get(outcome) ?? 0) + 1)
+  }
   const scope = workload ? `${workload.namespace} / ${workload.kind} / ${workload.name}` : `namespace ${namespace}`
   const close = () => { abort.current?.abort(); setTargets([]); onClose() }
 
@@ -121,11 +139,12 @@ export function AnalyzeDialog({ open, onClose, namespace, workload }: AnalyzeDia
           </Stack>
         ) : (
           <Stack sx={{ gap: 1.5 }}>
-            <Stack direction="row" sx={{ justifyContent: 'space-between', alignItems: 'center' }}>
+            <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ justifyContent: 'space-between', alignItems: { sm: 'center' }, gap: 1 }}>
               <Typography variant="body2">{finished} of {targets.length} containers analyzed</Typography>
-              <Stack direction="row" sx={{ gap: 1 }}>
-                <Chip size="small" color="success" variant="outlined" label={`${created} created`} />
-                {failed > 0 && <Chip size="small" color="warning" variant="outlined" label={`${failed} skipped`} />}
+              <Stack direction="row" sx={{ gap: 1, flexWrap: 'wrap', justifyContent: { sm: 'flex-end' } }} aria-label="Analysis outcomes">
+                {(Object.keys(analysisOutcomes) as AnalysisOutcome[]).filter((outcome) => tally.has(outcome)).map((outcome) => (
+                  <Chip key={outcome} size="small" variant="outlined" color={analysisOutcomes[outcome].color} label={`${tally.get(outcome)} ${analysisOutcomes[outcome].label.toLowerCase()}`} />
+                ))}
               </Stack>
             </Stack>
             <LinearProgress variant="determinate" value={targets.length ? (finished / targets.length) * 100 : 0} aria-label="Analysis progress" />
@@ -136,10 +155,8 @@ export function AnalyzeDialog({ open, onClose, namespace, workload }: AnalyzeDia
                   {targets.map((target) => (
                     <TableRow key={`${target.workload}/${target.container}`}>
                       <TableCell sx={{ maxWidth: 260 }}><Typography variant="body2" noWrap>{target.workload} / {target.container}</Typography></TableCell>
-                      <TableCell sx={{ maxWidth: 280 }}>
-                        {target.state === 'failed'
-                          ? <Typography variant="body2" color="warning.main">{target.message}</Typography>
-                          : <Chip size="small" variant="outlined" label={target.state === 'done' ? `Risk: ${target.record?.risk}` : target.state} color={target.state === 'done' ? 'success' : 'default'} />}
+                      <TableCell sx={{ maxWidth: 320 }}>
+                        <TargetResult target={target} />
                       </TableCell>
                       <TableCell align="right">{target.record ? changeLabel(target.record.currentCpuRequestMilli, target.record.cpuRequestMilli) : '—'}</TableCell>
                       <TableCell align="right">{target.record ? changeLabel(target.record.currentMemoryRequestBytes, target.record.memoryRequestBytes) : '—'}</TableCell>

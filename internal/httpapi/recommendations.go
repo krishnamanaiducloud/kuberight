@@ -327,6 +327,10 @@ func (server *apiServer) usageFailure(w http.ResponseWriter, r *http.Request, er
 		respondError(w, r, http.StatusUnprocessableEntity, "metric_attribution_incomplete", err.Error())
 		return
 	}
+	if errors.Is(err, usage.ErrInsufficientHistory) {
+		respondError(w, r, http.StatusUnprocessableEntity, "insufficient_history", err.Error())
+		return
+	}
 	if errors.Is(err, usage.ErrNoData) {
 		respondError(w, r, http.StatusUnprocessableEntity, "no_usage_data", "Prometheus has no CPU or memory usage for this container in the requested window")
 		return
@@ -536,7 +540,13 @@ func (server *apiServer) collectEvidence(ctx context.Context, subject usage.Subj
 	// code that no longer runs, so size from post-rollout samples instead.
 	rolloutIssues := []string{}
 	recentRollout := false
-	if rollouts, rolloutErr := server.usage.Rollouts(ctx, subject, history.Start, history.End); rolloutErr == nil {
+	rollouts, rolloutErr := server.usage.Rollouts(ctx, subject, history.Start, history.End)
+	if rolloutErr == nil && len(rollouts) == 0 && metricIdentity != nil {
+		// kube_replicaset_created is not exported on OpenShift; the API's
+		// UID-verified ReplicaSets date the retained revisions instead.
+		rollouts = usage.RolloutsFromOwners(subject, metricIdentity.Owners, history.Start, history.End)
+	}
+	if rolloutErr == nil {
 		if at, change, ok := rolloutShift(history.CPU, rollouts); ok && math.Abs(change) >= rolloutShiftThreshold {
 			minimumSamples := optimizer.DefaultPolicy().MinimumSamples
 			if policy != nil && policy.MinimumSamples > 0 {
@@ -892,12 +902,19 @@ func timePointer(value time.Time) *time.Time {
 	return &utc
 }
 
+// observationStart is when the evidence begins: the window start, or the
+// first sample when history starts later. A sample stands for the step that
+// ends at it, so a workload whose only sample is the window's last step was
+// observed for one step, not for no time at all.
 func observationStart(history usage.History, window usage.Window) *time.Time {
 	start := window.End.Add(-window.Duration)
 	for _, series := range []usage.Series{history.CPU, history.Memory} {
 		if len(series.Points) > 0 && series.Points[0].Timestamp.After(start) {
 			start = series.Points[0].Timestamp
 		}
+	}
+	if earliest := window.End.Add(-window.Step); !start.Before(window.End) && window.Step > 0 {
+		start = earliest
 	}
 	return timePointer(start)
 }

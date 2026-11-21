@@ -30,11 +30,14 @@ func TestOwnershipFollowsKubeStateMetricsOwnersBoundedByWorkloadCreation(t *test
 		t.Fatal(err)
 	}
 	created := fmt.Sprint(identity.CreatedAt.Unix())
+	pods := `{namespace="shop",pod=~"web\\.api-[a-z0-9]{1,10}-[a-z0-9]{5}"}`
 	for _, required := range []string{
-		`kube_pod_info{namespace="shop",created_by_kind="ReplicaSet",created_by_name=~"web\\.api-[a-z0-9]{1,10}"}`,
+		`kube_pod_owner{namespace="shop",owner_kind="ReplicaSet",owner_name=~"web\\.api-[a-z0-9]{1,10}",owner_is_controller="true"}`,
 		`kube_replicaset_owner{namespace="shop",replicaset=~"web\\.api-[a-z0-9]{1,10}",owner_kind="Deployment",owner_name="web.api",owner_is_controller="true"}`,
-		`kube_replicaset_created{namespace="shop",replicaset=~"web\\.api-[a-z0-9]{1,10}"} >= ` + created,
-		`kube_pod_created{namespace="shop",pod=~"web\\.api-[a-z0-9]{1,10}-[a-z0-9]{5}"} >= ` + created,
+		// The pod's own creation bounds a same-name predecessor; OpenShift
+		// drops kube_pod_created, so the start time stands in.
+		`(max by (namespace, pod, uid) (kube_pod_created` + pods + `) or max by (namespace, pod, uid) (kube_pod_start_time` + pods + `)) >= ` + created,
+		`and on (namespace, pod, uid)`,
 		`unless on (namespace, pod) (count by (namespace, pod) (`,
 		`group_left (uid)`,
 	} {
@@ -42,8 +45,25 @@ func TestOwnershipFollowsKubeStateMetricsOwnersBoundedByWorkloadCreation(t *test
 			t.Fatalf("CPU attribution does not contain %q:\n%s", required, cpu)
 		}
 	}
-	if strings.Contains(cpu, "pod-uid-a") {
-		t.Fatalf("historical attribution must not be limited to live pod UIDs: %s", cpu)
+	// OpenShift's kube-state-metrics exports no *_created family, so none
+	// may be required.
+	for _, forbidden := range []string{"kube_replicaset_created", "kube_job_created", "pod-uid-a"} {
+		if strings.Contains(cpu, forbidden) {
+			t.Fatalf("historical attribution must not depend on %q: %s", forbidden, cpu)
+		}
+	}
+	// API-verified ReplicaSets attribute their pods even before
+	// kube_replicaset_owner reports them.
+	identity.Owners = []OwnerIdentity{
+		{Kind: "ReplicaSet", Name: "web.api-7d4b9c", UID: "rs-new", CreatedAt: identity.CreatedAt.Add(time.Hour)},
+		{Kind: "ReplicaSet", Name: "other-7d4b9c", UID: "rs-other", CreatedAt: identity.CreatedAt},
+	}
+	verified, err := AttributedCPUExpression(subject, identity, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(verified, `owner_name=~"web\\.api-7d4b9c",owner_is_controller="true"}`) || strings.Contains(verified, "other-7d4b9c") {
+		t.Fatalf("verified owners must be embedded, and only those matching the workload's pod names: %s", verified)
 	}
 	identity.LivePodsOnly = true
 	live, err := AttributedMemoryExpression(subject, identity, time.Minute)
@@ -55,10 +75,10 @@ func TestOwnershipFollowsKubeStateMetricsOwnersBoundedByWorkloadCreation(t *test
 func TestOwnershipForDirectAndCronJobOwners(t *testing.T) {
 	identity := attributedIdentity()
 	for kind, required := range map[string][]string{
-		"StatefulSet": {`created_by_kind="StatefulSet",created_by_name="web.api"`},
-		"DaemonSet":   {`created_by_kind="DaemonSet",created_by_name="web.api"`},
-		"Job":         {`created_by_kind="Job",created_by_name="web.api"`},
-		"CronJob":     {`created_by_kind="Job",created_by_name=~"web\\.api-[0-9]+"`, `kube_job_owner{namespace="shop",job_name=~"web\\.api-[0-9]+",owner_kind="CronJob",owner_name="web.api"`, `kube_job_created{`},
+		"StatefulSet": {`kube_pod_owner{namespace="shop",owner_kind="StatefulSet",owner_name="web.api",owner_is_controller="true"}`},
+		"DaemonSet":   {`kube_pod_owner{namespace="shop",owner_kind="DaemonSet",owner_name="web.api",owner_is_controller="true"}`},
+		"Job":         {`kube_pod_owner{namespace="shop",owner_kind="Job",owner_name="web.api",owner_is_controller="true"}`},
+		"CronJob":     {`kube_pod_owner{namespace="shop",owner_kind="Job",owner_name=~"web\\.api-[0-9]+",owner_is_controller="true"}`, `kube_job_owner{namespace="shop",job_name=~"web\\.api-[0-9]+",owner_kind="CronJob",owner_name="web.api"`},
 	} {
 		value := subject
 		value.Kind = kind
