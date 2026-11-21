@@ -1,9 +1,64 @@
 # Release status
 
-- Candidate: `0.1.0-rc.10`, published from a local build (below); read-only, one application Deployment, built-in forecasting, no sign-in (like Goldilocks)
+- Candidate: `0.1.0-rc.11`, published from a local build (below); read-only, one application Deployment, built-in forecasting, no sign-in (like Goldilocks)
 - Status: release candidate; see [production readiness](PRODUCTION-READINESS.md) (87/100)
-- Previous releases: `0.1.0-rc.9` to `0.1.0-rc.6` (local builds, below) and `v0.1.0-rc.4` (release workflow, 2026-11-19)
-- The next release through the release workflow must be `0.1.0-rc.11` or later.
+- Previous releases: `0.1.0-rc.10` to `0.1.0-rc.6` (local builds, below) and `v0.1.0-rc.4` (release workflow, 2026-11-19)
+- The next release through the release workflow must be `0.1.0-rc.12` or later.
+
+## Published `0.1.0-rc.11` images (2026-11-21)
+
+Built locally with Docker Buildx for linux/amd64 and linux/arm64 from `1c47433`, with SBOM and provenance attestations, and pushed to Docker Hub. The pushed platform digests equal the images that were scanned and tested on kind. No keyless signature (cosign is not installed on the build host), GitHub release, or tag.
+
+| Image | Index digest |
+| --- | --- |
+| `mohankrishna999/kuberight:0.1.0-rc.11` | `sha256:5fa339def0c5bbd15171e06898e703a2016ed62c8cc3125e8dba4a8fe81d5ede` |
+| `mohankrishna999/kuberight:0.1.0-rc.11-debug` | `sha256:b2c678422be1e0fafb6252b0f28fd1e09c61fcf83040ca1784d9efb612514a6b` |
+
+What changed: workload metric attribution.
+
+- **The cause of "workload metric attribution is incomplete … attributes none of them to the current workload UID" on OpenShift.** The ownership query required `kube_pod_created` and `kube_replicaset_created` (`kube_job_created` for CronJobs). OpenShift's kube-state-metrics runs with `--metric-denylist=^kube_.+_created$`, so the join was empty for every workload while cAdvisor usage existed. Reproduced with the published `rc.10` image against a kube-state-metrics with OpenShift's exact arguments: `default/netshoot` failed with the reported error. `rc.11` attributes it.
+- **How ownership is now established.**
+  - `kube_pod_owner` ties each pod UID to its controller.
+  - The Kubernetes API ties a ReplicaSet or Job to the workload UID. `kube_replicaset_owner` or `kube_job_owner` covers revisions the API no longer keeps.
+  - The pod's creation time (`kube_pod_created`, or `kube_pod_start_time` where `*_created` is not exported) must not predate the workload object, so a deleted same-name workload is never mixed in.
+  - No `*_created` family is required, and pod names alone never prove ownership.
+- **Diagnostics.** `GET /api/v1/attribution` and the **Metric attribution** panel on a workload page show:
+  - the UID chain;
+  - every pod identity and why it was attributed, excluded, or not attributed;
+  - metric families, coverage, and eligibility.
+
+  Both are read-only and contain no credentials.
+- **Outcomes.** The Analyze dialog distinguishes:
+  - recommendation created, already right-sized, held, and unsupported;
+  - insufficient usage history and missing metrics;
+  - incomplete attribution and provider unavailable.
+
+  A workload younger than one step returns `insufficient_history`. A single sample no longer fails with "observation end must be after observation start".
+- **Forecasts** use the same UID-attributed history as recommendations. **Rollouts** are dated from API-verified ReplicaSets where `kube_replicaset_created` is absent.
+- **Usage charts** accept ranges from 1 minute to 365 days, or a custom start and end. Ranges are queried in UTC and shown in browser time, and a range that predates the available samples says so.
+- **No RBAC change.** The ClusterRole and manifests are unchanged apart from the version.
+
+Checks before the push:
+
+- **Regression tests.** The attribution replay runs every scenario against a real Prometheus twice, with upstream and with OpenShift kube-state-metrics series: 18 scenarios per profile, including `netshoot`, a delayed ReplicaSet owner, same-name namespaces, and partial ownership history. On `rc.10` code, 13 of the 14 original OpenShift-profile scenarios failed; the 14th expects a failure. A second regression test pins the single-sample fix.
+- **Unit and race tests.** Go race tests pass in 17 packages. The dashboard passes 74 unit tests and 58 browser tests on desktop and mobile.
+- **Scans.**
+  - Trivy 0.76.2 finds 0 HIGH or CRITICAL in all four platform images, the Go and npm dependencies, and the manifests.
+  - gitleaks finds no leaks in the tree or the history.
+  - Helm 4.3.1 lint passes, the rendered manifests are current, and they pass a server-side dry run.
+- **Release checks.** The favicon, URL-prefix, and Thanos simulation checks from earlier releases still pass on both images.
+- **On kind, against both a vanilla and an OpenShift-like monitoring stack, 31 of 31 checks pass for:**
+  - single-replica, multi-replica, and rolling-update Deployments;
+  - a same-name recreation;
+  - StatefulSet, DaemonSet, Job, and CronJob;
+  - a restarting container, pod replacement, and missing metrics;
+  - a 9.5-minute kube-state-metrics outage;
+  - same-name Deployments in two namespaces;
+  - CPU throttling and OOM kills.
+
+  Both pods ran 10 minutes with 0 restarts, 0 panics, and 0 query failures.
+
+Rollback: `helm upgrade kuberight charts/kuberight -n <namespace> --reuse-values --set image.tag=0.1.0-rc.10`, or apply the `deploy/manifests/` files from `dd20d9a` (`0.1.0-rc.10`). KubeRight stores no new data in this release, so rolling back needs no migration.
 
 ## Published `0.1.0-rc.10` images (2026-11-20)
 
